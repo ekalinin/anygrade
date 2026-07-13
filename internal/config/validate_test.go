@@ -92,6 +92,65 @@ func TestValidateWarnings(t *testing.T) {
 	}
 }
 
+// TestValidateWorkspaceInclude covers the workspace.include rules: absolute
+// path, escaping path, missing path, and a valid include.
+func TestValidateWorkspaceInclude(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "go.mod"), []byte("module x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(tmp, "tasks", "w")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	task := &Task{
+		Dir:           dir,
+		ID:            "w",
+		Name:          "W",
+		Score:         100,
+		SolutionFiles: []string{"main.go"},
+		Workspace: WorkspaceSpec{Include: []string{
+			"/abs/path",
+			"../escape",
+			"missing.txt",
+			"go.mod",
+		}},
+		Checks: []Check{
+			{Name: "build", Required: true, Weight: 0, Run: "go build ./..."},
+			{Name: "test", Weight: 100, Run: "go test ./..."},
+		},
+	}
+	rt := Resolve(&Course{}, task)
+	rt.file = "tasks/w/task.yaml"
+	r := &Resolved{
+		Course:    ResolvedCourse{Name: "C", TasksDir: "tasks", Registration: Registration{Mode: "invite"}, ScoringPolicy: "best"},
+		rawCourse: &Course{Registration: Registration{Mode: "invite"}, Scoring: Scoring{Policy: "best"}},
+		Tasks:     []ResolvedTask{rt},
+	}
+
+	diags := Validate(r)
+	joined := strings.Join(diagStrings(diags), "\n")
+	wantSubstrings := []string{
+		"must be a relative path",
+		"must not escape the course repo",
+		"does not exist in the course repo",
+	}
+	for _, want := range wantSubstrings {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing expected diagnostic %q in:\n%s", want, joined)
+		}
+	}
+	for _, d := range diags {
+		if d.Field == "workspace.include[3]" {
+			t.Errorf("unexpected diagnostic for valid include: %s", d)
+		}
+	}
+}
+
 func diagStrings(diags []Diagnostic) []string {
 	out := make([]string, len(diags))
 	for i, d := range diags {

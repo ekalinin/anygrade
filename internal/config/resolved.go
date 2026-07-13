@@ -35,10 +35,17 @@ type ResolvedTask struct {
 	Deadline      ResolvedDeadline
 	Hidden        *HiddenTests
 	Checks        []Check
+	Workspace     ResolvedWorkspace
 
 	// raw and file support validation (explicit-set detection, diagnostics).
 	raw  *Task
 	file string // repo-relative path to task.yaml
+}
+
+// ResolvedWorkspace is the merged set of extra paths exported into the check
+// workspace alongside the task directory.
+type ResolvedWorkspace struct {
+	Include []string
 }
 
 // ResolvedRunner is a concrete runner configuration (all defaults applied).

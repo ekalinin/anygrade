@@ -4,15 +4,16 @@ package config
 // Runner and Limits reuse the mergeable spec types from course.go so their
 // fields inherit from course defaults field by field.
 type Task struct {
-	ID            string       `yaml:"id"`   // optional; defaults to dir name
-	Name          string       `yaml:"name"` //
-	Score         int          `yaml:"score"`
-	SolutionFiles []string     `yaml:"solution_files"`
-	Deadline      TaskDeadline `yaml:"deadline"`
-	Limits        Limits       `yaml:"limits"`
-	Runner        RunnerSpec   `yaml:"runner"`
-	HiddenTests   *HiddenTests `yaml:"hidden_tests"` // whole block optional
-	Checks        []Check      `yaml:"checks"`
+	ID            string        `yaml:"id"`   // optional; defaults to dir name
+	Name          string        `yaml:"name"` //
+	Score         int           `yaml:"score"`
+	SolutionFiles []string      `yaml:"solution_files"`
+	Deadline      TaskDeadline  `yaml:"deadline"`
+	Limits        Limits        `yaml:"limits"`
+	Runner        RunnerSpec    `yaml:"runner"`
+	HiddenTests   *HiddenTests  `yaml:"hidden_tests"` // whole block optional
+	Checks        []Check       `yaml:"checks"`
+	Workspace     WorkspaceSpec `yaml:"workspace"`
 
 	// Dir is the absolute path of the task directory, filled by the loader.
 	// Not a yaml field.

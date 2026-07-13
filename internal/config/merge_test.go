@@ -61,6 +61,30 @@ func TestBuiltinDefaultsWhenCourseOmits(t *testing.T) {
 	}
 }
 
+// TestWorkspaceIncludeUnion verifies course-level and task-level
+// workspace.include lists are unioned (course first, cleaned, deduped).
+func TestWorkspaceIncludeUnion(t *testing.T) {
+	course := &Course{
+		Defaults: Defaults{Workspace: WorkspaceSpec{Include: []string{"go.mod", "shared/"}}},
+	}
+	task := &Task{
+		Dir:       "/tmp/tasks/x",
+		Workspace: WorkspaceSpec{Include: []string{"go.mod", "tasks/x/extra"}},
+	}
+
+	r := Resolve(course, task)
+
+	want := []string{"go.mod", "shared", "tasks/x/extra"}
+	if len(r.Workspace.Include) != len(want) {
+		t.Fatalf("include: got %v, want %v", r.Workspace.Include, want)
+	}
+	for i, w := range want {
+		if r.Workspace.Include[i] != w {
+			t.Errorf("include[%d]: got %q, want %q", i, r.Workspace.Include[i], w)
+		}
+	}
+}
+
 // TestCourseDefaultsOverrideBuiltin verifies course defaults win over builtin,
 // and a task with no override inherits the course default.
 func TestCourseDefaultsOverrideBuiltin(t *testing.T) {

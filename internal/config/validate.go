@@ -188,7 +188,46 @@ func validateTask(t *ResolvedTask, add func(Severity, string, string, string, ..
 
 	validateChecks(t, add)
 	validateHidden(t, add)
+	validateWorkspace(t, add)
 	validatePenaltyWarnings(t, add)
+}
+
+// repoRoot derives the course repo root from the task's absolute directory
+// and its repo-relative task.yaml path.
+func (t *ResolvedTask) repoRoot() string {
+	rel := filepath.Dir(t.file)
+	if t.file == "" || rel == "." {
+		return t.Dir
+	}
+	return strings.TrimSuffix(t.Dir, string(filepath.Separator)+filepath.ToSlash(rel))
+}
+
+func validateWorkspace(t *ResolvedTask, add func(Severity, string, string, string, ...any)) {
+	f := t.file
+	root := t.repoRoot()
+	taskDirRel := filepath.Dir(t.file)
+
+	for i, inc := range t.Workspace.Include {
+		field := fmt.Sprintf("workspace.include[%d]", i)
+		if filepath.IsAbs(inc) {
+			add(SevError, f, field, "%q must be a relative path", inc)
+			continue
+		}
+		clean := filepath.Clean(inc)
+		if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			add(SevError, f, field, "%q must not escape the course repo", inc)
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(root, clean)); err != nil {
+			add(SevError, f, field, "listed path %q does not exist in the course repo", inc)
+			continue
+		}
+		if t.file != "" && taskDirRel != "." {
+			if clean == taskDirRel || strings.HasPrefix(taskDirRel, clean+string(filepath.Separator)) {
+				add(SevWarning, f, field, "%q is already exported automatically", inc)
+			}
+		}
+	}
 }
 
 func validateChecks(t *ResolvedTask, add func(Severity, string, string, string, ...any)) {

@@ -90,6 +90,9 @@ defaults:                 # inherited by every task.yaml, overridable per task
       percent: 10
       per: 24h
       max_percent: 50
+  workspace:
+    include:              # extra repo-relative paths exported into every check
+      - go.mod            # workspace (unioned with per-task workspace.include)
 ```
 
 ### 4.3 task.yaml
@@ -146,6 +149,7 @@ Semantics:
 - Checks run in order. A check passes iff its command exits 0.
 - `required: true` checks are gates: on failure the remaining checks are skipped and the raw score is 0.
 - Weights are normalized over the non-gate checks: raw score = score × (sum of passed weights / sum of all weights). A single check with any weight therefore behaves as all-or-nothing.
+- `workspace.include` (course defaults and per-task `workspace:` block, unioned) lists extra repo-relative paths - files or directories - exported into the check workspace alongside the task directory. Needed when tasks share build files, e.g. a course-root `go.mod`. Paths must exist and must not escape the repo.
 - `anygrade validate` verifies all metadata (unknown fields, missing files in `solution_files`, deadline ordering, duplicate task ids) and is also run at server startup; startup fails on invalid metadata.
 
 ## 5. Architecture
@@ -221,7 +225,7 @@ Submission time is the moment the server receives the push (server clock). Commi
 
 For each submission the worker builds a clean workspace:
 
-1. Export the task directory from the course repo at its current head (the authoritative version - templates, open tests, build files, `task.yaml`).
+1. Export the task directory from the course repo at its current head (the authoritative version - templates, open tests, build files, `task.yaml`), plus any `workspace.include` paths (shared build files such as a course-root `go.mod`), mirroring the repo-relative layout.
 2. Copy only `solution_files` from the student's submitted commit on top.
 3. If hidden tests are configured, sync the source (git: fetch into the cache, use last successful cache if the remote is unreachable; local: read the path) and copy them on top.
 4. Run checks inside this workspace.
@@ -303,15 +307,18 @@ Leaderboard (if enabled): total scores ranked; `anonymize` replaces logins with 
 anygrade serve   [--repo DIR] [--data-dir DIR] [--http-addr :8080]
                  [--ssh-addr :2222] [--workers 4] [--base-url URL] [--local]
                  [--allow-local-runner]
-anygrade check   [TASK ...]   # run checks locally in the current working copy,
+anygrade check   [--runner local|docker] [--timeout D] [--keep] [-v] [TASK ...]
+                              # run checks locally in the current working copy,
                               # open tests only, results to the terminal; exit
-                              # code 0 iff everything passed (CI-friendly)
+                              # codes: 0 all passed, 1 checks failed, 2 usage,
+                              # 3 infrastructure (docker down etc.)
 anygrade validate             # validate course.yaml and all task.yaml files
 anygrade user    add|list|remove|invite|reset-token ...
 anygrade export  scores --format csv
 ```
 
 - `check` with no arguments detects tasks changed against upstream/HEAD; with arguments checks the named tasks. It uses the same runner code path as the server (docker or local per metadata) but never fetches hidden tests unless they are locally available - it is the student self-check and course-authoring tool.
+- `check --runner local` overrides the per-task runner for students without docker; it runs task code unsandboxed on the host, which is acceptable at the self-check trust level (own machine, own code). No `--allow-local-runner` gate applies here - that gate is only for a non-loopback server.
 - Secrets (hidden-tests repo credentials) come from the environment (`ANYGRADE_HIDDEN_GIT_TOKEN`) or standard git credential helpers, never from the course repo.
 
 ## 12. Storage model (sketch)

@@ -1,5 +1,5 @@
-# anygrade data dir
-/.anygrade/
+# anygrade data dir (any depth: fixtures get one too when `check` runs on them)
+.anygrade/
 
 # Go
 *.test

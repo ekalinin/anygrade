@@ -28,3 +28,6 @@ defaults:
       percent: 10
       per: 24h
       max_percent: 50
+  workspace:
+    include:
+      - go.mod

@@ -52,10 +52,27 @@ func Resolve(c *Course, t *Task) ResolvedTask {
 			Hard:    tsPtr(t.Deadline.Hard),
 			Penalty: mergePenalty(coursePenalty, t.Deadline.Penalty),
 		},
-		Hidden: t.HiddenTests,
-		Checks: t.Checks,
-		raw:    t,
+		Hidden:    t.HiddenTests,
+		Checks:    t.Checks,
+		Workspace: mergeWorkspace(c.Defaults.Workspace, t.Workspace),
+		raw:       t,
 	}
+}
+
+// mergeWorkspace unions course-level and task-level include lists (course
+// first, order stable, paths cleaned, duplicates removed).
+func mergeWorkspace(course, task WorkspaceSpec) ResolvedWorkspace {
+	seen := map[string]bool{}
+	var include []string
+	for _, p := range append(append([]string{}, course.Include...), task.Include...) {
+		clean := filepath.Clean(p)
+		if seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		include = append(include, clean)
+	}
+	return ResolvedWorkspace{Include: include}
 }
 
 // mergeRunner overlays the non-nil fields of over onto base.

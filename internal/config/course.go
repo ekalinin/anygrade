@@ -32,9 +32,17 @@ type Scoring struct {
 
 // Defaults are inherited by every task and overridable per task (SPEC §4.2).
 type Defaults struct {
-	Runner   RunnerSpec       `yaml:"runner"`
-	Limits   Limits           `yaml:"limits"`
-	Deadline DeadlineDefaults `yaml:"deadline"`
+	Runner    RunnerSpec       `yaml:"runner"`
+	Limits    Limits           `yaml:"limits"`
+	Deadline  DeadlineDefaults `yaml:"deadline"`
+	Workspace WorkspaceSpec    `yaml:"workspace"`
+}
+
+// WorkspaceSpec lists extra repo-relative paths exported into the check
+// workspace in addition to the task directory (e.g. a course-root go.mod).
+// Course-level and task-level lists are unioned.
+type WorkspaceSpec struct {
+	Include []string `yaml:"include"`
 }
 
 // DeadlineDefaults holds only the penalty policy; soft/hard timestamps are
