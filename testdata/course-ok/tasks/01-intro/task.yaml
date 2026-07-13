@@ -1,0 +1,33 @@
+id: 01-intro
+name: "Intro task"
+score: 100
+
+solution_files:
+  - main.go
+
+deadline:
+  soft: 2026-09-24T23:59:59+03:00
+  hard: 2026-10-01T23:59:59+03:00
+  penalty:
+    percent: 10
+    per: 24h
+    max_percent: 50
+
+limits:
+  max_attempts: 20
+  cooldown: 5m
+
+runner:
+  image: golang:1.24
+
+checks:
+  - name: build
+    required: true
+    weight: 0
+    run: go build ./...
+  - name: basic
+    weight: 60
+    run: go test -run 'TestBasic' ./...
+  - name: advanced
+    weight: 40
+    run: go test -run 'TestAdvanced' ./...

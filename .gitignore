@@ -1,0 +1,10 @@
+# anygrade data dir
+/.anygrade/
+
+# Go
+*.test
+*.out
+/anygrade
+
+# OS
+.DS_Store

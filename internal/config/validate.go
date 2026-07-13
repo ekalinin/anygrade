@@ -1,0 +1,260 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// Severity classifies a Diagnostic. Only SevError makes validation (and server
+// startup) fail; warnings are informational.
+type Severity int
+
+const (
+	SevError Severity = iota
+	SevWarning
+)
+
+func (s Severity) String() string {
+	if s == SevWarning {
+		return "WARNING"
+	}
+	return "ERROR"
+}
+
+// Diagnostic is one validation finding, tied to a file and (optionally) a
+// dotted field path.
+type Diagnostic struct {
+	Severity Severity
+	File     string // e.g. "course.yaml" or "tasks/01-intro/task.yaml"
+	Field    string // dotted path, e.g. "checks[1].weight" (may be empty)
+	Message  string
+}
+
+// String renders a human-readable one-line diagnostic.
+func (d Diagnostic) String() string {
+	loc := d.File
+	if d.Field != "" {
+		loc = fmt.Sprintf("%s [%s]", d.File, d.Field)
+	}
+	return fmt.Sprintf("%s %s: %s", d.Severity, loc, d.Message)
+}
+
+// HasErrors reports whether any diagnostic is a SevError.
+func HasErrors(diags []Diagnostic) bool {
+	for _, d := range diags {
+		if d.Severity == SevError {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	validRunnerTypes  = map[string]bool{"docker": true, "local": true}
+	validNetworks     = map[string]bool{"none": true, "bridge": true, "host": true}
+	validRegModes     = map[string]bool{"invite": true, "open": true}
+	validScorePolicy  = map[string]bool{"best": true, "latest": true}
+	validHiddenSource = map[string]bool{"git": true, "local": true}
+)
+
+// Validate applies the full metadata ruleset (SPEC §4.3, §13) to a resolved
+// course. Load-time diagnostics (unknown fields, malformed scalars) come from
+// LoadAll separately; callers should report both sets together.
+func Validate(r *Resolved) []Diagnostic {
+	var diags []Diagnostic
+	add := func(sev Severity, file, field, format string, args ...any) {
+		diags = append(diags, Diagnostic{sev, file, field, fmt.Sprintf(format, args...)})
+	}
+
+	c := r.Course
+	// Course-level rules (3-7).
+	if c.Name == "" {
+		add(SevError, courseFile, "name", "course name is required")
+	}
+	if !validRegModes[c.Registration.Mode] {
+		add(SevError, courseFile, "registration.mode", "must be one of invite|open, got %q", c.Registration.Mode)
+	}
+	if c.Registration.Mode == "open" && c.Registration.CourseCode == "" {
+		add(SevError, courseFile, "registration.course_code", "required when registration.mode is open")
+	}
+	if p := r.rawCourse.Scoring.Policy; p != "" && !validScorePolicy[p] {
+		add(SevError, courseFile, "scoring.policy", "must be one of best|latest, got %q", p)
+	}
+	if len(r.Tasks) == 0 {
+		add(SevError, courseFile, "tasks_dir", "no task.yaml found under %q", c.TasksDir)
+	}
+
+	seenIDs := map[string]string{} // id -> first file that used it
+	for i := range r.Tasks {
+		t := &r.Tasks[i]
+		validateTask(t, add)
+
+		if prev, dup := seenIDs[t.ID]; dup {
+			add(SevError, t.file, "id", "duplicate task id %q (also in %s)", t.ID, prev)
+		} else {
+			seenIDs[t.ID] = t.file
+		}
+	}
+	return diags
+}
+
+func validateTask(t *ResolvedTask, add func(Severity, string, string, string, ...any)) {
+	f := t.file
+
+	// Runner (8-11).
+	if !validRunnerTypes[t.Runner.Type] {
+		add(SevError, f, "runner.type", "must be one of docker|local, got %q", t.Runner.Type)
+	}
+	if !validNetworks[t.Runner.Network] {
+		add(SevError, f, "runner.network", "must be one of none|bridge|host, got %q", t.Runner.Network)
+	}
+	if t.Runner.Type == "docker" && t.Runner.Image == "" {
+		add(SevError, f, "runner.image", "image is required for docker runner")
+	}
+	if t.Runner.Timeout <= 0 {
+		add(SevError, f, "runner.timeout", "must be > 0")
+	}
+	if t.Runner.Memory <= 0 {
+		add(SevError, f, "runner.memory", "must be > 0")
+	}
+	if t.Runner.CPUs <= 0 {
+		add(SevError, f, "runner.cpus", "must be > 0")
+	}
+
+	// Identity (13-14).
+	if strings.ContainsAny(t.ID, "/ \t\n") || strings.Contains(t.ID, "..") {
+		add(SevError, f, "id", "task id %q must not contain '/', '..', or whitespace", t.ID)
+	}
+	if t.Score <= 0 {
+		add(SevError, f, "score", "must be > 0")
+	}
+
+	// Solution files (15-16).
+	if len(t.SolutionFiles) == 0 {
+		add(SevError, f, "solution_files", "at least one solution file is required")
+	}
+	for i, sf := range t.SolutionFiles {
+		field := fmt.Sprintf("solution_files[%d]", i)
+		if filepath.IsAbs(sf) {
+			add(SevError, f, field, "%q must be a relative path", sf)
+			continue
+		}
+		clean := filepath.Clean(sf)
+		if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			add(SevError, f, field, "%q must not escape the task directory", sf)
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(t.Dir, clean)); err != nil {
+			add(SevError, f, field, "listed file %q does not exist in the task directory", sf)
+		}
+	}
+
+	// Deadline ordering (17).
+	if t.Deadline.Soft != nil && t.Deadline.Hard != nil && t.Deadline.Soft.After(*t.Deadline.Hard) {
+		add(SevError, f, "deadline", "soft deadline must be <= hard deadline")
+	}
+
+	// Penalty bounds (21).
+	p := t.Deadline.Penalty
+	if p.Percent < 0 {
+		add(SevError, f, "deadline.penalty.percent", "must be >= 0")
+	}
+	if p.MaxPercent < 0 || p.MaxPercent > 100 {
+		add(SevError, f, "deadline.penalty.max_percent", "must be between 0 and 100")
+	}
+	if p.Percent > 0 && p.Per <= 0 {
+		add(SevError, f, "deadline.penalty.per", "must be > 0 when percent > 0")
+	}
+
+	// Limits (22).
+	if t.Limits.MaxAttempts < 0 {
+		add(SevError, f, "limits.max_attempts", "must be >= 0 (0 = unlimited)")
+	}
+	if t.Limits.Cooldown < 0 {
+		add(SevError, f, "limits.cooldown", "must be >= 0")
+	}
+
+	validateChecks(t, add)
+	validateHidden(t, add)
+	validatePenaltyWarnings(t, add)
+}
+
+func validateChecks(t *ResolvedTask, add func(Severity, string, string, string, ...any)) {
+	f := t.file
+	if len(t.Checks) == 0 {
+		add(SevError, f, "checks", "at least one check is required")
+		return
+	}
+
+	seen := map[string]bool{}
+	var scoredCount, positiveWeightCount int
+	for i, ch := range t.Checks {
+		field := fmt.Sprintf("checks[%d]", i)
+		if ch.Name == "" {
+			add(SevError, f, field+".name", "check name is required")
+		} else if seen[ch.Name] {
+			add(SevError, f, field+".name", "duplicate check name %q", ch.Name)
+		}
+		seen[ch.Name] = true
+		if ch.Run == "" {
+			add(SevError, f, field+".run", "check command is required")
+		}
+		if ch.Required {
+			if ch.Weight != 0 {
+				add(SevWarning, f, field+".weight", "weight is ignored for required (gate) checks")
+			}
+			continue
+		}
+		scoredCount++
+		if ch.Weight > 0 {
+			positiveWeightCount++
+		}
+	}
+
+	// Rule 23: a scorable task needs at least one non-gate check with weight > 0.
+	if scoredCount == 0 || positiveWeightCount == 0 {
+		add(SevError, f, "checks", "task needs at least one non-gate check with weight > 0")
+		return
+	}
+	// Rule 24: dead weight (only meaningful once the task is otherwise scorable).
+	for i, ch := range t.Checks {
+		if !ch.Required && ch.Weight == 0 {
+			add(SevWarning, f, fmt.Sprintf("checks[%d].weight", i), "non-gate check %q has weight 0 and never contributes to the score", ch.Name)
+		}
+	}
+}
+
+func validateHidden(t *ResolvedTask, add func(Severity, string, string, string, ...any)) {
+	if t.Hidden == nil {
+		return
+	}
+	f := t.file
+	h := t.Hidden
+	if !validHiddenSource[h.Source] {
+		add(SevError, f, "hidden_tests.source", "must be one of git|local, got %q", h.Source)
+		return
+	}
+	if h.Source == "git" && h.URL == "" {
+		add(SevError, f, "hidden_tests.url", "url is required when source is git")
+	}
+	if h.Source == "local" && h.Path == "" {
+		add(SevError, f, "hidden_tests.path", "path is required when source is local")
+	}
+}
+
+func validatePenaltyWarnings(t *ResolvedTask, add func(Severity, string, string, string, ...any)) {
+	f := t.file
+	// Rule 26: penalty explicitly set on the task but no soft deadline to trigger it.
+	if raw := t.raw; raw != nil {
+		rp := raw.Deadline.Penalty
+		if rp.Percent != nil && *rp.Percent > 0 && raw.Deadline.Soft == nil {
+			add(SevWarning, f, "deadline.penalty", "penalty is set but there is no soft deadline, so it can never apply")
+		}
+	}
+	// Rule 27: soft deadline present but the penalty cap is 0, disabling penalties.
+	if t.Deadline.Soft != nil && t.Deadline.Penalty.Percent > 0 && t.Deadline.Penalty.MaxPercent == 0 {
+		add(SevWarning, f, "deadline.penalty.max_percent", "max_percent is 0, so the penalty is effectively disabled")
+	}
+}

@@ -1,0 +1,30 @@
+name: "Go course 2026"
+tasks_dir: tasks
+
+registration:
+  mode: invite
+  course_code: "go-2026"
+
+leaderboard:
+  enabled: true
+  anonymize: false
+
+scoring:
+  policy: best
+
+defaults:
+  runner:
+    type: docker
+    image: golang:1.24
+    timeout: 5m
+    memory: 512m
+    cpus: 1
+    network: none
+  limits:
+    max_attempts: 0
+    cooldown: 0s
+  deadline:
+    penalty:
+      percent: 10
+      per: 24h
+      max_percent: 50

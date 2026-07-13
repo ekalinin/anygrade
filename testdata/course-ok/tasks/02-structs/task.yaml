@@ -1,0 +1,15 @@
+id: 02-structs
+name: "Structs"
+score: 100
+
+solution_files:
+  - main.go
+
+checks:
+  - name: build
+    required: true
+    weight: 0
+    run: go build ./...
+  - name: test
+    weight: 100
+    run: go test ./...
