@@ -302,6 +302,7 @@ Leaderboard (if enabled): total scores ranked; `anonymize` replaces logins with 
 ```
 anygrade serve   [--repo DIR] [--data-dir DIR] [--http-addr :8080]
                  [--ssh-addr :2222] [--workers 4] [--base-url URL] [--local]
+                 [--allow-local-runner]
 anygrade check   [TASK ...]   # run checks locally in the current working copy,
                               # open tests only, results to the terminal; exit
                               # code 0 iff everything passed (CI-friendly)
@@ -344,7 +345,7 @@ Task definitions are not mirrored into the DB; metadata is always read from the 
 
 ## 14. Security considerations
 
-- Student code is untrusted. The docker runner is the only mode suitable for a public service: no network (unless the task opts in), cpu/memory/pids limits, read-only base image, non-root user, tmpfs workspace, hard wall-clock timeout. The local runner prints a prominent warning when used with `serve` on a non-loopback address.
+- Student code is untrusted. The docker runner is the only mode suitable for a public service: no network (unless the task opts in), cpu/memory/pids limits, read-only base image, non-root user, tmpfs workspace, hard wall-clock timeout. `serve` on a non-loopback address with any task resolved to the local runner refuses to start unless `--allow-local-runner` is passed explicitly; on loopback (including `serve --local`) no flag is needed. The local runner enforces only the wall-clock timeout (process-group kill); memory/cpu limits are docker-only, and `validate` warns when a local-runner task sets them.
 - Hidden tests never enter student-visible repos, push outputs, or student-visible logs. Check logs are shown to students as produced by their tests; teachers see full logs. Course authors are advised to keep hidden-test source files out of error output.
 - Tokens and invite links are stored hashed; SSH is limited to git commands (no shell).
 - The web UI enforces role checks on every route; students can only read their own submissions.

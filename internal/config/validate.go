@@ -122,6 +122,16 @@ func validateTask(t *ResolvedTask, add func(Severity, string, string, string, ..
 	if t.Runner.CPUs <= 0 {
 		add(SevError, f, "runner.cpus", "must be > 0")
 	}
+	// Memory/cpu limits are docker-only (SPEC §14); warn when a local-runner
+	// task sets them explicitly so they don't look enforced.
+	if t.Runner.Type == "local" && t.raw != nil {
+		if t.raw.Runner.Memory != nil {
+			add(SevWarning, f, "runner.memory", "memory limit is not enforced by the local runner")
+		}
+		if t.raw.Runner.CPUs != nil {
+			add(SevWarning, f, "runner.cpus", "cpu limit is not enforced by the local runner")
+		}
+	}
 
 	// Identity (13-14).
 	if strings.ContainsAny(t.ID, "/ \t\n") || strings.Contains(t.ID, "..") {

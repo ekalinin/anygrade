@@ -59,7 +59,9 @@ func TestValidateWarnings(t *testing.T) {
 		Name:          "W",
 		Score:         100,
 		SolutionFiles: []string{"main.go"},
-		Runner:        RunnerSpec{Type: new("local")}, // local needs no image
+		// local needs no image; memory set explicitly to trigger the
+		// docker-only-limits warning.
+		Runner: RunnerSpec{Type: new("local"), Memory: new(ByteSize(512 << 20))},
 		Checks: []Check{
 			{Name: "build", Required: true, Weight: 5, Run: "go build ./..."}, // rule 25
 			{Name: "a", Weight: 10, Run: "go test -run A ./..."},
@@ -84,6 +86,9 @@ func TestValidateWarnings(t *testing.T) {
 	}
 	if !strings.Contains(joined, "never contributes") {
 		t.Errorf("expected dead-weight warning, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "not enforced by the local runner") {
+		t.Errorf("expected local-runner limits warning, got:\n%s", joined)
 	}
 }
 
