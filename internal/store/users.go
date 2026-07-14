@@ -24,6 +24,14 @@ func (s *DB) GetUserByLogin(ctx context.Context, login string) (User, error) {
 	return scanUser(row)
 }
 
+// GetUserByID implements UserStore.
+func (s *DB) GetUserByID(ctx context.Context, id int64) (User, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT id, login, display_name, role, state, created_at
+		FROM users WHERE id = ?`, id)
+	return scanUser(row)
+}
+
 func scanUser(row scanner) (User, error) {
 	var u User
 	var createdAt string

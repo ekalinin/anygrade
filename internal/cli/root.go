@@ -25,6 +25,8 @@ func Run(args []string) int {
 		return cmdUser(rest)
 	case "export":
 		return cmdExport(rest)
+	case "hook":
+		return cmdHook(rest)
 	default:
 		printUsage()
 		return 2

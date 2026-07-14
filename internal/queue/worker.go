@@ -23,6 +23,7 @@ type Prepared struct {
 	Assembly runner.Assembly     // sources wired; Dest/TaskRelDir set
 	Task     config.ResolvedTask // runner spec, checks, score, deadline
 	LogDir   string
+	Note     string // worker note carried to the result (e.g. tamper notes)
 }
 
 // JobPrep builds the run context for a claimed submission. M3 tests inject a
@@ -204,7 +205,8 @@ func (q *Queue) process(ctx context.Context, sub store.Submission) {
 	final := scoring.FinalScore(raw, pen)
 
 	err = q.Store.FinishSubmission(ctx, sub.ID, store.SubmissionResult{
-		Status: store.StatusDone, Raw: raw, Penalty: pen, Final: final, Checks: checks,
+		Status: store.StatusDone, Raw: raw, Penalty: pen, Final: final,
+		Note: p.Note, LogDir: p.LogDir, Checks: checks,
 	})
 	if err != nil {
 		q.retry(ctx, sub, err)

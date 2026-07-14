@@ -96,9 +96,9 @@ func (s *DB) FinishSubmission(ctx context.Context, id int64, res SubmissionResul
 	}
 	result, err := tx.ExecContext(ctx, `
 		UPDATE submissions SET status = ?, raw_score = ?, penalty_percent = ?,
-		  final_score = ?, worker_note = ?, retry_at = NULL
+		  final_score = ?, worker_note = ?, log_dir = ?, retry_at = NULL
 		WHERE id = ?`,
-		res.Status, res.Raw, res.Penalty, res.Final, res.Note, id)
+		res.Status, res.Raw, res.Penalty, res.Final, res.Note, res.LogDir, id)
 	if err != nil {
 		return err
 	}

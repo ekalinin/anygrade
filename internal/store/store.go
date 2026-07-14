@@ -38,10 +38,33 @@ type User struct {
 	CreatedAt   time.Time
 }
 
+// SSHKey is one registered public key (SPEC §8).
+type SSHKey struct {
+	ID          int64
+	UserID      int64
+	Fingerprint string // SHA256:... (OpenSSH format)
+	PublicKey   string // authorized_keys line
+	CreatedAt   time.Time
+}
+
 // UserStore is the minimal account access M3 needs (M5/M6 extend it).
 type UserStore interface {
 	CreateUser(ctx context.Context, login, displayName, role string) (User, error)
 	GetUserByLogin(ctx context.Context, login string) (User, error)
+	GetUserByID(ctx context.Context, id int64) (User, error)
+	ListUsers(ctx context.Context) ([]User, error)               // ordered by login
+	SetUserState(ctx context.Context, login, state string) error // active | disabled; error if user unknown
+	// IssueToken replaces any existing tokens of the user with one new
+	// personal access token and returns its plaintext exactly once.
+	IssueToken(ctx context.Context, userID int64) (string, error)
+	// VerifyToken resolves a plaintext token to its ACTIVE user;
+	// ok=false for unknown tokens and disabled users. Best-effort
+	// bumps tokens.last_used_at.
+	VerifyToken(ctx context.Context, plaintext string) (User, bool, error)
+	AddSSHKey(ctx context.Context, userID int64, fingerprint, publicKey string) (SSHKey, error)
+	ListSSHKeys(ctx context.Context, userID int64) ([]SSHKey, error)
+	// UserByFingerprint resolves an SSH key fingerprint to its ACTIVE user.
+	UserByFingerprint(ctx context.Context, fingerprint string) (User, bool, error)
 }
 
 // Event is one audit-log entry (SPEC §12).
@@ -104,7 +127,8 @@ type SubmissionResult struct {
 	Raw     float64
 	Penalty float64
 	Final   float64
-	Note    string
+	Note    string // worker note, e.g. tamper notes (SPEC §6.1)
+	LogDir  string
 	Checks  []CheckRow
 }
 

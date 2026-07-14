@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -21,6 +22,9 @@ var _ Store = (*DB)(nil)
 // Open opens (creating if needed) the anygrade database in dataDir and applies
 // pending migrations.
 func Open(ctx context.Context, dataDir string) (*DB, error) {
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create data dir: %w", err)
+	}
 	path := filepath.Join(dataDir, "anygrade.db")
 	// _txlock=immediate: every transaction takes the write lock upfront,
 	// avoiding lock-upgrade deadlocks. busy_timeout is a backstop only:
