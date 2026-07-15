@@ -1,0 +1,32 @@
+{{define "content"}}
+<p class="crumbs"><a href="/">tasks</a> / <a href="/tasks/{{.Sub.TaskID}}">{{.TaskName}}</a> / submission #{{.Sub.ID}}</p>
+<div {{if .Running}}hx-ext="sse" sse-connect="/submissions/{{.Sub.ID}}/stream"{{end}}>
+  <h1>Submission #{{.Sub.ID}}
+    <span id="sub-status" {{if .Running}}sse-swap="status" hx-swap="innerHTML"{{end}}>
+      <span class="badge {{statusClass .Sub.Status}}">{{.Sub.Status}}</span>
+    </span>
+  </h1>
+  <p class="meta">
+    <span>commit {{printf "%.12s" .Sub.CommitSHA}}</span>
+    <span>received {{fmtTime .Sub.ReceivedAt}}</span>
+    {{if .Sub.AttemptNo}}<span>attempt {{.Sub.AttemptNo}}</span>{{end}}
+  </p>
+
+  <div id="results"
+       {{if .Running}}hx-trigger="sse:done" hx-get="/submissions/{{.Sub.ID}}/fragment" hx-swap="innerHTML"{{end}}>
+    {{template "sub-results" .}}
+  </div>
+
+  {{if .Running}}
+  <section class="live">
+    <h2>Live output</h2>
+    {{range .Panes}}
+    <details class="pane" open>
+      <summary>{{.Name}}</summary>
+      <pre sse-swap="log{{.Index}}" hx-swap="beforeend"></pre>
+    </details>
+    {{end}}
+  </section>
+  {{end}}
+</div>
+{{end}}

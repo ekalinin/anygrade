@@ -1,0 +1,38 @@
+{{define "content"}}
+<p class="crumbs"><a href="/">tasks</a> / {{.View.Task.Name}}</p>
+<h1>{{.View.Task.Name}} <span class="badge {{statusClass .View.Status}}">{{.View.Status}}</span></h1>
+{{if .Flash}}<p class="flash">{{.Flash}}</p>{{end}}
+
+<section class="meta">
+  <span>score: {{if .View.Score}}{{score .View.Score}}{{else}}&mdash;{{end}} / {{.View.Task.Score}}</span>
+  {{if .View.Task.Deadline.Soft}}<span>soft deadline: {{fmtTime .View.Task.Deadline.Soft}} ({{countdown .View.Task.Deadline.Soft}})</span>{{end}}
+  {{if .View.Task.Deadline.Hard}}<span>hard deadline: {{fmtTime .View.Task.Deadline.Hard}} ({{countdown .View.Task.Deadline.Hard}})</span>{{end}}
+  <span>attempts: {{.View.Attempts}}{{if not .Quota.Unlimited}} of {{.View.Task.Limits.MaxAttempts}}{{end}}</span>
+  {{if .Quota.CooldownUntil}}<span class="cooldown">cooldown until {{fmtTime .Quota.CooldownUntil}}</span>{{end}}
+</section>
+
+<article class="statement">{{.Statement}}</article>
+
+<section>
+  <h2>Submissions</h2>
+  <form method="post" action="/tasks/{{.View.Task.ID}}/recheck" class="inline">
+    <button type="submit" {{if not .Quota.CanRecheck}}disabled title="nothing to recheck, or limits reached"{{end}}>recheck latest</button>
+  </form>
+  {{if .History}}
+  <table class="history">
+    <thead><tr><th>#</th><th>Attempt</th><th>Status</th><th>Score</th><th>Received</th></tr></thead>
+    <tbody>
+    {{range .History}}
+    <tr>
+      <td><a href="/submissions/{{.ID}}">#{{.ID}}</a></td>
+      <td>{{if .AttemptNo}}{{.AttemptNo}}{{else}}&mdash;{{end}}</td>
+      <td><span class="badge {{statusClass .Status}}">{{.Status}}</span></td>
+      <td>{{if .FinalScore}}{{score .FinalScore}}{{else}}&mdash;{{end}}</td>
+      <td>{{fmtTime .ReceivedAt}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}<p class="hint">No submissions yet: push your solution to your personal repo.</p>{{end}}
+</section>
+{{end}}

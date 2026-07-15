@@ -157,6 +157,26 @@ func (s *DB) ListByUserTask(ctx context.Context, userID int64, taskID string) ([
 	return subs, rows.Err()
 }
 
+// ListByUser implements SubmissionStore.
+func (s *DB) ListByUser(ctx context.Context, userID int64) ([]Submission, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+submissionCols+` FROM submissions
+		WHERE user_id = ? ORDER BY task_id ASC, received_at ASC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var subs []Submission
+	for rows.Next() {
+		sub, err := scanSubmission(rows)
+		if err != nil {
+			return nil, err
+		}
+		subs = append(subs, sub)
+	}
+	return subs, rows.Err()
+}
+
 // GetSubmission implements SubmissionStore.
 func (s *DB) GetSubmission(ctx context.Context, id int64) (Submission, []CheckRow, error) {
 	row := s.db.QueryRowContext(ctx,

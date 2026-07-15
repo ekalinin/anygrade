@@ -71,7 +71,14 @@ func (p *Prep) Prepare(ctx context.Context, sub store.Submission) (queue.Prepare
 			RunAsGID:      -1,
 		},
 		Task:   task,
-		LogDir: filepath.Join(p.DataDir, "logs", strconv.FormatInt(sub.ID, 10)),
+		LogDir: SubmissionLogDir(p.DataDir, sub.ID),
 		Note:   strings.Join(notes, "\n"),
 	}, nil
+}
+
+// SubmissionLogDir is the single source of the per-submission log location:
+// prep points the runner here, and the web layer tails it while the run is
+// live (submissions.log_dir is only persisted at finish).
+func SubmissionLogDir(dataDir string, subID int64) string {
+	return filepath.Join(dataDir, "logs", strconv.FormatInt(subID, 10))
 }

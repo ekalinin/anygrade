@@ -1,0 +1,11 @@
+{{define "task-row"}}<tr sse-swap="task-{{.Task.ID}}" hx-swap="outerHTML">
+  <td><a href="/tasks/{{.Task.ID}}">{{.Task.Name}}</a></td>
+  <td><span class="badge {{statusClass .Status}}">{{.Status}}</span></td>
+  <td>{{if .Score}}{{score .Score}} / {{.Task.Score}}{{else}}&mdash;{{end}}</td>
+  <td>{{.Attempts}}</td>
+  <td>
+    {{if .Task.Deadline.Soft}}<span title="soft deadline">{{fmtTime .Task.Deadline.Soft}} ({{countdown .Task.Deadline.Soft}})</span>
+    {{else if .Task.Deadline.Hard}}<span title="hard deadline">{{fmtTime .Task.Deadline.Hard}} ({{countdown .Task.Deadline.Hard}})</span>
+    {{else}}&mdash;{{end}}
+  </td>
+</tr>{{end}}

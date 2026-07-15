@@ -1,0 +1,11 @@
+{{define "content"}}
+<h1>Tasks</h1>
+<div hx-ext="sse" sse-connect="/dashboard/stream">
+<table class="tasks">
+  <thead><tr><th>Task</th><th>Status</th><th>Score</th><th>Attempts</th><th>Deadline</th></tr></thead>
+  <tbody>
+  {{range .Tasks}}{{template "task-row" .}}{{end}}
+  </tbody>
+</table>
+</div>
+{{end}}

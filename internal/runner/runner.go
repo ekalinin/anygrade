@@ -117,3 +117,7 @@ func logFileName(name string) string {
 	r := strings.NewReplacer("/", "_", " ", "_", "\t", "_")
 	return r.Replace(name) + ".log"
 }
+
+// LogFileName is logFileName for other packages: the web layer must tail
+// exactly the files the runner writes.
+func LogFileName(name string) string { return logFileName(name) }

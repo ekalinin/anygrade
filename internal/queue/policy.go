@@ -81,3 +81,30 @@ func countsAsAttempt(status string) bool {
 		return false
 	}
 }
+
+// Quota derives the task-page display numbers from the same rules as Admit
+// (single source of truth for the attempt/cooldown math): attempts left
+// (unlimited when max_attempts is 0) and when the active cooldown ends.
+func Quota(t config.ResolvedTask, history []store.Submission, now time.Time) (attemptsLeft int, unlimited bool, cooldownUntil *time.Time) {
+	consumed := 0
+	var last *time.Time
+	for i := range history {
+		s := &history[i]
+		if !s.Counts || !countsAsAttempt(s.Status) {
+			continue
+		}
+		consumed++
+		if last == nil || s.ReceivedAt.After(*last) {
+			last = &s.ReceivedAt
+		}
+	}
+	if cd := t.Limits.Cooldown; cd > 0 && last != nil {
+		if until := last.Add(cd); now.Before(until) {
+			cooldownUntil = &until
+		}
+	}
+	if t.Limits.MaxAttempts == 0 {
+		return 0, true, cooldownUntil
+	}
+	return max(0, t.Limits.MaxAttempts-consumed), false, cooldownUntil
+}

@@ -1,0 +1,25 @@
+{{define "base"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.CourseName}} - anygrade</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js"></script>
+  <script src="/static/htmx-sse.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">{{.CourseName}}</a>
+  {{if .User.Login}}
+  <nav>
+    <span class="who">{{if .User.DisplayName}}{{.User.DisplayName}}{{else}}{{.User.Login}}{{end}}{{if eq .User.Role "teacher"}} (teacher){{end}}</span>
+    <form method="post" action="/logout" class="inline"><button type="submit" class="linklike">log out</button></form>
+  </nav>
+  {{end}}
+</header>
+<main>
+{{block "content" .}}{{end}}
+</main>
+</body>
+</html>{{end}}

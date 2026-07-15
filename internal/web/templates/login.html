@@ -1,0 +1,13 @@
+{{define "content"}}
+<section class="login">
+  <h1>Sign in</h1>
+  {{if .Error}}<p class="flash error">{{.Error}}</p>{{end}}
+  <form method="post" action="/login">
+    <input type="hidden" name="next" value="{{.Next}}">
+    <label>Login <input name="login" autocomplete="username" required autofocus></label>
+    <label>Access token <input name="token" type="password" autocomplete="current-password" required placeholder="ag_..."></label>
+    <button type="submit">Sign in</button>
+  </form>
+  <p class="hint">Use the personal access token you received at activation.</p>
+</section>
+{{end}}

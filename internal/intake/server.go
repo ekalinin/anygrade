@@ -40,7 +40,16 @@ type Server struct {
 	Queue   *queue.Queue
 	Repos   *gitserver.RepoManager
 	Course  *Holder
-	BaseURL string // submission link prefix in push output; "" = no links
+	BaseURL string          // submission link prefix in push output; "" = no links
+	Events  queue.Publisher // optional live-update sink for rejected rows
+}
+
+// publish mirrors queue.publish for rows intake writes itself (rejections);
+// enqueued rows are published by Queue.Enqueue.
+func (s *Server) publish(sub store.Submission, status string) {
+	if s.Events != nil {
+		s.Events.Publish(queue.Event{SubID: sub.ID, UserID: sub.UserID, TaskID: sub.TaskID, Status: status})
+	}
 }
 
 // ListenAndServe accepts hook connections on the unix socket until ctx is
@@ -271,10 +280,12 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, newSHA str
 			ReceivedAt: now, Counts: d.Counts,
 		}
 		if !d.Admit {
-			if _, err := s.DB.RecordRejected(ctx, ns, d.RejectStatus); err != nil {
+			rej, err := s.DB.RecordRejected(ctx, ns, d.RejectStatus)
+			if err != nil {
 				lines = append(lines, fmt.Sprintf("  %-*s error: %v", width, id, err))
 				continue
 			}
+			s.publish(rej, d.RejectStatus)
 			lines = append(lines, fmt.Sprintf("  %-*s rejected: %s", width, id, d.RejectReason))
 			continue
 		}

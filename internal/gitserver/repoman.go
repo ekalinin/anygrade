@@ -4,6 +4,7 @@ package gitserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,6 +22,11 @@ const defaultMaxInputSize = 50 << 20
 // loginRe validates a student login before it is used as a filesystem path
 // component: lowercase, starts alphanumeric, no "..".
 var loginRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
+
+// ErrMirrorRefresh marks a failed mirror refresh from the --repo working
+// copy. The mirror is the source of truth (teachers push to it directly),
+// so a stale working copy is expected and non-fatal.
+var ErrMirrorRefresh = errors.New("course mirror refresh skipped")
 
 // RepoManager provisions and locates the bare repos in the data dir.
 type RepoManager struct {
@@ -54,6 +60,7 @@ func (m *RepoManager) maxInputSize() int64 {
 // unconditionally so a HookBin move is picked up.
 func (m *RepoManager) EnsureCourse(ctx context.Context, srcRepo string) error {
 	dir := m.CourseDir()
+	var refreshErr error
 	if _, err := os.Stat(dir); err != nil {
 		if !os.IsNotExist(err) {
 			return err
@@ -66,9 +73,11 @@ func (m *RepoManager) EnsureCourse(ctx context.Context, srcRepo string) error {
 		}
 	} else {
 		// Non-forced fetch: teacher pushes to the mirror must never be
-		// rolled back by a stale working copy.
+		// rolled back by a stale working copy. The mirror being AHEAD of
+		// --repo is normal after teacher pushes, so this is reported via
+		// the sentinel (after hooks/config are still refreshed below).
 		if _, err := runGit(ctx, dir, "fetch", srcRepo, "refs/heads/*:refs/heads/*"); err != nil {
-			return fmt.Errorf("refresh course mirror (non-fast-forward from %s?): %w", srcRepo, err)
+			refreshErr = fmt.Errorf("%w (mirror ahead of %s?): %v", ErrMirrorRefresh, srcRepo, err)
 		}
 	}
 
@@ -81,7 +90,7 @@ func (m *RepoManager) EnsureCourse(ctx context.Context, srcRepo string) error {
 	if err := installHook(dir, "post-receive", "post-receive", m.HookBin); err != nil {
 		return err
 	}
-	return nil
+	return refreshErr
 }
 
 // EnsureStudent creates (or reuses) the bare repo for login, cloned from the

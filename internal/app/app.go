@@ -19,6 +19,7 @@ import (
 	"github.com/ekalinin/anygrade/internal/intake"
 	"github.com/ekalinin/anygrade/internal/queue"
 	"github.com/ekalinin/anygrade/internal/store"
+	"github.com/ekalinin/anygrade/internal/web"
 )
 
 // Options are the `anygrade serve` settings (SPEC §11).
@@ -62,7 +63,10 @@ func Run(ctx context.Context, opts Options) error {
 
 	repos := &gitserver.RepoManager{DataDir: opts.DataDir, HookBin: hookBin}
 	if err := repos.EnsureCourse(ctx, opts.RepoDir); err != nil {
-		return err
+		if !errors.Is(err, gitserver.ErrMirrorRefresh) {
+			return err
+		}
+		fmt.Fprintf(logw, "anygrade: warning: %v; serving the mirror as is\n", err)
 	}
 	course, diags, err := intake.LoadCourse(ctx, repos.CourseDir())
 	if err != nil {
@@ -93,21 +97,33 @@ func Run(ctx context.Context, opts Options) error {
 	}
 
 	socket := filepath.Join(opts.DataDir, "anygrade.sock")
+	hub := web.NewHub()
 	q := &queue.Queue{
 		Store:   db,
 		Prep:    &intake.Prep{Repos: repos, Users: db, Course: holder, DataDir: opts.DataDir},
 		Workers: opts.Workers,
+		Events:  hub,
 	}
 	ic := &intake.Server{
 		DB: db, Queue: q, Repos: repos, Course: holder,
 		BaseURL: baseURL(opts),
+		Events:  hub,
 	}
 	auth := storeAuth{db}
+	site := web.New(&web.Handler{
+		DB:     db,
+		Course: holder,
+		Hub:    hub,
+		// intake.Server implements Recheck; web stays git-free.
+		Recheck: ic,
+		ReadCourseFile: func(ctx context.Context, commit, relPath string) ([]byte, bool, error) {
+			return gitserver.GitSource{Dir: repos.CourseDir(), Commit: commit}.File(ctx, relPath)
+		},
+		DataDir: opts.DataDir,
+	})
 	mux := http.NewServeMux()
 	mux.Handle("/git/", &gitserver.HTTPHandler{Repos: repos, Auth: auth, Socket: socket, Local: localID})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintln(w, "anygrade: web UI lands in M5; git endpoints are under /git/")
-	})
+	mux.Handle("/", site)
 	httpSrv := &http.Server{Addr: opts.HTTPAddr, Handler: mux}
 	sshSrv := &gitserver.SSHServer{
 		Repos: repos, Auth: auth, Socket: socket,

@@ -24,6 +24,7 @@ const (
 type Store interface {
 	SubmissionStore
 	UserStore
+	SessionStore
 	AuditStore
 	io.Closer
 }
@@ -65,6 +66,13 @@ type UserStore interface {
 	ListSSHKeys(ctx context.Context, userID int64) ([]SSHKey, error)
 	// UserByFingerprint resolves an SSH key fingerprint to its ACTIVE user.
 	UserByFingerprint(ctx context.Context, fingerprint string) (User, bool, error)
+}
+
+// SessionStore persists browser sessions (SPEC §8: token login → cookie).
+type SessionStore interface {
+	CreateSession(ctx context.Context, userID int64, tokenPlaintext string, ttl time.Duration) (string, error)
+	LookupSession(ctx context.Context, id string) (User, bool, error)
+	DeleteSession(ctx context.Context, id string) error
 }
 
 // Event is one audit-log entry (SPEC §12).
@@ -157,6 +165,9 @@ type SubmissionStore interface {
 	Requeue(ctx context.Context, id int64) error
 
 	ListByUserTask(ctx context.Context, userID int64, taskID string) ([]Submission, error)
+	// ListByUser returns every submission of one user, ordered by task then
+	// time (dashboard read model).
+	ListByUser(ctx context.Context, userID int64) ([]Submission, error)
 	GetSubmission(ctx context.Context, id int64) (Submission, []CheckRow, error)
 	// NextRetryAt returns the earliest pending retry_at, nil if none.
 	NextRetryAt(ctx context.Context) (*time.Time, error)

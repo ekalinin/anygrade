@@ -39,6 +39,7 @@ type Queue struct {
 	Prep      JobPrep
 	NewRunner func(config.ResolvedRunner) (runner.Runner, error)
 	Workers   int
+	Events    Publisher // optional live-update sink; nil = disabled
 
 	// Backoff schedule for infra errors: min(Base<<retries, Cap), then after
 	// MaxRetries the submission becomes terminal infra_error (SPEC §13).
@@ -86,8 +87,17 @@ func (q *Queue) Enqueue(ctx context.Context, ns store.NewSubmission) (store.Subm
 	if err != nil {
 		return store.Submission{}, err
 	}
+	q.publish(sub, store.StatusQueued)
 	q.wake()
 	return sub, nil
+}
+
+// publish notifies the optional live-update sink after a DB write. Whoever
+// writes the row publishes; delivery is best-effort by contract.
+func (q *Queue) publish(sub store.Submission, status string) {
+	if q.Events != nil {
+		q.Events.Publish(Event{SubID: sub.ID, UserID: sub.UserID, TaskID: sub.TaskID, Status: status})
+	}
 }
 
 func (q *Queue) wake() {
@@ -140,6 +150,7 @@ func (q *Queue) workerLoop(ctx context.Context) {
 // process runs one claimed submission through prepare → assemble → run →
 // score → persist. No DB transaction is ever held across the check run.
 func (q *Queue) process(ctx context.Context, sub store.Submission) {
+	q.publish(sub, store.StatusRunning)
 	p, err := q.Prep.Prepare(ctx, sub)
 	if err != nil {
 		if errors.Is(err, ErrTaskGone) {
@@ -210,7 +221,9 @@ func (q *Queue) process(ctx context.Context, sub store.Submission) {
 	})
 	if err != nil {
 		q.retry(ctx, sub, err)
+		return
 	}
+	q.publish(sub, store.StatusDone)
 }
 
 // retry schedules an infra_error retry with exponential backoff and jitter;
@@ -226,10 +239,12 @@ func (q *Queue) retry(ctx context.Context, sub store.Submission, cause error) {
 	delay += time.Duration((rand.Float64() - 0.5) * 0.2 * float64(delay))
 	at := time.Now().Add(delay)
 	_ = q.Store.ScheduleRetry(ctx, sub.ID, &at, note)
+	q.publish(sub, store.StatusInfraError)
 }
 
 func (q *Queue) terminal(ctx context.Context, sub store.Submission, note string) {
 	_ = q.Store.ScheduleRetry(ctx, sub.ID, nil, note)
+	q.publish(sub, store.StatusInfraError)
 }
 
 // requeue survives ctx cancellation: it must run even during shutdown.
@@ -237,6 +252,7 @@ func (q *Queue) requeue(sub store.Submission) {
 	rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = q.Store.Requeue(rctx, sub.ID)
+	q.publish(sub, store.StatusQueued)
 }
 
 func deadlineOf(t config.ResolvedTask) scoring.Deadline {
