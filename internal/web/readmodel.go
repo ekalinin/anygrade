@@ -5,19 +5,13 @@ import (
 	"time"
 
 	"github.com/ekalinin/anygrade/internal/config"
+	"github.com/ekalinin/anygrade/internal/gradebook"
 	"github.com/ekalinin/anygrade/internal/intake"
 	"github.com/ekalinin/anygrade/internal/store"
 )
 
-// Task display statuses (SPEC §10). "retrying"/"error" refine infra_error:
-// students should not see a permanently-"queued" task when the queue gave up.
-const (
-	StatusNotStarted = "not started"
-	StatusRetrying   = "retrying"
-	StatusError      = "error"
-)
-
-// TaskView is one dashboard row / task-page header.
+// TaskView is one dashboard row / task-page header. Status/score derivation
+// lives in gradebook (shared with the matrix and CSV export).
 type TaskView struct {
 	Task     config.ResolvedTask
 	Status   string
@@ -26,75 +20,13 @@ type TaskView struct {
 	Latest   *store.Submission
 }
 
-// deriveStatus maps a task's submission history to its display status.
-// history is ordered by received_at ascending (store list order).
-func deriveStatus(history []store.Submission, taskScore int) string {
-	if len(history) == 0 {
-		return StatusNotStarted
-	}
-	last := history[len(history)-1]
-	switch last.Status {
-	case store.StatusQueued:
-		return store.StatusQueued
-	case store.StatusRunning:
-		return store.StatusRunning
-	case store.StatusInfraError:
-		if last.RetryAt == nil {
-			return StatusError // terminal: surfaced to the teacher (M6 queue view)
-		}
-		return StatusRetrying
-	case store.StatusRejectedDeadline, store.StatusRejectedLimit:
-		return "rejected"
-	}
-	// done: passed / partial / failed by the final score.
-	final := 0.0
-	if last.FinalScore != nil {
-		final = *last.FinalScore
-	}
-	switch {
-	case final >= float64(taskScore):
-		return "passed"
-	case final > 0:
-		return "partial"
-	default:
-		return "failed"
-	}
-}
-
-// displayScore picks the shown score per the course scoring policy
-// (SPEC §9: best|latest over done submissions).
-func displayScore(history []store.Submission, policy string) *float64 {
-	var score *float64
-	for i := range history {
-		s := &history[i]
-		if s.Status != store.StatusDone || s.FinalScore == nil {
-			continue
-		}
-		if policy == "latest" || score == nil || *s.FinalScore > *score {
-			score = s.FinalScore
-		}
-	}
-	return score
-}
-
-// countAttempts mirrors the queue policy's counting rule for display.
-func countAttempts(history []store.Submission) int {
-	n := 0
-	for _, s := range history {
-		if s.Counts && s.Status != store.StatusRejectedDeadline && s.Status != store.StatusRejectedLimit {
-			n++
-		}
-	}
-	return n
-}
-
 // buildTaskView assembles one row from a task and its history.
 func buildTaskView(t config.ResolvedTask, history []store.Submission, policy string) TaskView {
 	v := TaskView{
 		Task:     t,
-		Status:   deriveStatus(history, t.Score),
-		Score:    displayScore(history, policy),
-		Attempts: countAttempts(history),
+		Status:   gradebook.DeriveStatus(history, t.Score),
+		Score:    gradebook.DisplayScore(history, policy),
+		Attempts: gradebook.CountAttempts(history),
 	}
 	if len(history) > 0 {
 		v.Latest = &history[len(history)-1]
@@ -116,6 +48,15 @@ func buildDashboard(course *intake.Course, subs []store.Submission) []TaskView {
 		views = append(views, buildTaskView(t, byTask[t.ID], policy))
 	}
 	return views
+}
+
+// taskCols maps course tasks to gradebook columns (matrix, CSV, leaderboard).
+func taskCols(course *intake.Course) []gradebook.TaskCol {
+	cols := make([]gradebook.TaskCol, len(course.Resolved.Tasks))
+	for i, t := range course.Resolved.Tasks {
+		cols[i] = gradebook.TaskCol{ID: t.ID, Name: t.Name, MaxScore: t.Score}
+	}
+	return cols
 }
 
 // countdown renders a compact "in 3d 4h" / "42m overdue" string.

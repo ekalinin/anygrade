@@ -1,0 +1,15 @@
+{{define "content"}}
+<section class="login">
+<h1>Access token for {{.Login}}</h1>
+<p class="flash">Store this token now; it is shown only once.</p>
+<p><code class="token">{{.Token}}</code></p>
+{{if .WithGitSetup}}
+<h2>Repository setup</h2>
+<pre>git clone {{.URLs.Clone}}
+git remote add upstream {{.URLs.Upstream}}
+# later: git pull upstream main</pre>
+<p class="hint">Use your login as the username and this token as the password for git over HTTP.</p>
+{{end}}
+<p><a href="/">Continue to the dashboard</a></p>
+</section>
+{{end}}

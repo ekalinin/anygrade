@@ -1,0 +1,16 @@
+{{define "content"}}
+<h1>Matrix <a class="linklike-a" href="/export/scores.csv">export CSV</a></h1>
+<div hx-ext="sse" sse-connect="/matrix/stream">
+<table class="matrix">
+  <thead><tr>
+    <th>Student</th>
+    {{range .Matrix.Tasks}}<th title="{{.Name}}">{{.ID}}<br><span class="hint">/{{.MaxScore}}</span></th>{{end}}
+    <th>Total</th>
+  </tr></thead>
+  <tbody>
+  {{$tasks := .Matrix.Tasks}}
+  {{range .Matrix.Rows}}{{template "matrix-row" (dict "Row" . "Tasks" $tasks)}}{{end}}
+  </tbody>
+</table>
+</div>
+{{end}}

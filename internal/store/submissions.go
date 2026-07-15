@@ -10,7 +10,7 @@ import (
 
 const submissionCols = `id, user_id, task_id, commit_sha, received_at, attempt_no,
 	counts, status, raw_score, penalty_percent, final_score, log_dir,
-	worker_note, retries, retry_at, started_at`
+	worker_note, retries, retry_at, started_at, canceled_at`
 
 // Enqueue implements SubmissionStore. attempt_no is assigned inside the INSERT
 // so concurrent enqueues cannot race (all writes serialize on one connection).
@@ -94,16 +94,18 @@ func (s *DB) FinishSubmission(ctx context.Context, id int64, res SubmissionResul
 			return err
 		}
 	}
+	// The status guard closes the teacher-cancel race: once CancelSubmission
+	// flipped the row terminal, a late finish must not resurrect it as done.
 	result, err := tx.ExecContext(ctx, `
 		UPDATE submissions SET status = ?, raw_score = ?, penalty_percent = ?,
 		  final_score = ?, worker_note = ?, log_dir = ?, retry_at = NULL
-		WHERE id = ?`,
+		WHERE id = ? AND status = 'running'`,
 		res.Status, res.Raw, res.Penalty, res.Final, res.Note, res.LogDir, id)
 	if err != nil {
 		return err
 	}
 	if n, _ := result.RowsAffected(); n == 0 {
-		return fmt.Errorf("FinishSubmission: submission %d not found", id)
+		return fmt.Errorf("FinishSubmission: submission %d not found or not running", id)
 	}
 	return tx.Commit()
 }
@@ -218,6 +220,65 @@ func (s *DB) NextRetryAt(ctx context.Context) (*time.Time, error) {
 	return parseTimePtr(v)
 }
 
+// CancelSubmission implements SubmissionStore.
+func (s *DB) CancelSubmission(ctx context.Context, id int64, now time.Time) (Submission, bool, error) {
+	row := s.db.QueryRowContext(ctx, `
+		UPDATE submissions SET status = 'infra_error', retry_at = NULL, counts = 0,
+		  canceled_at = ?, worker_note = 'canceled by teacher'
+		WHERE id = ? AND status IN ('queued','running')
+		RETURNING `+submissionCols,
+		fmtTime(now), id)
+	sub, err := scanSubmission(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Submission{}, false, nil
+	}
+	if err != nil {
+		return Submission{}, false, err
+	}
+	return sub, true, nil
+}
+
+// ListAllSubmissions implements SubmissionStore.
+func (s *DB) ListAllSubmissions(ctx context.Context) ([]Submission, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+submissionCols+` FROM submissions
+		ORDER BY user_id ASC, task_id ASC, received_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var subs []Submission
+	for rows.Next() {
+		sub, err := scanSubmission(rows)
+		if err != nil {
+			return nil, err
+		}
+		subs = append(subs, sub)
+	}
+	return subs, rows.Err()
+}
+
+// ListActive implements SubmissionStore (teacher queue view).
+func (s *DB) ListActive(ctx context.Context) ([]Submission, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT `+submissionCols+` FROM submissions
+		WHERE status IN ('queued','running','infra_error')
+		ORDER BY received_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var subs []Submission
+	for rows.Next() {
+		sub, err := scanSubmission(rows)
+		if err != nil {
+			return nil, err
+		}
+		subs = append(subs, sub)
+	}
+	return subs, rows.Err()
+}
+
 // scanner covers both *sql.Row and *sql.Rows.
 type scanner interface {
 	Scan(dest ...any) error
@@ -225,13 +286,14 @@ type scanner interface {
 
 func scanSubmission(row scanner) (Submission, error) {
 	var (
-		sub                Submission
-		receivedAt         string
-		retryAt, startedAt *string
+		sub                            Submission
+		receivedAt                     string
+		retryAt, startedAt, canceledAt *string
 	)
 	err := row.Scan(&sub.ID, &sub.UserID, &sub.TaskID, &sub.CommitSHA, &receivedAt,
 		&sub.AttemptNo, &sub.Counts, &sub.Status, &sub.RawScore, &sub.PenaltyPercent,
-		&sub.FinalScore, &sub.LogDir, &sub.WorkerNote, &sub.Retries, &retryAt, &startedAt)
+		&sub.FinalScore, &sub.LogDir, &sub.WorkerNote, &sub.Retries, &retryAt, &startedAt,
+		&canceledAt)
 	if err != nil {
 		return Submission{}, err
 	}
@@ -242,6 +304,9 @@ func scanSubmission(row scanner) (Submission, error) {
 		return Submission{}, err
 	}
 	if sub.StartedAt, err = parseTimePtr(startedAt); err != nil {
+		return Submission{}, err
+	}
+	if sub.CanceledAt, err = parseTimePtr(canceledAt); err != nil {
 		return Submission{}, err
 	}
 	return sub, nil

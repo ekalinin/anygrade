@@ -72,3 +72,16 @@ button[type="submit"] {
 }
 button[type="submit"]:disabled { background: var(--muted); border-color: var(--muted); cursor: not-allowed; }
 .scoreline { font-size: 1.05rem; }
+
+.topbar nav a { color: var(--fg); text-decoration: none; }
+.topbar nav a:hover { text-decoration: underline; }
+.matrix td.cell { white-space: nowrap; }
+.matrix .ovr { color: var(--warn); font-weight: 700; }
+.matrix .cell-link { text-decoration: none; }
+.leaderboard tr.self { background: #fff9e6; }
+.admin-actions { display: flex; gap: .75rem; margin: .5rem 0 1rem; }
+.override-form input[name="score"] { width: 5rem; }
+.override-form input[name="comment"] { width: 9rem; }
+.admin-cell { white-space: nowrap; }
+.filelist { list-style: none; padding-left: 0; }
+.token { font-size: 1.05rem; word-break: break-all; }

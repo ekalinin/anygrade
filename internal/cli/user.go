@@ -2,14 +2,18 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/ekalinin/anygrade/internal/ident"
 	"github.com/ekalinin/anygrade/internal/store"
 )
 
@@ -32,6 +36,8 @@ func cmdUser(args []string) int {
 		err = userResetToken(rest)
 	case "add-key":
 		err = userAddKey(rest)
+	case "invite":
+		err = userInvite(rest)
 	default:
 		printUserUsage()
 		return 2
@@ -44,7 +50,7 @@ func cmdUser(args []string) int {
 }
 
 func printUserUsage() {
-	fmt.Fprintln(os.Stderr, "usage: anygrade user <add|list|remove|reset-token|add-key> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: anygrade user <add|list|remove|reset-token|add-key|invite> [flags]")
 }
 
 func userAdd(args []string) error {
@@ -58,6 +64,9 @@ func userAdd(args []string) error {
 	}
 	if *login == "" {
 		return fmt.Errorf("--login is required")
+	}
+	if !ident.ValidLogin(*login) {
+		return fmt.Errorf("invalid login %q (lowercase letters, digits, ._-)", *login)
 	}
 	if *role != "student" && *role != "teacher" {
 		return fmt.Errorf("--role must be student or teacher, got %q", *role)
@@ -208,4 +217,68 @@ func userAddKey(args []string) error {
 
 	fmt.Printf("key %s added for %s\n", fingerprint, u.Login)
 	return nil
+}
+
+func userInvite(args []string) error {
+	fs := flag.NewFlagSet("user invite", flag.ContinueOnError)
+	login := fs.String("login", "", "user login")
+	name := fs.String("name", "", "display name")
+	role := fs.String("role", "student", "role: student|teacher")
+	expires := fs.Duration("expires", 336*time.Hour, "invite validity duration")
+	baseURL := fs.String("base-url", "http://localhost:8080", "base URL for the invite link")
+	dataDir := fs.String("data-dir", ".anygrade", "anygrade data directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *login == "" {
+		return fmt.Errorf("--login is required")
+	}
+	if !ident.ValidLogin(*login) {
+		return fmt.Errorf("invalid login %q (lowercase letters, digits, ._-)", *login)
+	}
+	if *role != "student" && *role != "teacher" {
+		return fmt.Errorf("--role must be student or teacher, got %q", *role)
+	}
+
+	ctx := context.Background()
+	db, err := store.Open(ctx, *dataDir)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	u, err := db.CreateUser(ctx, *login, *name, *role)
+	if err != nil {
+		// A re-invite of an existing user is fine; any other error is fatal.
+		if !strings.Contains(err.Error(), "UNIQUE constraint") {
+			return err
+		}
+		u, err = db.GetUserByLogin(ctx, *login)
+		if err != nil {
+			return err
+		}
+	}
+
+	plaintext, err := newInviteToken()
+	if err != nil {
+		return err
+	}
+	expiresAt := time.Now().Add(*expires)
+	if err := db.CreateInvite(ctx, u.ID, plaintext, expiresAt); err != nil {
+		return err
+	}
+
+	fmt.Printf("invite for %s: %s/invite/%s\n", u.Login, *baseURL, plaintext)
+	fmt.Printf("expires: %s\n", expiresAt.Format(time.RFC3339))
+	fmt.Println("the link is one-shot; it lets the student set up a token and SSH key")
+	return nil
+}
+
+// newInviteToken returns a fresh "inv_"-prefixed random token.
+func newInviteToken() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return "inv_" + hex.EncodeToString(buf), nil
 }

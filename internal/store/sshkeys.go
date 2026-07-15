@@ -54,6 +54,14 @@ func (s *DB) UserByFingerprint(ctx context.Context, fingerprint string) (User, b
 	return u, true, nil
 }
 
+// DeleteSSHKey implements UserStore; scoping to userID prevents cross-user
+// deletes from a forged form.
+func (s *DB) DeleteSSHKey(ctx context.Context, userID, keyID int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM ssh_keys WHERE id = ? AND user_id = ?`, keyID, userID)
+	return err
+}
+
 func scanSSHKey(row scanner) (SSHKey, error) {
 	var k SSHKey
 	var createdAt string

@@ -9,19 +9,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/ekalinin/anygrade/internal/ident"
 )
 
 // defaultMaxInputSize is the receive.maxInputSize applied when
 // RepoManager.MaxInputSize is unset.
 const defaultMaxInputSize = 50 << 20
-
-// loginRe validates a student login before it is used as a filesystem path
-// component: lowercase, starts alphanumeric, no "..".
-var loginRe = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
 // ErrMirrorRefresh marks a failed mirror refresh from the --repo working
 // copy. The mirror is the source of truth (teachers push to it directly),
@@ -96,7 +93,7 @@ func (m *RepoManager) EnsureCourse(ctx context.Context, srcRepo string) error {
 // EnsureStudent creates (or reuses) the bare repo for login, cloned from the
 // course mirror on first use. Provisioning for a given login is serialized.
 func (m *RepoManager) EnsureStudent(ctx context.Context, login string) (string, error) {
-	if !loginRe.MatchString(login) || strings.Contains(login, "..") {
+	if !ident.ValidLogin(login) {
 		return "", fmt.Errorf("invalid login %q", login)
 	}
 

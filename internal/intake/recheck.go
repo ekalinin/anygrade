@@ -19,6 +19,32 @@ var ErrNothingToRecheck = errors.New("no graded commit to recheck")
 // recheck button; student-initiated, so it goes through Admit and counts
 // against max_attempts and cooldown). Living here keeps git out of web.
 func (s *Server) Recheck(ctx context.Context, userID int64, taskID string) (store.Submission, queue.Decision, error) {
+	return s.recheck(ctx, userID, taskID, false)
+}
+
+// TeacherRecheck re-grades a student's latest counting commit on a teacher's
+// behalf: Admit(teacherRecheck=true) bypasses limits and deadlines, and the
+// submission never consumes an attempt (SPEC §6).
+func (s *Server) TeacherRecheck(ctx context.Context, actor store.User, targetUserID int64, taskID string) (store.Submission, error) {
+	if actor.Role != "teacher" {
+		return store.Submission{}, fmt.Errorf("recheck: %q is not a teacher", actor.Login)
+	}
+	sub, _, err := s.recheck(ctx, targetUserID, taskID, true)
+	if err != nil {
+		return store.Submission{}, err
+	}
+	target, terr := s.DB.GetUserByID(ctx, targetUserID)
+	if terr == nil {
+		_ = s.DB.Log(ctx, store.Event{
+			ActorID: &actor.ID, Kind: "recheck",
+			Target: target.Login + "/" + taskID,
+			Detail: fmt.Sprintf("teacher recheck #%d", sub.ID),
+		})
+	}
+	return sub, nil
+}
+
+func (s *Server) recheck(ctx context.Context, userID int64, taskID string, teacher bool) (store.Submission, queue.Decision, error) {
 	task, _, ok := s.Course.Get().Task(taskID)
 	if !ok {
 		return store.Submission{}, queue.Decision{}, fmt.Errorf("unknown task %q", taskID)
@@ -43,7 +69,7 @@ func (s *Server) Recheck(ctx context.Context, userID int64, taskID string) (stor
 	}
 
 	now := time.Now()
-	d := queue.Admit(task, history, now, false)
+	d := queue.Admit(task, history, now, teacher)
 	ns := store.NewSubmission{
 		UserID: userID, TaskID: taskID, CommitSHA: commit,
 		ReceivedAt: now, Counts: d.Counts,

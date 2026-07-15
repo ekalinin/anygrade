@@ -13,6 +13,13 @@
   <a class="brand" href="/">{{.CourseName}}</a>
   {{if .User.Login}}
   <nav>
+    {{if eq .User.Role "teacher"}}
+    <a href="/matrix">matrix</a>
+    <a href="/queue">queue</a>
+    <a href="/students">students</a>
+    {{end}}
+    <a href="/leaderboard">leaderboard</a>
+    <a href="/settings">settings</a>
     <span class="who">{{if .User.DisplayName}}{{.User.DisplayName}}{{else}}{{.User.Login}}{{end}}{{if eq .User.Role "teacher"}} (teacher){{end}}</span>
     <form method="post" action="/logout" class="inline"><button type="submit" class="linklike">log out</button></form>
   </nav>

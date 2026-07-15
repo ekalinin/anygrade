@@ -182,6 +182,53 @@ func TestInfraErrorBackoffToTerminal(t *testing.T) {
 	}
 }
 
+// TestTeacherCancelRunning: Queue.Cancel on a live submission kills the run,
+// keeps the row terminal-canceled, and never requeues or resurrects it.
+func TestTeacherCancelRunning(t *testing.T) {
+	q, db, u, prep := newTestQueue(t)
+	prep.task.Checks = []config.Check{{Name: "slow", Weight: 1, Run: "sleep 30"}}
+	prep.task.Runner.Timeout = time.Minute
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = q.Start(ctx) }()
+
+	sub, err := q.Enqueue(ctx, store.NewSubmission{
+		UserID: u.ID, TaskID: "t1", CommitSHA: "abc", ReceivedAt: time.Now(), Counts: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitStatus(t, db, sub.ID, store.StatusRunning)
+
+	ok, err := q.Cancel(t.Context(), sub.ID)
+	if err != nil || !ok {
+		t.Fatalf("Cancel: ok=%v err=%v", ok, err)
+	}
+
+	// Poll for a while: the row must stay terminal-canceled, and the freed
+	// worker must not requeue or resurrect it.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		got, _, err := db.GetSubmission(t.Context(), sub.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != store.StatusInfraError || got.CanceledAt == nil ||
+			got.RetryAt != nil || got.Counts {
+			t.Fatalf("canceled row mutated: %+v", got)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	// Cancel of an already-terminal submission reports ok=false.
+	if ok, err := q.Cancel(context.Background(), sub.ID); ok || err != nil {
+		t.Fatalf("second cancel: ok=%v err=%v", ok, err)
+	}
+}
+
 // TestGracefulShutdownRequeues: cancel during a long check → the submission
 // returns to queued with no retry counted.
 func TestGracefulShutdownRequeues(t *testing.T) {

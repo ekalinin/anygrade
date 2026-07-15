@@ -44,6 +44,22 @@ var funcs = template.FuncMap{
 	"statusClass": func(s string) string {
 		return "st-" + strings.NewReplacer(" ", "-", "_", "-").Replace(s)
 	},
+	// dict builds a payload for partials that need several roots (a struct
+	// on the Go side, a map here: field and key access read the same).
+	"dict": func(pairs ...any) (map[string]any, error) {
+		if len(pairs)%2 != 0 {
+			return nil, fmt.Errorf("dict: odd argument count")
+		}
+		m := make(map[string]any, len(pairs)/2)
+		for i := 0; i < len(pairs); i += 2 {
+			k, ok := pairs[i].(string)
+			if !ok {
+				return nil, fmt.Errorf("dict: key %v is not a string", pairs[i])
+			}
+			m[k] = pairs[i+1]
+		}
+		return m, nil
+	},
 }
 
 // withTime accepts time.Time and *time.Time (templates mix both).
@@ -64,7 +80,11 @@ var pages = func() map[string]*template.Template {
 	base := template.Must(template.New("base").Funcs(funcs).ParseFS(assets,
 		"templates/base.html", "templates/partials/*.html"))
 	m := map[string]*template.Template{}
-	for _, page := range []string{"login", "dashboard", "task", "submission"} {
+	for _, page := range []string{
+		"login", "dashboard", "task", "submission",
+		"matrix", "queue", "students", "student", "code",
+		"leaderboard", "settings", "invite", "register", "token_once",
+	} {
 		clone := template.Must(base.Clone())
 		m[page] = template.Must(clone.ParseFS(assets, "templates/"+page+".html"))
 	}

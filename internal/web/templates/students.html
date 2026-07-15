@@ -1,0 +1,17 @@
+{{define "content"}}
+<h1>Students</h1>
+<table>
+  <thead><tr><th>Login</th><th>Name</th><th>Role</th><th>State</th><th>Created</th></tr></thead>
+  <tbody>
+  {{range .Students}}
+  <tr>
+    <td><a href="/students/{{.Login}}">{{.Login}}</a></td>
+    <td>{{.DisplayName}}</td>
+    <td>{{.Role}}</td>
+    <td><span class="badge {{if eq .State "active"}}st-passed{{else}}st-failed{{end}}">{{.State}}</span></td>
+    <td>{{fmtTime .CreatedAt}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}

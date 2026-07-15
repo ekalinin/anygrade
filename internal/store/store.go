@@ -26,6 +26,8 @@ type Store interface {
 	UserStore
 	SessionStore
 	AuditStore
+	OverrideStore
+	InviteStore
 	io.Closer
 }
 
@@ -66,6 +68,8 @@ type UserStore interface {
 	ListSSHKeys(ctx context.Context, userID int64) ([]SSHKey, error)
 	// UserByFingerprint resolves an SSH key fingerprint to its ACTIVE user.
 	UserByFingerprint(ctx context.Context, fingerprint string) (User, bool, error)
+	// DeleteSSHKey removes one key, scoped to its owner.
+	DeleteSSHKey(ctx context.Context, userID, keyID int64) error
 }
 
 // SessionStore persists browser sessions (SPEC §8: token login → cookie).
@@ -86,6 +90,41 @@ type Event struct {
 // AuditStore records user/teacher actions.
 type AuditStore interface {
 	Log(ctx context.Context, e Event) error
+	// ListEventsByTarget returns recent events for "login" and "login/...",
+	// newest first, capped at limit.
+	ListEventsByTarget(ctx context.Context, login string, limit int) ([]EventRow, error)
+}
+
+// EventRow is one audit entry joined with its actor for display.
+type EventRow struct {
+	ActorLogin string // "" for system
+	Kind       string
+	Target     string
+	Detail     string
+	CreatedAt  time.Time
+}
+
+// ScoreOverride is a teacher-set manual score for (student, task) (SPEC §9).
+type ScoreOverride struct {
+	UserID    int64
+	TaskID    string
+	Score     float64
+	Comment   string
+	TeacherID int64
+	CreatedAt time.Time
+}
+
+// OverrideStore persists manual score overrides; they win over computed
+// scores (SPEC §9).
+type OverrideStore interface {
+	// SetScoreOverride inserts or replaces the override for (userID, taskID).
+	SetScoreOverride(ctx context.Context, o ScoreOverride) error
+	// DeleteScoreOverride removes it; deleting a missing one is a no-op.
+	DeleteScoreOverride(ctx context.Context, userID int64, taskID string) error
+	// GetScoreOverride: ok=false when none is set.
+	GetScoreOverride(ctx context.Context, userID int64, taskID string) (ScoreOverride, bool, error)
+	// ListScoreOverrides returns all overrides (matrix/CSV read model).
+	ListScoreOverrides(ctx context.Context) ([]ScoreOverride, error)
 }
 
 // Submission is one graded unit: (student, task, commit) (SPEC §3, §12).
@@ -106,6 +145,7 @@ type Submission struct {
 	Retries        int        // infra_error retry counter
 	RetryAt        *time.Time // next eligible claim time; nil = none/terminal
 	StartedAt      *time.Time
+	CanceledAt     *time.Time // teacher cancel timestamp (display only)
 }
 
 // NewSubmission is the intake payload; Enqueue assigns ID and AttemptNo.
@@ -171,4 +211,32 @@ type SubmissionStore interface {
 	GetSubmission(ctx context.Context, id int64) (Submission, []CheckRow, error)
 	// NextRetryAt returns the earliest pending retry_at, nil if none.
 	NextRetryAt(ctx context.Context) (*time.Time, error)
+	// CancelSubmission marks a queued/running submission canceled by a
+	// teacher: terminal infra_error, counts=0, canceled_at set (the status
+	// CHECK has no 'canceled'; canceled_at is the display marker). ok=false
+	// when the row is already terminal.
+	CancelSubmission(ctx context.Context, id int64, now time.Time) (Submission, bool, error)
+	// ListAllSubmissions returns every submission across all users, ordered
+	// by user_id, task_id, received_at (matrix + CSV read model).
+	ListAllSubmissions(ctx context.Context) ([]Submission, error)
+	// ListActive returns queued, running, and infra_error submissions
+	// (teacher queue view), newest first.
+	ListActive(ctx context.Context) ([]Submission, error)
+}
+
+// Invite is a one-shot activation link for a tokenless user (SPEC §8).
+type Invite struct {
+	ID        int64
+	UserID    int64
+	ExpiresAt time.Time
+	UsedAt    *time.Time
+}
+
+// InviteStore persists hashed invite tokens.
+type InviteStore interface {
+	CreateInvite(ctx context.Context, userID int64, tokenPlaintext string, expiresAt time.Time) error
+	// VerifyInvite resolves a plaintext token to an unused, unexpired invite.
+	VerifyInvite(ctx context.Context, tokenPlaintext string) (Invite, bool, error)
+	// MarkInviteUsed sets used_at; the invite is one-shot.
+	MarkInviteUsed(ctx context.Context, id int64, now time.Time) error
 }

@@ -14,12 +14,14 @@ type Hub struct {
 	mu    sync.Mutex
 	bySub map[int64]map[chan queue.Event]struct{}
 	byUsr map[int64]map[chan queue.Event]struct{}
+	byAll map[chan queue.Event]struct{} // teacher matrix/queue streams
 }
 
 func NewHub() *Hub {
 	return &Hub{
 		bySub: map[int64]map[chan queue.Event]struct{}{},
 		byUsr: map[int64]map[chan queue.Event]struct{}{},
+		byAll: map[chan queue.Event]struct{}{},
 	}
 }
 
@@ -39,6 +41,25 @@ func (h *Hub) Publish(ev queue.Event) {
 		case ch <- ev:
 		default:
 		}
+	}
+	for ch := range h.byAll {
+		select {
+		case ch <- ev:
+		default:
+		}
+	}
+}
+
+// SubscribeAll delivers every event (teacher matrix and queue views).
+func (h *Hub) SubscribeAll() (<-chan queue.Event, func()) {
+	ch := make(chan queue.Event, 16)
+	h.mu.Lock()
+	h.byAll[ch] = struct{}{}
+	h.mu.Unlock()
+	return ch, func() {
+		h.mu.Lock()
+		delete(h.byAll, ch)
+		h.mu.Unlock()
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/ekalinin/anygrade/internal/gradebook"
 	"github.com/ekalinin/anygrade/internal/intake"
 	"github.com/ekalinin/anygrade/internal/runner"
 	"github.com/ekalinin/anygrade/internal/store"
@@ -135,7 +136,7 @@ func statusBadge(status string) string {
 	label := status
 	switch status {
 	case store.StatusInfraError:
-		label = StatusRetrying
+		label = gradebook.StatusRetrying
 	}
 	return fmt.Sprintf(`<span class="badge st-%s">%s</span>`, label, label)
 }

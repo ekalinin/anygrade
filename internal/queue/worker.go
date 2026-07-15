@@ -51,11 +51,20 @@ type Queue struct {
 
 	notify chan struct{}
 	once   sync.Once
+
+	// Teacher-cancel bookkeeping: running maps live submissions to their
+	// execution cancel funcs; canceling marks teacher cancels so the worker
+	// can tell them apart from a graceful shutdown.
+	mu        sync.Mutex
+	running   map[int64]context.CancelFunc
+	canceling map[int64]bool
 }
 
 func (q *Queue) init() {
 	q.once.Do(func() {
 		q.notify = make(chan struct{}, 1)
+		q.running = make(map[int64]context.CancelFunc)
+		q.canceling = make(map[int64]bool)
 		if q.Workers <= 0 {
 			q.Workers = 4
 		}
@@ -151,6 +160,11 @@ func (q *Queue) workerLoop(ctx context.Context) {
 // score → persist. No DB transaction is ever held across the check run.
 func (q *Queue) process(ctx context.Context, sub store.Submission) {
 	q.publish(sub, store.StatusRunning)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	q.trackStart(sub.ID, cancel)
+	defer q.trackEnd(sub.ID)
+
 	p, err := q.Prep.Prepare(ctx, sub)
 	if err != nil {
 		if errors.Is(err, ErrTaskGone) {
@@ -182,6 +196,9 @@ func (q *Queue) process(ctx context.Context, sub store.Submission) {
 	})
 	if err != nil {
 		if infra, ok := errors.AsType[*runner.InfraError](err); ok && infra.Op == "canceled" {
+			if q.wasCanceled(sub.ID) {
+				return // teacher cancel: the row is already terminal
+			}
 			// Graceful shutdown: back to the queue, no retry counting.
 			q.requeue(sub)
 			return
@@ -215,6 +232,9 @@ func (q *Queue) process(ctx context.Context, sub store.Submission) {
 	pen := scoring.PenaltyPercent(deadlineOf(p.Task), sub.ReceivedAt)
 	final := scoring.FinalScore(raw, pen)
 
+	if q.wasCanceled(sub.ID) {
+		return // canceled after the last check: keep the canceled row
+	}
 	err = q.Store.FinishSubmission(ctx, sub.ID, store.SubmissionResult{
 		Status: store.StatusDone, Raw: raw, Penalty: pen, Final: final,
 		Note: p.Note, LogDir: p.LogDir, Checks: checks,
@@ -226,9 +246,60 @@ func (q *Queue) process(ctx context.Context, sub store.Submission) {
 	q.publish(sub, store.StatusDone)
 }
 
+// Cancel aborts one submission on a teacher's behalf: a queued row just
+// flips terminal in the DB; a running row additionally gets its execution
+// context canceled (the docker runner kills the live container). ok=false
+// when the submission already finished.
+func (q *Queue) Cancel(ctx context.Context, id int64) (bool, error) {
+	q.init()
+	// Mark BEFORE the DB write: if the flip beats a concurrent finish, the
+	// worker must already see the marker on its post-run checks.
+	q.mu.Lock()
+	cancel := q.running[id]
+	if cancel != nil {
+		q.canceling[id] = true
+	}
+	q.mu.Unlock()
+
+	sub, ok, err := q.Store.CancelSubmission(ctx, id, time.Now())
+	if err != nil || !ok {
+		q.mu.Lock()
+		delete(q.canceling, id)
+		q.mu.Unlock()
+		return false, err
+	}
+	if cancel != nil {
+		cancel()
+	}
+	q.publish(sub, "canceled")
+	return true, nil
+}
+
+func (q *Queue) trackStart(id int64, cancel context.CancelFunc) {
+	q.mu.Lock()
+	q.running[id] = cancel
+	q.mu.Unlock()
+}
+
+func (q *Queue) trackEnd(id int64) {
+	q.mu.Lock()
+	delete(q.running, id)
+	delete(q.canceling, id)
+	q.mu.Unlock()
+}
+
+func (q *Queue) wasCanceled(id int64) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.canceling[id]
+}
+
 // retry schedules an infra_error retry with exponential backoff and jitter;
 // after MaxRetries the submission becomes terminal (retry_at NULL).
 func (q *Queue) retry(ctx context.Context, sub store.Submission, cause error) {
+	if q.wasCanceled(sub.ID) {
+		return // never resurrect a teacher-canceled row into the queue
+	}
 	note := cause.Error()
 	if sub.Retries >= q.MaxRetries {
 		q.terminal(ctx, sub, note+" (retries exhausted)")

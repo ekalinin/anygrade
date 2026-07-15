@@ -153,6 +153,21 @@ func (s GitSource) output(ctx context.Context, args ...string) ([]byte, error) {
 	return out, nil
 }
 
+// List returns the sorted repo-relative file paths under dir at the pinned
+// commit (the teacher code view's allowlist).
+func (s GitSource) List(ctx context.Context, dir string) ([]string, error) {
+	blobs, err := s.lsTree(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(blobs))
+	for p := range blobs {
+		paths = append(paths, p)
+	}
+	slices.Sort(paths)
+	return paths, nil
+}
+
 // lsTree maps repo-relative paths under dir to blob SHAs at the pinned commit.
 func (s GitSource) lsTree(ctx context.Context, dir string) (map[string]string, error) {
 	out, err := s.output(ctx, "ls-tree", "-r", s.Commit, "--", dir)
