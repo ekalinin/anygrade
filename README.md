@@ -111,15 +111,21 @@ go build -o anygrade ./cmd/anygrade
 ./anygrade serve --http-addr :8080 --ssh-addr :2222
 ```
 
-Students are registered by invite links (`anygrade user invite --login alice`, or `--csv roster.csv` for a whole group) or self-register with a course code when `registration.mode: open`. The activation page issues a personal token and prints the git setup:
+Students are registered by invite links (`anygrade user invite --login alice`, or `--csv roster.csv` for a whole group) or self-register with a course code when `registration.mode: open`. The activation page issues a personal token and prints the git setup. Two transports are available:
 
 ```sh
-git clone http://host/git/<login>/course.git
-git remote add upstream http://host/git/course.git
+# over HTTP: username = login, password = the token
+git clone http://host:8080/git/<login>/course.git
+git remote add upstream http://host:8080/git/course.git
+
+# or over SSH, once an SSH key is added (at activation or in settings)
+git clone ssh://git@host:2222/<login>/course.git
+git remote add upstream ssh://git@host:2222/course.git
+
 # later: git pull upstream main
 ```
 
-The token is the basic-auth password for git over HTTP and the login credential for the web UI; SSH keys can be added at activation or later in settings. Teachers push course updates to `/git/course.git` - every push is validated and rejected with the error list if the metadata is broken.
+The token is the basic-auth password for git over HTTP and the login credential for the web UI. SSH auth is by key only; the token is not asked for. Teachers push course updates to `/git/course.git` - every push is validated and rejected with the error list if the metadata is broken.
 
 Rechecks: a commit message marker `[recheck <task-id>]` (works with an empty commit) or the recheck button on the task page. Student rechecks count against attempts and cooldown; teacher rechecks do not.
 
