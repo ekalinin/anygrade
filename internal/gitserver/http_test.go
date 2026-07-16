@@ -13,6 +13,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/ekalinin/anygrade/internal/ratelimit"
 )
 
 // fakeAuth authenticates from a fixed login -> (token, Identity) map.
@@ -206,6 +209,49 @@ func TestHTTPGzippedRequestBody(t *testing.T) {
 	}
 	if head := runSrc(t, work, "rev-parse", "HEAD"); head != runSrc(t, rm.StudentDir("alice"), "rev-parse", "main") {
 		t.Fatal("push did not land")
+	}
+}
+
+// TestHTTPAuthRateLimit: repeated bad tokens trip the failure limiter (429),
+// a valid login stays unaffected, and a success clears its own budget.
+func TestHTTPAuthRateLimit(t *testing.T) {
+	h := &HTTPHandler{
+		// Repos is never touched: rejection happens before repo resolution.
+		Auth:  fakeAuth{tokens: map[string]string{"alice": "tok"}, ids: map[string]Identity{"alice": {Login: "alice", Role: "student"}}},
+		Limit: ratelimit.New(3, time.Minute),
+	}
+	ts := httptest.NewServer(h)
+	t.Cleanup(ts.Close)
+
+	get := func(login, token string) int {
+		req, err := http.NewRequest(http.MethodGet, ts.URL+"/git/course.git/info/refs?service=git-upload-pack", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.SetBasicAuth(login, token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	for range 3 {
+		if code := get("alice", "wrong"); code != http.StatusUnauthorized {
+			t.Fatalf("bad token: got %d, want 401", code)
+		}
+	}
+	if code := get("alice", "wrong"); code != http.StatusTooManyRequests {
+		t.Fatalf("after limit: got %d, want 429", code)
+	}
+	// Even the right token is throttled for the blocked (ip, login) pair.
+	if code := get("alice", "tok"); code != http.StatusTooManyRequests {
+		t.Fatalf("blocked pair with valid token: got %d, want 429", code)
+	}
+	// A different login from the same address is unaffected (and 401s).
+	if code := get("bob", "whatever"); code != http.StatusUnauthorized {
+		t.Fatalf("other login: got %d, want 401", code)
 	}
 }
 

@@ -18,6 +18,15 @@ import (
 // repo (SPEC §13): terminal infra_error, surfaced to the teacher, never retried.
 var ErrTaskGone = errors.New("task no longer exists in the course repo")
 
+// Terminal wraps msg as a non-retryable preparation failure: process flips
+// the submission straight to terminal infra_error with msg as the worker
+// note (verbatim - callers hand over already student-safe text).
+func Terminal(msg string) error { return &terminalError{msg} }
+
+type terminalError struct{ msg string }
+
+func (e *terminalError) Error() string { return e.msg }
+
 // Prepared is everything a worker needs to run one submission.
 type Prepared struct {
 	Assembly runner.Assembly     // sources wired; Dest/TaskRelDir set
@@ -169,6 +178,10 @@ func (q *Queue) process(ctx context.Context, sub store.Submission) {
 	if err != nil {
 		if errors.Is(err, ErrTaskGone) {
 			q.terminal(ctx, sub, err.Error())
+			return
+		}
+		if te, ok := errors.AsType[*terminalError](err); ok {
+			q.terminal(ctx, sub, te.msg)
 			return
 		}
 		q.retry(ctx, sub, err)

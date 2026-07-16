@@ -4,15 +4,28 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/ekalinin/anygrade/internal/gradebook"
 	"github.com/ekalinin/anygrade/internal/store"
 )
 
+// matrixStatuses lists the filterable statuses in display order (SPEC §10).
+var matrixStatuses = []string{
+	gradebook.StatusNotStarted, gradebook.StatusRetrying, gradebook.StatusError,
+	gradebook.StatusCanceled, gradebook.StatusRejected, gradebook.StatusPassed,
+	gradebook.StatusPartial, gradebook.StatusFailed,
+}
+
 type matrixData struct {
 	CourseName string
 	User       userView
 	Matrix     gradebook.Matrix
+	Q          string
+	Task       string
+	Status     string
+	Statuses   []string
+	Filtered   bool
 }
 
 // buildMatrix loads the full gradebook (matrix page, CSV, leaderboard).
@@ -41,11 +54,81 @@ func (h *Handler) matrixPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "load failed", http.StatusInternalServerError)
 		return
 	}
+	q := r.URL.Query().Get("q")
+	task := r.URL.Query().Get("task")
+	status := r.URL.Query().Get("status")
+	m.Rows = filterRows(m.Rows, m.Tasks, q, task, status)
 	renderPage(w, "matrix", matrixData{
 		CourseName: h.Course.Get().Resolved.Course.Name,
 		User:       userView{u.Login, u.DisplayName, u.Role},
 		Matrix:     m,
+		Q:          q,
+		Task:       task,
+		Status:     status,
+		Statuses:   matrixStatuses,
+		Filtered:   q != "" || task != "" || status != "",
 	})
+}
+
+// filterRows applies the matrix page's q/task/status filters (SPEC §10).
+// q matches login or display name (case-insensitive substring); status
+// alone keeps rows with any matching cell; task+status keeps rows where
+// that task's cell matches; task alone is a no-op.
+func filterRows(rows []gradebook.Row, tasks []gradebook.TaskCol, q, taskID, status string) []gradebook.Row {
+	if q == "" && status == "" {
+		return rows
+	}
+	validTask := false
+	for _, t := range tasks {
+		if t.ID == taskID {
+			validTask = true
+			break
+		}
+	}
+	if !validTask {
+		taskID = ""
+	}
+
+	q = strings.ToLower(q)
+	out := make([]gradebook.Row, 0, len(rows))
+	for _, row := range rows {
+		if q != "" &&
+			!strings.Contains(strings.ToLower(row.User.Login), q) &&
+			!strings.Contains(strings.ToLower(row.User.DisplayName), q) {
+			continue
+		}
+		if status != "" {
+			switch {
+			case taskID != "":
+				if cellStatus(row, taskID) != status {
+					continue
+				}
+			default:
+				match := false
+				for _, t := range tasks {
+					if cellStatus(row, t.ID) == status {
+						match = true
+						break
+					}
+				}
+				if !match {
+					continue
+				}
+			}
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+// cellStatus normalizes a cell's status for filtering: Build clears
+// StatusNotStarted to "" for display, so restore it here.
+func cellStatus(row gradebook.Row, taskID string) string {
+	s := row.Cells[taskID].Status
+	if s == "" {
+		return gradebook.StatusNotStarted
+	}
+	return s
 }
 
 // matrixStream re-renders one student's matrix row on any of their events.

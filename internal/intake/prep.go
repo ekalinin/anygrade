@@ -2,6 +2,7 @@ package intake
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ekalinin/anygrade/internal/gitserver"
+	"github.com/ekalinin/anygrade/internal/hidden"
 	"github.com/ekalinin/anygrade/internal/queue"
 	"github.com/ekalinin/anygrade/internal/runner"
 	"github.com/ekalinin/anygrade/internal/store"
@@ -23,6 +25,7 @@ type Prep struct {
 	Users   store.UserStore
 	Course  *Holder
 	DataDir string
+	Hidden  *hidden.Cache // git-backed hidden tests; nil only in tests
 }
 
 // Prepare implements queue.JobPrep. Errors are retryable infra failures,
@@ -49,11 +52,23 @@ func (p *Prep) Prepare(ctx context.Context, sub store.Submission) (queue.Prepare
 		return queue.Prepared{}, fmt.Errorf("tamper scan: %w", err)
 	}
 
-	// Hidden tests: local source only in M4; the git-backed cache is M7.
-	var hidden runner.Source
-	if h := task.Hidden; h != nil && h.Source == "local" {
-		if st, err := os.Stat(h.Path); err == nil && st.IsDir() {
-			hidden = runner.WorkingCopySource{Root: h.Path}
+	var hiddenSrc runner.Source
+	if h := task.Hidden; h != nil {
+		switch h.Source {
+		case "local":
+			if st, err := os.Stat(h.Path); err == nil && st.IsDir() {
+				hiddenSrc = runner.WorkingCopySource{Root: h.Path}
+			}
+		case "git":
+			src, err := p.Hidden.Source(ctx, *h)
+			if errors.Is(err, hidden.ErrConfig) {
+				// Teacher config fault: retrying will not help.
+				return queue.Prepared{}, queue.Terminal("hidden tests unavailable for this task")
+			}
+			if err != nil {
+				return queue.Prepared{}, err // already scrubbed; retryable
+			}
+			hiddenSrc = src
 		}
 	}
 
@@ -66,7 +81,7 @@ func (p *Prep) Prepare(ctx context.Context, sub store.Submission) (queue.Prepare
 			Include:       task.Workspace.Include,
 			Authoritative: authoritative,
 			Student:       student,
-			Hidden:        hidden,
+			Hidden:        hiddenSrc,
 			RunAsUID:      -1,
 			RunAsGID:      -1,
 		},

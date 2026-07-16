@@ -83,7 +83,7 @@ var pages = func() map[string]*template.Template {
 	for _, page := range []string{
 		"login", "dashboard", "task", "submission",
 		"matrix", "queue", "students", "student", "code",
-		"leaderboard", "settings", "invite", "register", "token_once",
+		"leaderboard", "settings", "invite", "register", "token_once", "audit",
 	} {
 		clone := template.Must(base.Clone())
 		m[page] = template.Must(clone.ParseFS(assets, "templates/"+page+".html"))

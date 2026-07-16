@@ -182,6 +182,34 @@ func TestInfraErrorBackoffToTerminal(t *testing.T) {
 	}
 }
 
+// TestTerminalPrepareError: a Terminal prepare failure flips the submission
+// straight to terminal infra_error, note verbatim, no retries burned.
+func TestTerminalPrepareError(t *testing.T) {
+	q, db, u, prep := newTestQueue(t)
+	prep.failErr = Terminal("hidden tests unavailable for this task")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = q.Start(ctx) }()
+
+	sub, err := q.Enqueue(ctx, store.NewSubmission{
+		UserID: u.ID, TaskID: "t1", CommitSHA: "abc", ReceivedAt: time.Now(), Counts: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitStatus(t, db, sub.ID, store.StatusInfraError)
+	cancel()
+	<-done
+
+	if got.RetryAt != nil {
+		t.Fatalf("terminal error must not schedule a retry: %+v", got.RetryAt)
+	}
+	if got.WorkerNote != "hidden tests unavailable for this task" {
+		t.Fatalf("worker note %q", got.WorkerNote)
+	}
+}
+
 // TestTeacherCancelRunning: Queue.Cancel on a live submission kills the run,
 // keeps the row terminal-canceled, and never requeues or resurrects it.
 func TestTeacherCancelRunning(t *testing.T) {

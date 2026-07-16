@@ -9,6 +9,7 @@ import (
 
 	"github.com/ekalinin/anygrade/internal/intake"
 	"github.com/ekalinin/anygrade/internal/queue"
+	"github.com/ekalinin/anygrade/internal/ratelimit"
 	"github.com/ekalinin/anygrade/internal/store"
 )
 
@@ -39,6 +40,9 @@ type Handler struct {
 	ReadStudentFile  func(ctx context.Context, login, commit, relPath string) ([]byte, bool, error)
 	DataDir          string
 	BaseURL          string // git clone/upstream links on activation pages
+	// Limit, when non-nil, throttles failed logins (shared with git basic
+	// auth by the composition root).
+	Limit *ratelimit.Limiter
 }
 
 // New builds the site mux. Everything except /login, /invite, /register, and
@@ -85,6 +89,7 @@ func New(h *Handler) http.Handler {
 	mux.Handle("POST /students/{login}/state", h.requireTeacher(h.adminSetState))
 	mux.Handle("GET /students/{login}/submissions/{id}/code", h.requireTeacher(h.codeList))
 	mux.Handle("GET /students/{login}/submissions/{id}/code/{path...}", h.requireTeacher(h.codeFile))
+	mux.Handle("GET /audit", h.requireTeacher(h.auditPage))
 	return mux
 }
 

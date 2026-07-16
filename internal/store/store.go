@@ -93,6 +93,11 @@ type AuditStore interface {
 	// ListEventsByTarget returns recent events for "login" and "login/...",
 	// newest first, capped at limit.
 	ListEventsByTarget(ctx context.Context, login string, limit int) ([]EventRow, error)
+	// ListEvents returns the global audit log, newest first, optionally
+	// filtered by exact kind and/or a target substring ("" = no filter).
+	ListEvents(ctx context.Context, kind, target string, limit, offset int) ([]EventRow, error)
+	// ListEventKinds returns every distinct kind ever logged, for filters.
+	ListEventKinds(ctx context.Context) ([]string, error)
 }
 
 // EventRow is one audit entry joined with its actor for display.

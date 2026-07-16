@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/ekalinin/anygrade/internal/hookproto"
+	"github.com/ekalinin/anygrade/internal/ratelimit"
 )
 
 // Identity is an authenticated git user. gitserver never touches the store:
@@ -52,6 +53,9 @@ type HTTPHandler struct {
 	// Local, when non-nil, disables authentication and acts as this identity
 	// (serve --local; the caller guarantees a loopback bind).
 	Local *Identity
+	// Limit, when non-nil, throttles failed basic-auth attempts (shared with
+	// the web login by the composition root).
+	Limit *ratelimit.Limiter
 }
 
 func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -157,13 +161,26 @@ func (h *HTTPHandler) authenticate(w http.ResponseWriter, r *http.Request) (Iden
 	}
 	login, token, ok := r.BasicAuth()
 	if ok {
+		key := ratelimit.AuthKey(r.RemoteAddr, login)
+		if h.Limit != nil && h.Limit.Blocked(key) {
+			http.Error(w, "too many failed attempts, try again later", http.StatusTooManyRequests)
+			return Identity{}, false
+		}
 		id, valid, err := h.Auth.ByToken(r.Context(), login, token)
 		if err != nil {
 			http.Error(w, "auth failed", http.StatusInternalServerError)
 			return Identity{}, false
 		}
 		if valid {
+			if h.Limit != nil {
+				h.Limit.Clear(key)
+			}
 			return id, true
+		}
+		// Only real credential mismatches count; the credential-less probe
+		// that precedes every git basic-auth exchange does not.
+		if h.Limit != nil {
+			h.Limit.Fail(key)
 		}
 	}
 	w.Header().Set("WWW-Authenticate", `Basic realm="anygrade"`)

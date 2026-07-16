@@ -1,0 +1,26 @@
+{{define "content"}}
+<h1>Audit log</h1>
+<form method="get" action="/audit" class="filters">
+  <select name="kind">
+    <option value="">any kind</option>
+    {{range .Kinds}}<option value="{{.}}" {{if eq $.Kind .}}selected{{end}}>{{.}}</option>{{end}}
+  </select>
+  <input type="text" name="target" value="{{.Target}}" placeholder="target substring">
+  <button type="submit">filter</button>
+  {{if or .Kind .Target}}<a href="/audit">clear</a>{{end}}
+</form>
+{{if .Events}}
+<table>
+  <thead><tr><th>When</th><th>Actor</th><th>Kind</th><th>Target</th><th>Detail</th></tr></thead>
+  <tbody>
+  {{range .Events}}
+  <tr><td>{{fmtTime .CreatedAt}}</td><td>{{if .ActorLogin}}{{.ActorLogin}}{{else}}system{{end}}</td><td>{{.Kind}}</td><td>{{.Target}}</td><td>{{.Detail}}</td></tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}<p class="hint">No recorded events.</p>{{end}}
+<p class="pager">
+  {{if .HasPrev}}<a href="/audit?kind={{.Kind}}&target={{.Target}}&page={{.PrevPage}}">prev</a>{{end}}
+  {{if .HasNext}}<a href="/audit?kind={{.Kind}}&target={{.Target}}&page={{.NextPage}}">next</a>{{end}}
+</p>
+{{end}}

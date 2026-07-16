@@ -1,16 +1,42 @@
 {{define "content"}}
 <h1>Matrix <a class="linklike-a" href="/export/scores.csv">export CSV</a></h1>
+<form method="get" action="/matrix" class="filters">
+  <input type="text" name="q" value="{{.Q}}" placeholder="login or name">
+  <select name="task">
+    <option value="">any task</option>
+    {{range .Matrix.Tasks}}<option value="{{.ID}}" {{if eq $.Task .ID}}selected{{end}}>{{.ID}}</option>{{end}}
+  </select>
+  <select name="status">
+    <option value="">any status</option>
+    {{range .Statuses}}<option value="{{.}}" {{if eq $.Status .}}selected{{end}}>{{.}}</option>{{end}}
+  </select>
+  <button type="submit">filter</button>
+  {{if .Filtered}}<a href="/matrix">clear</a>{{end}}
+</form>
+{{$tasks := .Matrix.Tasks}}
+{{if .Filtered}}
+<table class="matrix">
+  <thead><tr>
+    <th>Student</th>
+    {{range $tasks}}<th title="{{.Name}}">{{.ID}}<br><span class="hint">/{{.MaxScore}}</span></th>{{end}}
+    <th>Total</th>
+  </tr></thead>
+  <tbody>
+  {{range .Matrix.Rows}}{{template "matrix-row" (dict "Row" . "Tasks" $tasks)}}{{end}}
+  </tbody>
+</table>
+{{else}}
 <div hx-ext="sse" sse-connect="/matrix/stream">
 <table class="matrix">
   <thead><tr>
     <th>Student</th>
-    {{range .Matrix.Tasks}}<th title="{{.Name}}">{{.ID}}<br><span class="hint">/{{.MaxScore}}</span></th>{{end}}
+    {{range $tasks}}<th title="{{.Name}}">{{.ID}}<br><span class="hint">/{{.MaxScore}}</span></th>{{end}}
     <th>Total</th>
   </tr></thead>
   <tbody>
-  {{$tasks := .Matrix.Tasks}}
   {{range .Matrix.Rows}}{{template "matrix-row" (dict "Row" . "Tasks" $tasks)}}{{end}}
   </tbody>
 </table>
 </div>
+{{end}}
 {{end}}

@@ -3,6 +3,8 @@ package web
 import (
 	"net/http"
 	"strings"
+
+	"github.com/ekalinin/anygrade/internal/ratelimit"
 )
 
 type loginData struct {
@@ -40,15 +42,27 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	login := strings.TrimSpace(r.FormValue("login"))
 	token := strings.TrimSpace(r.FormValue("token"))
+	key := ratelimit.AuthKey(r.RemoteAddr, login)
+	if h.Limit != nil && h.Limit.Blocked(key) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		renderPage(w, "login", h.loginData(r, "too many failed attempts, try again later"))
+		return
+	}
 	u, ok, err := h.DB.VerifyToken(r.Context(), token)
 	if err != nil {
 		http.Error(w, "login failed", http.StatusInternalServerError)
 		return
 	}
 	if !ok || u.Login != login {
+		if h.Limit != nil {
+			h.Limit.Fail(key)
+		}
 		w.WriteHeader(http.StatusUnauthorized)
 		renderPage(w, "login", h.loginData(r, "unknown login or token"))
 		return
+	}
+	if h.Limit != nil {
+		h.Limit.Clear(key)
 	}
 	sid, err := h.DB.CreateSession(r.Context(), u.ID, token, sessionTTL)
 	if err != nil {

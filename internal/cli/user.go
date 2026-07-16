@@ -3,9 +3,11 @@ package cli
 import (
 	"context"
 	"crypto/rand"
+	"encoding/csv"
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -223,6 +225,7 @@ func userInvite(args []string) error {
 	fs := flag.NewFlagSet("user invite", flag.ContinueOnError)
 	login := fs.String("login", "", "user login")
 	name := fs.String("name", "", "display name")
+	csvPath := fs.String("csv", "", "CSV roster file (login[,display_name] per row) instead of --login/--name")
 	role := fs.String("role", "student", "role: student|teacher")
 	expires := fs.Duration("expires", 336*time.Hour, "invite validity duration")
 	baseURL := fs.String("base-url", "http://localhost:8080", "base URL for the invite link")
@@ -230,14 +233,31 @@ func userInvite(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *login == "" {
-		return fmt.Errorf("--login is required")
-	}
-	if !ident.ValidLogin(*login) {
-		return fmt.Errorf("invalid login %q (lowercase letters, digits, ._-)", *login)
-	}
 	if *role != "student" && *role != "teacher" {
 		return fmt.Errorf("--role must be student or teacher, got %q", *role)
+	}
+
+	var roster []rosterEntry
+	if *csvPath != "" {
+		if *login != "" || *name != "" {
+			return fmt.Errorf("--csv cannot be combined with --login or --name")
+		}
+		f, err := os.Open(*csvPath)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		if roster, err = parseRoster(f); err != nil {
+			return err
+		}
+	} else {
+		if *login == "" {
+			return fmt.Errorf("--login is required")
+		}
+		if !ident.ValidLogin(*login) {
+			return fmt.Errorf("invalid login %q (lowercase letters, digits, ._-)", *login)
+		}
+		roster = []rosterEntry{{Login: *login, Name: *name}}
 	}
 
 	ctx := context.Background()
@@ -247,13 +267,28 @@ func userInvite(args []string) error {
 	}
 	defer db.Close()
 
-	u, err := db.CreateUser(ctx, *login, *name, *role)
+	expiresAt := time.Now().Add(*expires)
+	for _, e := range roster {
+		if err := inviteOne(ctx, db, e.Login, e.Name, *role, expiresAt, *baseURL); err != nil {
+			return err
+		}
+	}
+
+	fmt.Printf("expires: %s\n", expiresAt.Format(time.RFC3339))
+	fmt.Println("the link is one-shot; it lets the student set up a token and SSH key")
+	return nil
+}
+
+// inviteOne creates (or re-invites) a single user and prints its activation
+// link; shared by the single-user and CSV roster paths of `user invite`.
+func inviteOne(ctx context.Context, db store.Store, login, name, role string, expiresAt time.Time, baseURL string) error {
+	u, err := db.CreateUser(ctx, login, name, role)
 	if err != nil {
 		// A re-invite of an existing user is fine; any other error is fatal.
 		if !strings.Contains(err.Error(), "UNIQUE constraint") {
 			return err
 		}
-		u, err = db.GetUserByLogin(ctx, *login)
+		u, err = db.GetUserByLogin(ctx, login)
 		if err != nil {
 			return err
 		}
@@ -263,15 +298,54 @@ func userInvite(args []string) error {
 	if err != nil {
 		return err
 	}
-	expiresAt := time.Now().Add(*expires)
 	if err := db.CreateInvite(ctx, u.ID, plaintext, expiresAt); err != nil {
 		return err
 	}
 
-	fmt.Printf("invite for %s: %s/invite/%s\n", u.Login, *baseURL, plaintext)
-	fmt.Printf("expires: %s\n", expiresAt.Format(time.RFC3339))
-	fmt.Println("the link is one-shot; it lets the student set up a token and SSH key")
+	fmt.Printf("invite for %s: %s/invite/%s\n", u.Login, baseURL, plaintext)
 	return nil
+}
+
+// rosterEntry is one validated CSV roster row.
+type rosterEntry struct {
+	Login string
+	Name  string
+}
+
+// parseRoster reads a CSV roster (login[,display_name] per row; extra
+// columns are ignored). A leading "login" header row is detected and
+// skipped. Every row is validated before any is returned, so a bad row
+// (reported with its 1-based line number, counting the header) fails the
+// whole import cleanly.
+func parseRoster(r io.Reader) ([]rosterEntry, error) {
+	cr := csv.NewReader(r)
+	cr.FieldsPerRecord = -1
+	records, err := cr.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+
+	rowOffset := 1
+	if len(records) > 0 && len(records[0]) > 0 && strings.TrimSpace(records[0][0]) == "login" {
+		records = records[1:]
+		rowOffset = 2
+	}
+
+	roster := make([]rosterEntry, 0, len(records))
+	for i, rec := range records {
+		var login, name string
+		if len(rec) > 0 {
+			login = strings.TrimSpace(rec[0])
+		}
+		if len(rec) > 1 {
+			name = strings.TrimSpace(rec[1])
+		}
+		if login == "" || !ident.ValidLogin(login) {
+			return nil, fmt.Errorf("row %d: invalid login %q", i+rowOffset, login)
+		}
+		roster = append(roster, rosterEntry{Login: login, Name: name})
+	}
+	return roster, nil
 }
 
 // newInviteToken returns a fresh "inv_"-prefixed random token.

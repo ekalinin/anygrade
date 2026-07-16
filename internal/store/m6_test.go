@@ -281,3 +281,91 @@ func TestListEventsByTarget(t *testing.T) {
 		t.Errorf("oldest event = %+v", got[1])
 	}
 }
+
+// TestListEvents: the global audit log filters by exact kind and target
+// substring, orders newest first, and supports limit/offset paging.
+func TestListEvents(t *testing.T) {
+	db := openTestDB(t)
+	alice := testUser(t, db)
+	bob, err := db.CreateUser(t.Context(), "bob", "Bob", "teacher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = alice
+
+	if err := db.Log(t.Context(), Event{Kind: "signup", Target: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Log(t.Context(), Event{ActorID: &bob.ID, Kind: "cancel", Target: "alice/t1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Log(t.Context(), Event{Kind: "signup", Target: "bob"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Kind filter.
+	got, err := db.ListEvents(t.Context(), "signup", "", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("kind filter: got %d events, want 2", len(got))
+	}
+	if got[0].Target != "bob" || got[1].Target != "alice" {
+		t.Errorf("kind filter must be newest first: %+v", got)
+	}
+
+	// Target substring filter.
+	got, err = db.ListEvents(t.Context(), "", "t1", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Kind != "cancel" {
+		t.Errorf("target filter: got %+v, want one cancel event", got)
+	}
+
+	// No filters: everything, newest first.
+	got, err = db.ListEvents(t.Context(), "", "", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("no filter: got %d events, want 3", len(got))
+	}
+	if got[0].Target != "bob" || got[2].Target != "alice" {
+		t.Errorf("no filter order: %+v", got)
+	}
+
+	// Limit/offset paging.
+	page, err := db.ListEvents(t.Context(), "", "", 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != 1 || page[0].Target != got[1].Target {
+		t.Errorf("page(1,1) = %+v, want %+v", page, got[1])
+	}
+}
+
+// TestListEventKinds: distinct kinds are returned in alphabetical order.
+func TestListEventKinds(t *testing.T) {
+	db := openTestDB(t)
+	testUser(t, db)
+
+	if err := db.Log(t.Context(), Event{Kind: "signup", Target: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Log(t.Context(), Event{Kind: "cancel", Target: "alice/t1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Log(t.Context(), Event{Kind: "signup", Target: "bob"}); err != nil {
+		t.Fatal(err)
+	}
+
+	kinds, err := db.ListEventKinds(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kinds) != 2 || kinds[0] != "cancel" || kinds[1] != "signup" {
+		t.Errorf("kinds = %v, want [cancel signup]", kinds)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -16,8 +17,10 @@ import (
 
 	"github.com/ekalinin/anygrade/internal/config"
 	"github.com/ekalinin/anygrade/internal/gitserver"
+	"github.com/ekalinin/anygrade/internal/hidden"
 	"github.com/ekalinin/anygrade/internal/intake"
 	"github.com/ekalinin/anygrade/internal/queue"
+	"github.com/ekalinin/anygrade/internal/ratelimit"
 	"github.com/ekalinin/anygrade/internal/store"
 	"github.com/ekalinin/anygrade/internal/web"
 )
@@ -98,9 +101,16 @@ func Run(ctx context.Context, opts Options) error {
 
 	socket := filepath.Join(opts.DataDir, "anygrade.sock")
 	hub := web.NewHub()
+	// Hidden-tests credentials come from the environment only (SPEC §11),
+	// never from the course repo.
+	hcache := &hidden.Cache{
+		Dir:   filepath.Join(opts.DataDir, "hidden"),
+		Token: os.Getenv("ANYGRADE_HIDDEN_GIT_TOKEN"),
+		Log:   slog.New(slog.NewTextHandler(logw, nil)),
+	}
 	q := &queue.Queue{
 		Store:   db,
-		Prep:    &intake.Prep{Repos: repos, Users: db, Course: holder, DataDir: opts.DataDir},
+		Prep:    &intake.Prep{Repos: repos, Users: db, Course: holder, DataDir: opts.DataDir, Hidden: hcache},
 		Workers: opts.Workers,
 		Events:  hub,
 	}
@@ -110,6 +120,9 @@ func Run(ctx context.Context, opts Options) error {
 		Events:  hub,
 	}
 	auth := storeAuth{db}
+	// One failure budget per (client IP, login) pair, shared between git
+	// basic auth and the web login form.
+	limit := ratelimit.New(10, 10*time.Minute)
 	site := web.New(&web.Handler{
 		DB:     db,
 		Course: holder,
@@ -128,9 +141,10 @@ func Run(ctx context.Context, opts Options) error {
 		},
 		DataDir: opts.DataDir,
 		BaseURL: baseURL(opts),
+		Limit:   limit,
 	})
 	mux := http.NewServeMux()
-	mux.Handle("/git/", &gitserver.HTTPHandler{Repos: repos, Auth: auth, Socket: socket, Local: localID})
+	mux.Handle("/git/", &gitserver.HTTPHandler{Repos: repos, Auth: auth, Socket: socket, Local: localID, Limit: limit})
 	mux.Handle("/", site)
 	httpSrv := &http.Server{Addr: opts.HTTPAddr, Handler: mux}
 	sshSrv := &gitserver.SSHServer{
