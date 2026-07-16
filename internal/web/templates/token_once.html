@@ -9,6 +9,11 @@
 git remote add upstream {{.URLs.Upstream}}
 # later: git pull upstream main</pre>
 <p class="hint">Use your login as the username and this token as the password for git over HTTP.</p>
+{{if .URLs.SSHClone}}
+<p>Or over SSH, once an SSH key is added (at activation or in settings):</p>
+<pre>git clone {{.URLs.SSHClone}}
+git remote add upstream {{.URLs.SSHUpstream}}</pre>
+{{end}}
 {{end}}
 <p><a href="/">Continue to the dashboard</a></p>
 </section>

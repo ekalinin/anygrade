@@ -40,6 +40,7 @@ type Handler struct {
 	ReadStudentFile  func(ctx context.Context, login, commit, relPath string) ([]byte, bool, error)
 	DataDir          string
 	BaseURL          string // git clone/upstream links on activation pages
+	SSHAddr          string // git SSH listen address; "" hides SSH clone hints
 	// Limit, when non-nil, throttles failed logins (shared with git basic
 	// auth by the composition root).
 	Limit *ratelimit.Limiter

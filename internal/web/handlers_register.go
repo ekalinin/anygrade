@@ -1,7 +1,9 @@
 package web
 
 import (
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -20,18 +22,43 @@ type inviteData struct {
 	Error      string
 }
 
-// gitURLs are the SPEC §7 suggested setup, shown on activation.
+// gitURLs are the SPEC §7 suggested setup, shown on activation. The SSH
+// fields are empty when the SSH transport is not configured.
 type gitURLs struct {
-	Clone    string
-	Upstream string
+	Clone       string
+	Upstream    string
+	SSHClone    string
+	SSHUpstream string
 }
 
 func (h *Handler) gitURLs(login string) gitURLs {
 	base := strings.TrimSuffix(h.BaseURL, "/")
-	return gitURLs{
+	u := gitURLs{
 		Clone:    base + "/git/" + login + "/course.git",
 		Upstream: base + "/git/course.git",
 	}
+	if ssh := h.sshBase(); ssh != "" {
+		u.SSHClone = ssh + "/" + login + "/course.git"
+		u.SSHUpstream = ssh + "/course.git"
+	}
+	return u
+}
+
+// sshBase derives "ssh://git@<host>:<port>" from the web base URL's host and
+// the SSH listen address (the SSH server binds a port, not a public name).
+func (h *Handler) sshBase() string {
+	if h.SSHAddr == "" {
+		return ""
+	}
+	_, port, err := net.SplitHostPort(h.SSHAddr)
+	if err != nil || port == "" {
+		return ""
+	}
+	host := "localhost"
+	if u, err := url.Parse(h.BaseURL); err == nil && u.Hostname() != "" {
+		host = u.Hostname()
+	}
+	return "ssh://git@" + net.JoinHostPort(host, port)
 }
 
 // resolveInvite maps the URL token to its pending user; every failure mode

@@ -141,6 +141,7 @@ func Run(ctx context.Context, opts Options) error {
 		},
 		DataDir: opts.DataDir,
 		BaseURL: baseURL(opts),
+		SSHAddr: opts.SSHAddr,
 		Limit:   limit,
 	})
 	mux := http.NewServeMux()
