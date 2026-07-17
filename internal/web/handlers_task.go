@@ -79,7 +79,7 @@ func (h *Handler) taskPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	renderPage(w, "task", taskData{
+	h.renderPage(w, r, "task", taskData{
 		CourseName: course.Resolved.Course.Name,
 		User:       userView{u.Login, u.DisplayName, u.Role},
 		View:       buildTaskView(task, history, course.Resolved.Course.ScoringPolicy),
@@ -101,7 +101,7 @@ func (h *Handler) taskRecheck(w http.ResponseWriter, r *http.Request) {
 	sub, d, err := h.Recheck.Recheck(r.Context(), u.ID, taskID)
 	switch {
 	case errors.Is(err, intake.ErrNothingToRecheck):
-		http.Redirect(w, r, "/tasks/"+taskID+"?flash=nothing+to+recheck", http.StatusSeeOther)
+		http.Redirect(w, r, "/tasks/"+taskID+"?flash=nothing_to_recheck", http.StatusSeeOther)
 	case err != nil:
 		http.Error(w, "recheck failed", http.StatusInternalServerError)
 	case !d.Admit:

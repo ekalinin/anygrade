@@ -56,6 +56,7 @@ func New(h *Handler) http.Handler {
 	mux.HandleFunc("POST /invite/{token}", h.inviteSubmit)
 	mux.HandleFunc("GET /register", h.registerPage)
 	mux.HandleFunc("POST /register", h.registerSubmit)
+	mux.HandleFunc("POST /lang", h.setLang)
 	mux.Handle("GET /static/", http.StripPrefix("/static/", staticHandler()))
 
 	// Authenticated (any role).

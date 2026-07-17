@@ -1,13 +1,13 @@
 {{define "content"}}
 <section class="login">
-  <h1>Sign in</h1>
-  {{if .Error}}<p class="flash error">{{.Error}}</p>{{end}}
+  <h1>{{t "login.title"}}</h1>
+  {{if .Error}}<p class="flash error">{{tFlash .Error}}</p>{{end}}
   <form method="post" action="/login">
     <input type="hidden" name="next" value="{{.Next}}">
-    <label>Login <input name="login" autocomplete="username" required autofocus></label>
-    <label>Access token <input name="token" type="password" autocomplete="current-password" required placeholder="ag_..."></label>
-    <button type="submit">Sign in</button>
+    <label>{{t "common.login"}} <input name="login" autocomplete="username" required autofocus></label>
+    <label>{{t "login.access_token"}} <input name="token" type="password" autocomplete="current-password" required placeholder="ag_..."></label>
+    <button type="submit">{{t "login.submit"}}</button>
   </form>
-  <p class="hint">Use the personal access token you received at activation.</p>
+  <p class="hint">{{t "login.hint"}}</p>
 </section>
 {{end}}

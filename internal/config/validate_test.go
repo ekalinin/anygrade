@@ -151,6 +151,35 @@ func TestValidateWorkspaceInclude(t *testing.T) {
 	}
 }
 
+// TestValidateLanguage covers the course-level language rule: an unsupported
+// code is an error; empty and supported codes are accepted.
+func TestValidateLanguage(t *testing.T) {
+	base := func(lang string) *Resolved {
+		return &Resolved{
+			Course:    ResolvedCourse{Name: "C", TasksDir: "tasks", Registration: Registration{Mode: "invite"}, ScoringPolicy: "best"},
+			rawCourse: &Course{Name: "C", Registration: Registration{Mode: "invite"}, Language: lang},
+		}
+	}
+	if !hasFieldError(Validate(base("de")), "language") {
+		t.Errorf("language: de should raise a language error")
+	}
+	for _, ok := range []string{"", "en", "ru"} {
+		if hasFieldError(Validate(base(ok)), "language") {
+			t.Errorf("language %q should not raise a language error", ok)
+		}
+	}
+}
+
+// hasFieldError reports whether diags carries a SevError for the given field.
+func hasFieldError(diags []Diagnostic, field string) bool {
+	for _, d := range diags {
+		if d.Severity == SevError && d.Field == field {
+			return true
+		}
+	}
+	return false
+}
+
 func diagStrings(diags []Diagnostic) []string {
 	out := make([]string, len(diags))
 	for i, d := range diags {

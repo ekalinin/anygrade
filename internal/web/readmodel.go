@@ -1,11 +1,11 @@
 package web
 
 import (
-	"fmt"
 	"time"
 
 	"github.com/ekalinin/anygrade/internal/config"
 	"github.com/ekalinin/anygrade/internal/gradebook"
+	"github.com/ekalinin/anygrade/internal/i18n"
 	"github.com/ekalinin/anygrade/internal/intake"
 	"github.com/ekalinin/anygrade/internal/store"
 )
@@ -59,8 +59,8 @@ func taskCols(course *intake.Course) []gradebook.TaskCol {
 	return cols
 }
 
-// countdown renders a compact "in 3d 4h" / "42m overdue" string.
-func countdown(t time.Time, now time.Time) string {
+// countdown renders a compact, localized "in 3d 4h" / "42m overdue" string.
+func countdown(t time.Time, now time.Time, tr i18n.Translator) string {
 	d := t.Sub(now).Round(time.Minute)
 	overdue := d < 0
 	if overdue {
@@ -72,14 +72,14 @@ func countdown(t time.Time, now time.Time) string {
 	var s string
 	switch {
 	case days > 0:
-		s = fmt.Sprintf("%dd %dh", days, hours)
+		s = tr.T("countdown.dh", days, hours)
 	case hours > 0:
-		s = fmt.Sprintf("%dh %dm", hours, mins)
+		s = tr.T("countdown.hm", hours, mins)
 	default:
-		s = fmt.Sprintf("%dm", mins)
+		s = tr.T("countdown.m", mins)
 	}
 	if overdue {
-		return s + " overdue"
+		return tr.T("countdown.overdue", s)
 	}
-	return "in " + s
+	return tr.T("countdown.in", s)
 }

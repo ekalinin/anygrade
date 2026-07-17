@@ -17,6 +17,10 @@ a { color: var(--info); }
 }
 .topbar .brand { font-weight: 600; color: var(--fg); text-decoration: none; }
 .topbar nav { display: flex; gap: .75rem; align-items: center; }
+.topbar-right { display: flex; gap: .75rem; align-items: center; }
+.lang-switch { display: flex; gap: .35rem; }
+.lang-switch .linklike { text-decoration: none; color: var(--muted); font-size: .8rem; }
+.lang-switch .active { color: var(--fg); font-weight: 600; text-decoration: underline; }
 .who { color: var(--muted); }
 .inline { display: inline; }
 .linklike {

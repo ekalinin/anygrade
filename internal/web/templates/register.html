@@ -1,12 +1,12 @@
 {{define "content"}}
 <section class="login">
-<h1>Register</h1>
-{{if .Error}}<p class="flash error">{{.Error}}</p>{{end}}
+<h1>{{t "register.title"}}</h1>
+{{if .Error}}<p class="flash error">{{tFlash .Error}}</p>{{end}}
 <form method="post" action="/register">
-  <label>Login <input name="login" value="{{.Login}}" required autofocus></label>
-  <label>Display name <input name="name" value="{{.Name}}"></label>
-  <label>Course code <input name="course_code" required></label>
-  <button type="submit">Register</button>
+  <label>{{t "common.login"}} <input name="login" value="{{.Login}}" required autofocus></label>
+  <label>{{t "register.display_name"}} <input name="name" value="{{.Name}}"></label>
+  <label>{{t "register.course_code"}} <input name="course_code" required></label>
+  <button type="submit">{{t "register.submit"}}</button>
 </form>
 </section>
 {{end}}

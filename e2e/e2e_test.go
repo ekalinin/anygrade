@@ -96,6 +96,7 @@ func TestE2E(t *testing.T) {
 	t.Run("invite and ssh transport", func(t *testing.T) { testInviteAndSSH(t, e) })
 	t.Run("teacher pages", func(t *testing.T) { testTeacherPages(t, e) })
 	t.Run("teacher pushes course update", func(t *testing.T) { testTeacherCourseUpdate(t, e) })
+	t.Run("language switcher", func(t *testing.T) { testLanguageSwitcher(t, e) })
 	t.Run("auth and rate limit", func(t *testing.T) { testAuthAndRateLimit(t, e) })
 	t.Run("local self-check", func(t *testing.T) { testLocalSelfCheck(t, e) })
 }

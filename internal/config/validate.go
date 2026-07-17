@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ekalinin/anygrade/internal/i18n"
 )
 
 // Severity classifies a Diagnostic. Only SevError makes validation (and server
@@ -81,6 +83,9 @@ func Validate(r *Resolved) []Diagnostic {
 	}
 	if p := r.rawCourse.Scoring.Policy; p != "" && !validScorePolicy[p] {
 		add(SevError, courseFile, "scoring.policy", "must be one of best|latest, got %q", p)
+	}
+	if l := r.rawCourse.Language; l != "" && !i18n.Supported(l) {
+		add(SevError, courseFile, "language", "must be one of %s, got %q", strings.Join(i18n.Locales(), "|"), l)
 	}
 	if len(r.Tasks) == 0 {
 		add(SevError, courseFile, "tasks_dir", "no task.yaml found under %q", c.TasksDir)

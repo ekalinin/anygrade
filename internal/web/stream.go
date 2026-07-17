@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ekalinin/anygrade/internal/gradebook"
+	"github.com/ekalinin/anygrade/internal/i18n"
 	"github.com/ekalinin/anygrade/internal/intake"
 	"github.com/ekalinin/anygrade/internal/runner"
 	"github.com/ekalinin/anygrade/internal/store"
@@ -68,6 +69,7 @@ func (h *Handler) submissionStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	lang := h.lang(r)
 	ticker := time.NewTicker(tailInterval)
 	defer ticker.Stop()
 	for {
@@ -75,21 +77,21 @@ func (h *Handler) submissionStream(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case ev := <-events:
-			sse.send("status", statusBadge(ev.Status))
+			sse.send("status", statusBadge(lang, ev.Status))
 			if terminalStatus(ev.Status) {
-				h.drainTails(sse, tails) // flush the last buffered output first
+				h.drainTails(sse, lang, tails) // flush the last buffered output first
 				sse.send("done", "")
 				return
 			}
 		case <-ticker.C:
-			h.drainTails(sse, tails)
+			h.drainTails(sse, lang, tails)
 		}
 	}
 }
 
 // drainTails emits new bytes of every growing log file, HTML-escaped, capped
 // per pane at the excerpt size.
-func (h *Handler) drainTails(sse *sseWriter, tails []*tailState) {
+func (h *Handler) drainTails(sse *sseWriter, lang string, tails []*tailState) {
 	for i, t := range tails {
 		if t.capped {
 			continue
@@ -102,7 +104,7 @@ func (h *Handler) drainTails(sse *sseWriter, tails []*tailState) {
 		payload := html.EscapeString(string(chunk))
 		if t.offset >= paneCap {
 			t.capped = true
-			payload += "\n[output truncated; full log available after the run]"
+			payload += "\n" + i18n.For(lang).T("stream.truncated")
 		}
 		sse.send(fmt.Sprintf("log%d", i), payload)
 	}
@@ -131,12 +133,13 @@ func readFrom(path string, offset, limit int64) ([]byte, error) {
 	return buf, nil
 }
 
-// statusBadge renders the status span swapped into the page header.
-func statusBadge(status string) string {
+// statusBadge renders the status span swapped into the page header. The CSS
+// class keeps the raw (English) status; only the visible label is localized.
+func statusBadge(lang, status string) string {
 	label := status
 	switch status {
 	case store.StatusInfraError:
 		label = gradebook.StatusRetrying
 	}
-	return fmt.Sprintf(`<span class="badge st-%s">%s</span>`, label, label)
+	return fmt.Sprintf(`<span class="badge st-%s">%s</span>`, label, i18n.For(lang).TStatus(label))
 }

@@ -62,6 +62,7 @@ The tasks root directory is configurable; a task is any directory under it conta
 ```yaml
 name: "Go course 2026"
 tasks_dir: tasks
+language: en              # web UI language: en | ru (default en)
 
 registration:
   mode: invite            # invite | open
@@ -300,6 +301,14 @@ Teacher pages:
 - queue view: pending/running checks, cancel, recheck.
 
 Leaderboard (if enabled): total scores ranked; `anonymize` replaces logins with stable aliases. Visible to all authenticated users.
+
+### 10.1 Localization
+
+The web UI ships English and Russian message catalogs (`internal/i18n/locales/*.yaml`; English is the source of truth, other locales fall back to it key by key). Adding a locale is a new `<code>.yaml` with the full key set - no code change.
+
+The active locale is chosen per request: a valid `ag_lang` cookie wins, then the course default (`language:` in course.yaml, `en` if unset). A language switcher in the top bar sets the cookie and works on the anonymous pages (login, register, invite) too, so it needs no account or DB column.
+
+Scope is the web UI only: pages, flash/error messages, and status badge labels. Git push output, CLI output, and server logs stay English. Strings written into the database at submission time - worker tamper notes, deadline/attempt reject reasons, the scrubbed hidden-tests message - are stored in English and rendered as-is regardless of locale.
 
 ## 11. CLI
 

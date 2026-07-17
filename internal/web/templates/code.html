@@ -1,14 +1,14 @@
 {{define "content"}}
-<p class="crumbs"><a href="/students">students</a> / <a href="/students/{{.Student}}">{{.Student}}</a> / <a href="/submissions/{{.Sub.ID}}">submission #{{.Sub.ID}}</a> / code</p>
-<h1>Submitted code <span class="hint">commit {{printf "%.12s" .Sub.CommitSHA}}</span></h1>
+<p class="crumbs"><a href="/students">{{t "students.crumb"}}</a> / <a href="/students/{{.Student}}">{{.Student}}</a> / <a href="/submissions/{{.Sub.ID}}">{{t "submission.crumb"}} #{{.Sub.ID}}</a> / {{t "code.crumb"}}</p>
+<h1>{{t "code.title"}} <span class="hint">{{t "common.commit"}} {{printf "%.12s" .Sub.CommitSHA}}</span></h1>
 
 {{if .Path}}
-<p><a href="/students/{{.Student}}/submissions/{{.Sub.ID}}/code">&larr; all files</a></p>
+<p><a href="/students/{{.Student}}/submissions/{{.Sub.ID}}/code">{{t "code.all_files"}}</a></p>
 <h2><code>{{.Path}}</code></h2>
 {{if .Binary}}
-<p class="hint">Binary file. <a href="?download=1">Download</a></p>
+<p class="hint">{{t "code.binary"}} <a href="?download=1">{{t "code.download"}}</a></p>
 {{else if .TooBig}}
-<p class="hint">File is larger than 256&nbsp;KB. <a href="?download=1">Download</a></p>
+<p class="hint">{{t "code.too_big"}} <a href="?download=1">{{t "code.download"}}</a></p>
 {{else}}
 <div class="pane"><pre>{{.Content}}</pre></div>
 {{end}}
@@ -17,6 +17,6 @@
 <ul class="filelist">
 {{range .Files}}<li><a href="/students/{{$.Student}}/submissions/{{$.Sub.ID}}/code/{{.}}"><code>{{.}}</code></a></li>{{end}}
 </ul>
-{{else}}<p class="hint">No files under the task directory at this commit.</p>{{end}}
+{{else}}<p class="hint">{{t "code.no_files"}}</p>{{end}}
 {{end}}
 {{end}}

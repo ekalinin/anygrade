@@ -1,11 +1,11 @@
 {{define "matrix-row"}}<tr sse-swap="user-{{.Row.User.Login}}" hx-swap="outerHTML">
-  <td><a href="/students/{{.Row.User.Login}}">{{.Row.User.Login}}</a>{{if eq .Row.User.State "disabled"}} <span class="badge st-skipped">disabled</span>{{end}}</td>
+  <td><a href="/students/{{.Row.User.Login}}">{{.Row.User.Login}}</a>{{if eq .Row.User.State "disabled"}} <span class="badge st-skipped">{{t "state.disabled"}}</span>{{end}}</td>
   {{$row := .Row}}
   {{range .Tasks}}
   {{$c := index $row.Cells .ID}}
   <td class="cell">
-    {{if $c.Status}}<span class="badge {{statusClass $c.Status}}" title="{{$c.Status}}">{{score $c.Display}}</span>
-    {{if $c.Override}}<span class="ovr" title="teacher override">*</span>{{end}}
+    {{if $c.Status}}<span class="badge {{statusClass $c.Status}}" title="{{tStatus $c.Status}}">{{score $c.Display}}</span>
+    {{if $c.Override}}<span class="ovr" title="{{t "matrix.override_title"}}">*</span>{{end}}
     {{if $c.LatestSubID}}<a class="cell-link" href="/submissions/{{$c.LatestSubID}}">&rarr;</a>{{end}}
     {{else}}&mdash;{{end}}
   </td>

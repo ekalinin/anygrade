@@ -1,0 +1,216 @@
+# English catalog - the source of truth. Every key used by the web UI must
+# exist here; other locales fall back to these values. Keep values byte-for-byte
+# identical to the text the UI shipped with in English.
+
+# Top navigation and chrome (base.html).
+nav.matrix: "matrix"
+nav.queue: "queue"
+nav.students: "students"
+nav.audit: "audit"
+nav.leaderboard: "leaderboard"
+nav.settings: "settings"
+nav.logout: "log out"
+nav.teacher_suffix: " (teacher)"
+
+# Words shared across several pages.
+common.task: "Task"
+common.tasks: "Tasks"
+common.tasks_crumb: "tasks"
+common.status: "Status"
+common.score: "Score"
+common.attempts: "Attempts"
+common.attempt: "Attempt"
+common.deadline: "Deadline"
+common.received: "Received"
+common.student: "Student"
+common.total: "Total"
+common.login: "Login"
+common.name: "Name"
+common.role: "Role"
+common.state: "State"
+common.created: "Created"
+common.note: "Note"
+common.check: "Check"
+common.result: "Result"
+common.time: "Time"
+common.log: "Log"
+common.filter: "filter"
+common.clear: "clear"
+common.cancel: "cancel"
+common.recheck: "recheck"
+common.download: "download"
+common.commit: "commit"
+common.added: "added"
+common.ssh_keys: "SSH keys"
+common.no_keys: "No keys registered."
+common.no_events: "No recorded events."
+common.when: "When"
+common.actor: "Actor"
+common.kind: "Kind"
+common.target: "Target"
+common.detail: "Detail"
+common.system: "system"
+common.prev: "prev"
+common.next: "next"
+
+# Submission statuses (raw store + derived gradebook values). Keys are the enum
+# value with spaces turned into underscores.
+status.queued: "queued"
+status.running: "running"
+status.done: "done"
+status.infra_error: "infra_error"
+status.rejected_deadline: "rejected_deadline"
+status.rejected_limit: "rejected_limit"
+status.not_started: "not started"
+status.retrying: "retrying"
+status.error: "error"
+status.canceled: "canceled"
+status.rejected: "rejected"
+status.passed: "passed"
+status.partial: "partial"
+status.failed: "failed"
+status.pass: "pass"
+status.fail: "fail"
+status.skipped: "skipped"
+status.timeout: "timeout"
+
+# User account states.
+state.active: "active"
+state.disabled: "disabled"
+
+# Flash / error codes rendered inside HTML pages (tFlash). Unknown codes pass
+# through unchanged, so dynamic reject reasons stay in English.
+flash.too_many_attempts: "too many failed attempts, try again later"
+flash.unknown_login: "unknown login or token"
+flash.unparseable_ssh_key: "unparseable SSH key; paste one authorized_keys line or leave it empty"
+flash.wrong_course_code: "wrong course code"
+flash.invalid_login: "invalid login: lowercase letters, digits, ._- only"
+flash.login_taken: "login already taken"
+flash.key_already_registered: "key already registered"
+flash.nothing_to_recheck: "nothing to recheck"
+
+# login.html
+login.title: "Sign in"
+login.submit: "Sign in"
+login.access_token: "Access token"
+login.hint: "Use the personal access token you received at activation."
+
+# dashboard.html
+dashboard.title: "Tasks"
+
+# task.html
+task.score_label: "score:"
+task.soft_deadline: "soft deadline:"
+task.hard_deadline: "hard deadline:"
+task.attempts_label: "attempts:"
+task.of: "of"
+task.cooldown_until: "cooldown until"
+task.submissions: "Submissions"
+task.recheck_latest: "recheck latest"
+task.recheck_disabled_title: "nothing to recheck, or limits reached"
+task.no_submissions: "No submissions yet: push your solution to your personal repo."
+
+# submission.html
+submission.title: "Submission"
+submission.crumb: "submission"
+submission.received: "received"
+submission.attempt: "attempt"
+submission.live_output: "Live output"
+
+# partials/sub_results.html
+sub.rejected: "rejected:"
+sub.raw: "raw"
+sub.late_penalty: "late penalty"
+sub.output: "output"
+sub.waiting: "Waiting for a worker…"
+sub.no_results: "No check results recorded."
+
+# matrix.html
+matrix.title: "Matrix"
+matrix.export_csv: "export CSV"
+matrix.filter_placeholder: "login or name"
+matrix.any_task: "any task"
+matrix.any_status: "any status"
+matrix.override_title: "teacher override"
+
+# queue.html
+queue.title: "Queue"
+queue.empty: "Nothing pending: no queued, running, or failing submissions."
+
+# students.html
+students.title: "Students"
+students.crumb: "students"
+
+# student.html
+student.reset_token: "reset token"
+student.deactivate: "deactivate"
+student.reactivate: "reactivate"
+student.override_col: "Override"
+student.code_link: "code"
+student.set: "set"
+student.score_placeholder: "score"
+student.comment_placeholder: "comment"
+student.recent_activity: "Recent activity"
+student.action_col: "Action"
+
+# code.html
+code.title: "Submitted code"
+code.crumb: "code"
+code.all_files: "← all files"
+code.binary: "Binary file."
+code.download: "Download"
+code.too_big: "File is larger than 256 KB."
+code.no_files: "No files under the task directory at this commit."
+
+# leaderboard.html
+leaderboard.title: "Leaderboard"
+leaderboard.anonymized: "Names are anonymized; you are highlighted."
+leaderboard.you: "(you)"
+
+# settings.html
+settings.title: "Settings"
+settings.token_heading: "Personal access token"
+settings.token_hint: "The token is your git HTTP password and UI login. Regenerating it logs out every other session."
+settings.regenerate: "regenerate token"
+settings.remove: "remove"
+settings.add_key_label: "Add a public key (authorized_keys line)"
+settings.add_key: "add key"
+
+# invite.html
+invite.title: "Course activation"
+invite.invalid: "This invite link is invalid, expired, or already used. Ask your teacher for a new one."
+invite.welcome: "Welcome,"
+invite.activation_creates: "Activating creates your personal access token"
+invite.and_ssh: " and optionally registers an SSH key"
+invite.ssh_key_label: "SSH public key"
+invite.ssh_key_hint: "(optional, authorized_keys line)"
+invite.activate: "Activate account"
+
+# register.html
+register.title: "Register"
+register.display_name: "Display name"
+register.course_code: "Course code"
+register.submit: "Register"
+
+# token_once.html
+token.title: "Access token for"
+token.store_once: "Store this token now; it is shown only once."
+token.repo_setup: "Repository setup"
+token.http_hint: "Use your login as the username and this token as the password for git over HTTP."
+token.ssh_hint: "Or over SSH, once an SSH key is added (at activation or in settings):"
+token.continue: "Continue to the dashboard"
+
+# audit.html
+audit.title: "Audit log"
+audit.any_kind: "any kind"
+audit.target_placeholder: "target substring"
+
+# Countdown words (readmodel.go). The %s wraps the compact "3d 4h" string.
+countdown.in: "in %s"
+countdown.overdue: "%s overdue"
+countdown.dh: "%dd %dh"
+countdown.hm: "%dh %dm"
+countdown.m: "%dm"
+
+# Live-output stream (stream.go).
+stream.truncated: "[output truncated; full log available after the run]"

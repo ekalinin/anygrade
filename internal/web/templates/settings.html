@@ -1,27 +1,27 @@
 {{define "content"}}
-<h1>Settings</h1>
-{{if .Flash}}<p class="flash">{{.Flash}}</p>{{end}}
+<h1>{{t "settings.title"}}</h1>
+{{if .Flash}}<p class="flash">{{tFlash .Flash}}</p>{{end}}
 
-<h2>Personal access token</h2>
-<p class="hint">The token is your git HTTP password and UI login. Regenerating it logs out every other session.</p>
+<h2>{{t "settings.token_heading"}}</h2>
+<p class="hint">{{t "settings.token_hint"}}</p>
 <form method="post" action="/settings/token">
-  <button type="submit">regenerate token</button>
+  <button type="submit">{{t "settings.regenerate"}}</button>
 </form>
 
-<h2>SSH keys</h2>
+<h2>{{t "common.ssh_keys"}}</h2>
 {{if .Keys}}
 <ul>
 {{range .Keys}}
-<li><code>{{.Fingerprint}}</code> <span class="hint">added {{fmtTime .CreatedAt}}</span>
-  <form method="post" action="/settings/keys/{{.ID}}/delete" class="inline"><button type="submit" class="linklike">remove</button></form>
+<li><code>{{.Fingerprint}}</code> <span class="hint">{{t "common.added"}} {{fmtTime .CreatedAt}}</span>
+  <form method="post" action="/settings/keys/{{.ID}}/delete" class="inline"><button type="submit" class="linklike">{{t "settings.remove"}}</button></form>
 </li>
 {{end}}
 </ul>
-{{else}}<p class="hint">No keys registered.</p>{{end}}
+{{else}}<p class="hint">{{t "common.no_keys"}}</p>{{end}}
 <form method="post" action="/settings/keys">
-  <label>Add a public key (authorized_keys line)
+  <label>{{t "settings.add_key_label"}}
     <input name="key" placeholder="ssh-ed25519 AAAA... comment" required>
   </label>
-  <button type="submit">add key</button>
+  <button type="submit">{{t "settings.add_key"}}</button>
 </form>
 {{end}}

@@ -76,7 +76,7 @@ func (h *Handler) submissionPage(w http.ResponseWriter, r *http.Request) {
 	data := h.submissionData(sub, checks)
 	data.CourseName = h.Course.Get().Resolved.Course.Name
 	data.User = userView{u.Login, u.DisplayName, u.Role}
-	renderPage(w, "submission", data)
+	h.renderPage(w, r, "submission", data)
 }
 
 // submissionFragment re-renders the authoritative results block; the SSE
@@ -86,7 +86,7 @@ func (h *Handler) submissionFragment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	html, err := renderPartial("sub-results", h.submissionData(sub, checks))
+	html, err := renderPartial(h.lang(r), "sub-results", h.submissionData(sub, checks))
 	if err != nil {
 		http.Error(w, "render failed", http.StatusInternalServerError)
 		return

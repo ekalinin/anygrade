@@ -1,13 +1,13 @@
 {{define "content"}}
-<h1>Leaderboard</h1>
-{{if .Anonymize}}<p class="hint">Names are anonymized; you are highlighted.</p>{{end}}
+<h1>{{t "leaderboard.title"}}</h1>
+{{if .Anonymize}}<p class="hint">{{t "leaderboard.anonymized"}}</p>{{end}}
 <table class="leaderboard">
-  <thead><tr><th>#</th><th>Student</th><th>Total</th></tr></thead>
+  <thead><tr><th>#</th><th>{{t "common.student"}}</th><th>{{t "common.total"}}</th></tr></thead>
   <tbody>
   {{range .Rows}}
   <tr{{if .Self}} class="self"{{end}}>
     <td>{{.Rank}}</td>
-    <td>{{.Name}}{{if .Self}} <span class="hint">(you)</span>{{end}}</td>
+    <td>{{.Name}}{{if .Self}} <span class="hint">{{t "leaderboard.you"}}</span>{{end}}</td>
     <td>{{.Total}}</td>
   </tr>
   {{end}}

@@ -1,5 +1,6 @@
 name: "Go course 2026"
 tasks_dir: tasks
+language: en
 
 registration:
   mode: invite

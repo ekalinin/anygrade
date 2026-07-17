@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/ekalinin/anygrade/internal/i18n"
 )
 
 //go:embed templates static
@@ -23,43 +25,67 @@ func staticHandler() http.Handler {
 	return http.FileServerFS(sub)
 }
 
-var funcs = template.FuncMap{
-	"fmtTime": func(t any) string {
-		return withTime(t, func(v time.Time) string { return v.Local().Format("2006-01-02 15:04") })
-	},
-	"countdown": func(t any) string { return withTime(t, func(v time.Time) string { return countdown(v, time.Now()) }) },
-	"score": func(f any) string {
-		v, ok := f.(float64)
-		if p, isPtr := f.(*float64); isPtr {
-			if p == nil {
-				return ""
-			}
-			v, ok = *p, true
-		}
-		if !ok {
+// localeFuncs builds the template FuncMap bound to one locale. The locale-free
+// helpers (fmtTime, score, statusClass, dict) are the same for every locale;
+// the translation helpers (t, tFlash, tStatus, countdown) close over the
+// locale's translator.
+func localeFuncs(lang string) template.FuncMap {
+	tr := i18n.For(lang)
+	return template.FuncMap{
+		"fmtTime": func(t any) string {
+			return withTime(t, func(v time.Time) string { return v.Local().Format("2006-01-02 15:04") })
+		},
+		"countdown": func(t any) string {
+			return withTime(t, func(v time.Time) string { return countdown(v, time.Now(), tr) })
+		},
+		"score":       fmtScore,
+		"statusClass": statusClass,
+		"dict":        dict,
+		"t":           tr.T,
+		"tFlash":      tr.TFlash,
+		"tStatus":     tr.TStatus,
+		"lang":        tr.Lang,
+		"locales":     i18n.Locales,
+		"upper":       strings.ToUpper,
+	}
+}
+
+// fmtScore trims a trailing ".0" so whole scores render as integers.
+func fmtScore(f any) string {
+	v, ok := f.(float64)
+	if p, isPtr := f.(*float64); isPtr {
+		if p == nil {
 			return ""
 		}
-		return strings.TrimSuffix(fmt.Sprintf("%.1f", v), ".0")
-	},
-	"statusClass": func(s string) string {
-		return "st-" + strings.NewReplacer(" ", "-", "_", "-").Replace(s)
-	},
-	// dict builds a payload for partials that need several roots (a struct
-	// on the Go side, a map here: field and key access read the same).
-	"dict": func(pairs ...any) (map[string]any, error) {
-		if len(pairs)%2 != 0 {
-			return nil, fmt.Errorf("dict: odd argument count")
+		v, ok = *p, true
+	}
+	if !ok {
+		return ""
+	}
+	return strings.TrimSuffix(fmt.Sprintf("%.1f", v), ".0")
+}
+
+// statusClass maps a status value to its CSS badge class (raw value, not the
+// translated label - the stylesheet keys off the English enum).
+func statusClass(s string) string {
+	return "st-" + strings.NewReplacer(" ", "-", "_", "-").Replace(s)
+}
+
+// dict builds a payload for partials that need several roots (a struct on the
+// Go side, a map here: field and key access read the same).
+func dict(pairs ...any) (map[string]any, error) {
+	if len(pairs)%2 != 0 {
+		return nil, fmt.Errorf("dict: odd argument count")
+	}
+	m := make(map[string]any, len(pairs)/2)
+	for i := 0; i < len(pairs); i += 2 {
+		k, ok := pairs[i].(string)
+		if !ok {
+			return nil, fmt.Errorf("dict: key %v is not a string", pairs[i])
 		}
-		m := make(map[string]any, len(pairs)/2)
-		for i := 0; i < len(pairs); i += 2 {
-			k, ok := pairs[i].(string)
-			if !ok {
-				return nil, fmt.Errorf("dict: key %v is not a string", pairs[i])
-			}
-			m[k] = pairs[i+1]
-		}
-		return m, nil
-	},
+		m[k] = pairs[i+1]
+	}
+	return m, nil
 }
 
 // withTime accepts time.Time and *time.Time (templates mix both).
@@ -75,37 +101,48 @@ func withTime(t any, f func(time.Time) string) string {
 	return ""
 }
 
-// pages maps page name -> parsed template set (base + partials + the page).
-var pages = func() map[string]*template.Template {
-	base := template.Must(template.New("base").Funcs(funcs).ParseFS(assets,
-		"templates/base.html", "templates/partials/*.html"))
-	m := map[string]*template.Template{}
-	for _, page := range []string{
-		"login", "dashboard", "task", "submission",
-		"matrix", "queue", "students", "student", "code",
-		"leaderboard", "settings", "invite", "register", "token_once", "audit",
-	} {
-		clone := template.Must(base.Clone())
-		m[page] = template.Must(clone.ParseFS(assets, "templates/"+page+".html"))
+var pageNames = []string{
+	"login", "dashboard", "task", "submission",
+	"matrix", "queue", "students", "student", "code",
+	"leaderboard", "settings", "invite", "register", "token_once", "audit",
+}
+
+// pages maps locale -> page name -> parsed template set (base + partials + the
+// page). The set is parsed once per locale at init with a locale-bound FuncMap,
+// so request-time rendering only picks the map entry (templates stay immutable
+// and race-free).
+var pages = func() map[string]map[string]*template.Template {
+	m := map[string]map[string]*template.Template{}
+	for _, lang := range i18n.Locales() {
+		base := template.Must(template.New("base").Funcs(localeFuncs(lang)).ParseFS(assets,
+			"templates/base.html", "templates/partials/*.html"))
+		set := map[string]*template.Template{}
+		for _, page := range pageNames {
+			clone := template.Must(base.Clone())
+			set[page] = template.Must(clone.ParseFS(assets, "templates/"+page+".html"))
+		}
+		m[lang] = set
 	}
 	return m
 }()
 
-// renderPage executes a full page; render errors after headers are logged
-// in-band (template output is already partially written - keep it simple).
-func renderPage(w http.ResponseWriter, page string, data any) {
+// renderPage executes a full page in the request's locale; render errors after
+// headers are logged in-band (template output is already partially written -
+// keep it simple).
+func (h *Handler) renderPage(w http.ResponseWriter, r *http.Request, page string, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := pages[page].ExecuteTemplate(w, "base", data); err != nil {
+	if err := pages[h.lang(r)][page].ExecuteTemplate(w, "base", data); err != nil {
 		fmt.Fprintf(w, "<!-- render error: %v -->", err)
 	}
 }
 
 // renderPartial executes one named partial into a buffer (htmx fragments and
-// SSE payloads).
-func renderPartial(name string, data any) (string, error) {
+// SSE payloads) in the given locale.
+func renderPartial(lang, name string, data any) (string, error) {
 	var buf bytes.Buffer
-	// Partials are parsed into every page set; any set can execute them.
-	if err := pages["dashboard"].ExecuteTemplate(&buf, name, data); err != nil {
+	// Partials are parsed into every page set; any set for the locale can
+	// execute them.
+	if err := pages[lang]["dashboard"].ExecuteTemplate(&buf, name, data); err != nil {
 		return "", err
 	}
 	return buf.String(), nil

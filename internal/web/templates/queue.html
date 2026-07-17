@@ -1,13 +1,13 @@
 {{define "content"}}
-<h1>Queue</h1>
+<h1>{{t "queue.title"}}</h1>
 <div hx-ext="sse" sse-connect="/queue/stream">
 {{if .Rows}}
 <table class="queue">
-  <thead><tr><th>#</th><th>Student</th><th>Task</th><th>Status</th><th>Received</th><th>Note</th><th></th></tr></thead>
+  <thead><tr><th>#</th><th>{{t "common.student"}}</th><th>{{t "common.task"}}</th><th>{{t "common.status"}}</th><th>{{t "common.received"}}</th><th>{{t "common.note"}}</th><th></th></tr></thead>
   <tbody>
   {{range .Rows}}{{template "queue-row" .}}{{end}}
   </tbody>
 </table>
-{{else}}<p class="hint">Nothing pending: no queued, running, or failing submissions.</p>{{end}}
+{{else}}<p class="hint">{{t "queue.empty"}}</p>{{end}}
 </div>
 {{end}}

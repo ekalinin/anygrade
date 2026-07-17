@@ -26,7 +26,7 @@ func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	course := h.Course.Get()
-	renderPage(w, "dashboard", dashboardData{
+	h.renderPage(w, r, "dashboard", dashboardData{
 		CourseName: course.Resolved.Course.Name,
 		User:       userView{u.Login, u.DisplayName, u.Role},
 		Tasks:      buildDashboard(course, subs),
@@ -47,6 +47,7 @@ func (h *Handler) dashboardStream(w http.ResponseWriter, r *http.Request) {
 	events, cancel := h.Hub.SubscribeUser(u.ID)
 	defer cancel()
 
+	lang := h.lang(r)
 	for {
 		select {
 		case <-r.Context().Done():
@@ -62,7 +63,7 @@ func (h *Handler) dashboardStream(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			view := buildTaskView(task, history, course.Resolved.Course.ScoringPolicy)
-			html, err := renderPartial("task-row", view)
+			html, err := renderPartial(lang, "task-row", view)
 			if err != nil {
 				continue
 			}

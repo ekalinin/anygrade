@@ -1,25 +1,25 @@
 {{define "content"}}
-<h1>Matrix <a class="linklike-a" href="/export/scores.csv">export CSV</a></h1>
+<h1>{{t "matrix.title"}} <a class="linklike-a" href="/export/scores.csv">{{t "matrix.export_csv"}}</a></h1>
 <form method="get" action="/matrix" class="filters">
-  <input type="text" name="q" value="{{.Q}}" placeholder="login or name">
+  <input type="text" name="q" value="{{.Q}}" placeholder="{{t "matrix.filter_placeholder"}}">
   <select name="task">
-    <option value="">any task</option>
+    <option value="">{{t "matrix.any_task"}}</option>
     {{range .Matrix.Tasks}}<option value="{{.ID}}" {{if eq $.Task .ID}}selected{{end}}>{{.ID}}</option>{{end}}
   </select>
   <select name="status">
-    <option value="">any status</option>
-    {{range .Statuses}}<option value="{{.}}" {{if eq $.Status .}}selected{{end}}>{{.}}</option>{{end}}
+    <option value="">{{t "matrix.any_status"}}</option>
+    {{range .Statuses}}<option value="{{.}}" {{if eq $.Status .}}selected{{end}}>{{tStatus .}}</option>{{end}}
   </select>
-  <button type="submit">filter</button>
-  {{if .Filtered}}<a href="/matrix">clear</a>{{end}}
+  <button type="submit">{{t "common.filter"}}</button>
+  {{if .Filtered}}<a href="/matrix">{{t "common.clear"}}</a>{{end}}
 </form>
 {{$tasks := .Matrix.Tasks}}
 {{if .Filtered}}
 <table class="matrix">
   <thead><tr>
-    <th>Student</th>
+    <th>{{t "common.student"}}</th>
     {{range $tasks}}<th title="{{.Name}}">{{.ID}}<br><span class="hint">/{{.MaxScore}}</span></th>{{end}}
-    <th>Total</th>
+    <th>{{t "common.total"}}</th>
   </tr></thead>
   <tbody>
   {{range .Matrix.Rows}}{{template "matrix-row" (dict "Row" . "Tasks" $tasks)}}{{end}}
@@ -29,9 +29,9 @@
 <div hx-ext="sse" sse-connect="/matrix/stream">
 <table class="matrix">
   <thead><tr>
-    <th>Student</th>
+    <th>{{t "common.student"}}</th>
     {{range $tasks}}<th title="{{.Name}}">{{.ID}}<br><span class="hint">/{{.MaxScore}}</span></th>{{end}}
-    <th>Total</th>
+    <th>{{t "common.total"}}</th>
   </tr></thead>
   <tbody>
   {{range .Matrix.Rows}}{{template "matrix-row" (dict "Row" . "Tasks" $tasks)}}{{end}}

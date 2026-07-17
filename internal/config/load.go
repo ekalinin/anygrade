@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/ekalinin/anygrade/internal/i18n"
 )
 
 const (
@@ -150,9 +152,14 @@ func resolveCourse(c *Course) ResolvedCourse {
 	if policy == "" {
 		policy = "best"
 	}
+	lang := c.Language
+	if lang == "" {
+		lang = i18n.Default
+	}
 	return ResolvedCourse{
 		Name:          c.Name,
 		TasksDir:      tasksDir,
+		Language:      lang,
 		Registration:  c.Registration,
 		Leaderboard:   c.Leaderboard,
 		ScoringPolicy: policy,

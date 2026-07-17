@@ -1,41 +1,41 @@
 {{define "sub-results"}}
 {{if .Rejected}}
-<p class="flash error">rejected: {{.Sub.WorkerNote}}</p>
+<p class="flash error">{{t "sub.rejected"}} {{.Sub.WorkerNote}}</p>
 {{else if .Checks}}
 <table class="checks">
-  <thead><tr><th>Check</th><th>Result</th><th>Time</th><th>Log</th></tr></thead>
+  <thead><tr><th>{{t "common.check"}}</th><th>{{t "common.result"}}</th><th>{{t "common.time"}}</th><th>{{t "common.log"}}</th></tr></thead>
   <tbody>
   {{range .Checks}}
   <tr>
     <td>{{.Name}}</td>
     <td>
-      {{if .Skipped}}<span class="badge st-skipped">skipped</span>
-      {{else if .TimedOut}}<span class="badge st-failed">timeout</span>
-      {{else if .Passed}}<span class="badge st-passed">pass</span>
-      {{else}}<span class="badge st-failed">fail</span>{{end}}
+      {{if .Skipped}}<span class="badge st-skipped">{{t "status.skipped"}}</span>
+      {{else if .TimedOut}}<span class="badge st-failed">{{t "status.timeout"}}</span>
+      {{else if .Passed}}<span class="badge st-passed">{{t "status.pass"}}</span>
+      {{else}}<span class="badge st-failed">{{t "status.fail"}}</span>{{end}}
     </td>
     <td>{{.Duration}}</td>
-    <td><a href="/submissions/{{$.Sub.ID}}/logs/{{.Name}}">download</a></td>
+    <td><a href="/submissions/{{$.Sub.ID}}/logs/{{.Name}}">{{t "common.download"}}</a></td>
   </tr>
   {{end}}
   </tbody>
 </table>
 {{if .Sub.FinalScore}}
 <p class="scoreline">
-  raw {{score .Sub.RawScore}}{{if .Sub.PenaltyPercent}}, late penalty {{score .Sub.PenaltyPercent}}%{{end}}
+  {{t "sub.raw"}} {{score .Sub.RawScore}}{{if .Sub.PenaltyPercent}}, {{t "sub.late_penalty"}} {{score .Sub.PenaltyPercent}}%{{end}}
   &rarr; <strong>{{score .Sub.FinalScore}} / {{.TaskScore}}</strong>
 </p>
 {{end}}
 {{range .Checks}}{{if and .LogExcerpt (not .Passed) (not .Skipped)}}
 <details class="pane">
-  <summary>{{.Name}} output</summary>
+  <summary>{{.Name}} {{t "sub.output"}}</summary>
   <pre>{{.LogExcerpt}}</pre>
 </details>
 {{end}}{{end}}
 {{if .Sub.WorkerNote}}<p class="hint note">{{.Sub.WorkerNote}}</p>{{end}}
 {{else if .Running}}
-<p class="hint">Waiting for a worker&hellip;</p>
+<p class="hint">{{t "sub.waiting"}}</p>
 {{else}}
-<p class="hint">No check results recorded.</p>
+<p class="hint">{{t "sub.no_results"}}</p>
 {{end}}
 {{end}}

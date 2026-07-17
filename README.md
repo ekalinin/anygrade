@@ -5,7 +5,7 @@ A single Go binary that turns any git repository with course tasks into a gradin
 Point it at a course repo and it serves:
 
 - a git interface for submitting solutions (SSH and smart HTTP),
-- a web UI for students (results, live logs, scores) and teachers (matrix, overrides, CSV export, queue, audit),
+- a web UI for students (results, live logs, scores) and teachers (matrix, overrides, CSV export, queue, audit), in English or Russian (`language:` in course.yaml, plus a per-user switcher),
 - a local mode for offline self-checking and course authoring.
 
 Behavior is driven by metadata files (`course.yaml`, `task.yaml`), not by code changes. A check is an arbitrary command, so any language works if the environment (docker image or host) can run it. One running instance serves exactly one course.
@@ -43,6 +43,7 @@ course-repo/
 
 ```yaml
 name: "Go course 2026"
+language: en              # web UI language: en | ru (default en)
 
 registration:
   mode: invite            # invite | open

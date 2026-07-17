@@ -18,6 +18,7 @@ type Resolved struct {
 type ResolvedCourse struct {
 	Name          string
 	TasksDir      string
+	Language      string
 	Registration  Registration
 	Leaderboard   Leaderboard
 	ScoringPolicy string

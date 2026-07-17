@@ -68,7 +68,7 @@ func (h *Handler) codeList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	renderPage(w, "code", data)
+	h.renderPage(w, r, "code", data)
 }
 
 func (h *Handler) codeFile(w http.ResponseWriter, r *http.Request) {
@@ -103,5 +103,5 @@ func (h *Handler) codeFile(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(content)
 		return
 	}
-	renderPage(w, "code", data)
+	h.renderPage(w, r, "code", data)
 }

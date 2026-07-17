@@ -7,6 +7,7 @@ package config
 type Course struct {
 	Name         string       `yaml:"name"`
 	TasksDir     string       `yaml:"tasks_dir"`
+	Language     string       `yaml:"language"` // web UI language (en | ru); empty defaults to en
 	Registration Registration `yaml:"registration"`
 	Leaderboard  Leaderboard  `yaml:"leaderboard"`
 	Scoring      Scoring      `yaml:"scoring"`

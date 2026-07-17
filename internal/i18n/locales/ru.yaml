@@ -1,0 +1,212 @@
+# Russian catalog. Every key mirrors en.yaml; missing keys fall back to English.
+
+# Top navigation and chrome (base.html).
+nav.matrix: "матрица"
+nav.queue: "очередь"
+nav.students: "студенты"
+nav.audit: "аудит"
+nav.leaderboard: "рейтинг"
+nav.settings: "настройки"
+nav.logout: "выйти"
+nav.teacher_suffix: " (преподаватель)"
+
+# Words shared across several pages.
+common.task: "Задача"
+common.tasks: "Задачи"
+common.tasks_crumb: "задачи"
+common.status: "Статус"
+common.score: "Баллы"
+common.attempts: "Попытки"
+common.attempt: "Попытка"
+common.deadline: "Дедлайн"
+common.received: "Получено"
+common.student: "Студент"
+common.total: "Итого"
+common.login: "Логин"
+common.name: "Имя"
+common.role: "Роль"
+common.state: "Состояние"
+common.created: "Создан"
+common.note: "Заметка"
+common.check: "Проверка"
+common.result: "Результат"
+common.time: "Время"
+common.log: "Лог"
+common.filter: "фильтр"
+common.clear: "сбросить"
+common.cancel: "отменить"
+common.recheck: "перепроверить"
+common.download: "скачать"
+common.commit: "коммит"
+common.added: "добавлен"
+common.ssh_keys: "SSH-ключи"
+common.no_keys: "Нет зарегистрированных ключей."
+common.no_events: "Событий нет."
+common.when: "Когда"
+common.actor: "Кто"
+common.kind: "Тип"
+common.target: "Объект"
+common.detail: "Детали"
+common.system: "система"
+common.prev: "назад"
+common.next: "вперёд"
+
+# Submission statuses.
+status.queued: "в очереди"
+status.running: "выполняется"
+status.done: "готово"
+status.infra_error: "ошибка инфраструктуры"
+status.rejected_deadline: "отклонено по дедлайну"
+status.rejected_limit: "отклонено по лимиту"
+status.not_started: "не начато"
+status.retrying: "повтор"
+status.error: "ошибка"
+status.canceled: "отменено"
+status.rejected: "отклонено"
+status.passed: "зачтено"
+status.partial: "частично"
+status.failed: "провалено"
+status.pass: "успех"
+status.fail: "провал"
+status.skipped: "пропущено"
+status.timeout: "таймаут"
+
+# User account states.
+state.active: "активен"
+state.disabled: "отключён"
+
+# Flash / error codes.
+flash.too_many_attempts: "слишком много неудачных попыток, попробуйте позже"
+flash.unknown_login: "неизвестный логин или токен"
+flash.unparseable_ssh_key: "не удалось разобрать SSH-ключ; вставьте одну строку authorized_keys или оставьте поле пустым"
+flash.wrong_course_code: "неверный код курса"
+flash.invalid_login: "недопустимый логин: только строчные буквы, цифры и ._-"
+flash.login_taken: "логин уже занят"
+flash.key_already_registered: "ключ уже зарегистрирован"
+flash.nothing_to_recheck: "нечего перепроверять"
+
+# login.html
+login.title: "Вход"
+login.submit: "Войти"
+login.access_token: "Токен доступа"
+login.hint: "Используйте персональный токен доступа, полученный при активации."
+
+# dashboard.html
+dashboard.title: "Задачи"
+
+# task.html
+task.score_label: "баллы:"
+task.soft_deadline: "мягкий дедлайн:"
+task.hard_deadline: "жёсткий дедлайн:"
+task.attempts_label: "попытки:"
+task.of: "из"
+task.cooldown_until: "перерыв до"
+task.submissions: "Отправки"
+task.recheck_latest: "перепроверить последнюю"
+task.recheck_disabled_title: "нечего перепроверять или достигнут лимит"
+task.no_submissions: "Пока нет отправок: запушьте решение в свой персональный репозиторий."
+
+# submission.html
+submission.title: "Отправка"
+submission.crumb: "отправка"
+submission.received: "получено"
+submission.attempt: "попытка"
+submission.live_output: "Живой вывод"
+
+# partials/sub_results.html
+sub.rejected: "отклонено:"
+sub.raw: "сырой балл"
+sub.late_penalty: "штраф за опоздание"
+sub.output: "вывод"
+sub.waiting: "Ожидание воркера…"
+sub.no_results: "Результатов проверок нет."
+
+# matrix.html
+matrix.title: "Матрица"
+matrix.export_csv: "экспорт CSV"
+matrix.filter_placeholder: "логин или имя"
+matrix.any_task: "любая задача"
+matrix.any_status: "любой статус"
+matrix.override_title: "оценка преподавателя"
+
+# queue.html
+queue.title: "Очередь"
+queue.empty: "Ничего не ожидает: нет отправок в очереди, выполняющихся или падающих."
+
+# students.html
+students.title: "Студенты"
+students.crumb: "студенты"
+
+# student.html
+student.reset_token: "сбросить токен"
+student.deactivate: "деактивировать"
+student.reactivate: "активировать"
+student.override_col: "Оценка вручную"
+student.code_link: "код"
+student.set: "задать"
+student.score_placeholder: "балл"
+student.comment_placeholder: "комментарий"
+student.recent_activity: "Недавняя активность"
+student.action_col: "Действие"
+
+# code.html
+code.title: "Отправленный код"
+code.crumb: "код"
+code.all_files: "← все файлы"
+code.binary: "Бинарный файл."
+code.download: "Скачать"
+code.too_big: "Файл больше 256 КБ."
+code.no_files: "В каталоге задачи на этом коммите нет файлов."
+
+# leaderboard.html
+leaderboard.title: "Рейтинг"
+leaderboard.anonymized: "Имена скрыты; вы выделены."
+leaderboard.you: "(вы)"
+
+# settings.html
+settings.title: "Настройки"
+settings.token_heading: "Персональный токен доступа"
+settings.token_hint: "Токен - это ваш пароль для git по HTTP и логин в UI. Перегенерация завершит все остальные сессии."
+settings.regenerate: "перегенерировать токен"
+settings.remove: "удалить"
+settings.add_key_label: "Добавить публичный ключ (строка authorized_keys)"
+settings.add_key: "добавить ключ"
+
+# invite.html
+invite.title: "Активация курса"
+invite.invalid: "Эта пригласительная ссылка недействительна, истекла или уже использована. Попросите преподавателя выдать новую."
+invite.welcome: "Добро пожаловать,"
+invite.activation_creates: "Активация создаёт ваш персональный токен доступа"
+invite.and_ssh: " и по желанию регистрирует SSH-ключ"
+invite.ssh_key_label: "Публичный SSH-ключ"
+invite.ssh_key_hint: "(необязательно, строка authorized_keys)"
+invite.activate: "Активировать аккаунт"
+
+# register.html
+register.title: "Регистрация"
+register.display_name: "Отображаемое имя"
+register.course_code: "Код курса"
+register.submit: "Зарегистрироваться"
+
+# token_once.html
+token.title: "Токен доступа для"
+token.store_once: "Сохраните этот токен сейчас; он показывается только один раз."
+token.repo_setup: "Настройка репозитория"
+token.http_hint: "Используйте свой логин как имя пользователя, а этот токен как пароль для git по HTTP."
+token.ssh_hint: "Или по SSH, как только добавлен SSH-ключ (при активации или в настройках):"
+token.continue: "Перейти к панели"
+
+# audit.html
+audit.title: "Журнал аудита"
+audit.any_kind: "любой тип"
+audit.target_placeholder: "подстрока объекта"
+
+# Countdown words.
+countdown.in: "через %s"
+countdown.overdue: "%s назад"
+countdown.dh: "%dд %dч"
+countdown.hm: "%dч %dм"
+countdown.m: "%dм"
+
+# Live-output stream.
+stream.truncated: "[вывод обрезан; полный лог доступен после прогона]"

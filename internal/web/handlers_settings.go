@@ -21,7 +21,7 @@ type settingsData struct {
 func (h *Handler) settingsPage(w http.ResponseWriter, r *http.Request) {
 	u := user(r)
 	keys, _ := h.DB.ListSSHKeys(r.Context(), u.ID)
-	renderPage(w, "settings", settingsData{
+	h.renderPage(w, r, "settings", settingsData{
 		CourseName: h.Course.Get().Resolved.Course.Name,
 		User:       userView{u.Login, u.DisplayName, u.Role},
 		Keys:       keys,
@@ -54,11 +54,11 @@ func (h *Handler) addOwnKey(w http.ResponseWriter, r *http.Request) {
 	keyText := strings.TrimSpace(r.FormValue("key"))
 	pk, _, _, _, err := gossh.ParseAuthorizedKey([]byte(keyText))
 	if err != nil {
-		http.Redirect(w, r, "/settings?flash=unparseable+ssh+key", http.StatusSeeOther)
+		http.Redirect(w, r, "/settings?flash=unparseable_ssh_key", http.StatusSeeOther)
 		return
 	}
 	if _, err := h.DB.AddSSHKey(r.Context(), u.ID, gossh.FingerprintSHA256(pk), keyText); err != nil {
-		http.Redirect(w, r, "/settings?flash=key+already+registered", http.StatusSeeOther)
+		http.Redirect(w, r, "/settings?flash=key_already_registered", http.StatusSeeOther)
 		return
 	}
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
@@ -119,7 +119,7 @@ func (h *Handler) leaderboardPage(w http.ResponseWriter, r *http.Request) {
 			Self:  lr.Login == u.Login,
 		})
 	}
-	renderPage(w, "leaderboard", leaderboardData{
+	h.renderPage(w, r, "leaderboard", leaderboardData{
 		CourseName: course.Resolved.Course.Name,
 		User:       userView{u.Login, u.DisplayName, u.Role},
 		Rows:       rows,

@@ -56,7 +56,7 @@ func (h *Handler) queuePage(w http.ResponseWriter, r *http.Request) {
 	for i, s := range subs {
 		rows[i] = queueRow{Sub: s, Login: logins[s.UserID], Status: subDisplayStatus(s)}
 	}
-	renderPage(w, "queue", queueData{
+	h.renderPage(w, r, "queue", queueData{
 		CourseName: h.Course.Get().Resolved.Course.Name,
 		User:       userView{u.Login, u.DisplayName, u.Role},
 		Rows:       rows,
@@ -73,6 +73,7 @@ func (h *Handler) queueStream(w http.ResponseWriter, r *http.Request) {
 	}
 	events, cancel := h.Hub.SubscribeAll()
 	defer cancel()
+	lang := h.lang(r)
 	for {
 		select {
 		case <-r.Context().Done():
@@ -87,7 +88,7 @@ func (h *Handler) queueStream(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			row := queueRow{Sub: sub, Login: target.Login, Status: subDisplayStatus(sub)}
-			html, err := renderPartial("queue-row", row)
+			html, err := renderPartial(lang, "queue-row", row)
 			if err != nil {
 				continue
 			}

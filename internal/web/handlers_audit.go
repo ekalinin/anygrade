@@ -50,7 +50,7 @@ func (h *Handler) auditPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	renderPage(w, "audit", auditData{
+	h.renderPage(w, r, "audit", auditData{
 		CourseName: h.Course.Get().Resolved.Course.Name,
 		User:       userView{u.Login, u.DisplayName, u.Role},
 		Events:     events,

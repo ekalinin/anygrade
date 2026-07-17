@@ -2,12 +2,12 @@
   <td><a href="/submissions/{{.Sub.ID}}">#{{.Sub.ID}}</a></td>
   <td><a href="/students/{{.Login}}">{{.Login}}</a></td>
   <td>{{.Sub.TaskID}}</td>
-  <td><span class="badge {{statusClass .Status}}">{{.Status}}</span></td>
+  <td><span class="badge {{statusClass .Status}}">{{tStatus .Status}}</span></td>
   <td>{{fmtTime .Sub.ReceivedAt}}</td>
   <td>{{if .Sub.WorkerNote}}{{.Sub.WorkerNote}}{{end}}</td>
   <td>
     {{if or (eq .Sub.Status "queued") (eq .Sub.Status "running")}}
-    <form method="post" action="/queue/{{.Sub.ID}}/cancel" class="inline"><button type="submit" class="linklike">cancel</button></form>
+    <form method="post" action="/queue/{{.Sub.ID}}/cancel" class="inline"><button type="submit" class="linklike">{{t "common.cancel"}}</button></form>
     {{end}}
   </td>
 </tr>{{end}}

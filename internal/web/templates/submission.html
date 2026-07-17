@@ -1,15 +1,15 @@
 {{define "content"}}
-<p class="crumbs"><a href="/">tasks</a> / <a href="/tasks/{{.Sub.TaskID}}">{{.TaskName}}</a> / submission #{{.Sub.ID}}</p>
+<p class="crumbs"><a href="/">{{t "common.tasks_crumb"}}</a> / <a href="/tasks/{{.Sub.TaskID}}">{{.TaskName}}</a> / {{t "submission.crumb"}} #{{.Sub.ID}}</p>
 <div {{if .Running}}hx-ext="sse" sse-connect="/submissions/{{.Sub.ID}}/stream"{{end}}>
-  <h1>Submission #{{.Sub.ID}}
+  <h1>{{t "submission.title"}} #{{.Sub.ID}}
     <span id="sub-status" {{if .Running}}sse-swap="status" hx-swap="innerHTML"{{end}}>
-      <span class="badge {{statusClass .Sub.Status}}">{{.Sub.Status}}</span>
+      <span class="badge {{statusClass .Sub.Status}}">{{tStatus .Sub.Status}}</span>
     </span>
   </h1>
   <p class="meta">
-    <span>commit {{printf "%.12s" .Sub.CommitSHA}}</span>
-    <span>received {{fmtTime .Sub.ReceivedAt}}</span>
-    {{if .Sub.AttemptNo}}<span>attempt {{.Sub.AttemptNo}}</span>{{end}}
+    <span>{{t "common.commit"}} {{printf "%.12s" .Sub.CommitSHA}}</span>
+    <span>{{t "submission.received"}} {{fmtTime .Sub.ReceivedAt}}</span>
+    {{if .Sub.AttemptNo}}<span>{{t "submission.attempt"}} {{.Sub.AttemptNo}}</span>{{end}}
   </p>
 
   <div id="results"
@@ -19,7 +19,7 @@
 
   {{if .Running}}
   <section class="live">
-    <h2>Live output</h2>
+    <h2>{{t "submission.live_output"}}</h2>
     {{range .Panes}}
     <details class="pane" open>
       <summary>{{.Name}}</summary>

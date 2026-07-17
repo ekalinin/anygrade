@@ -80,11 +80,11 @@ func (h *Handler) invitePage(w http.ResponseWriter, r *http.Request) {
 	_, target, ok := h.resolveInvite(r)
 	if !ok {
 		data.Invalid = true
-		renderPage(w, "invite", data)
+		h.renderPage(w, r, "invite", data)
 		return
 	}
 	data.Login = target.Login
-	renderPage(w, "invite", data)
+	h.renderPage(w, r, "invite", data)
 }
 
 // inviteSubmit activates the account: issues the personal token (shown
@@ -97,7 +97,7 @@ func (h *Handler) inviteSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	inv, target, ok := h.resolveInvite(r)
 	if !ok {
-		renderPage(w, "invite", inviteData{
+		h.renderPage(w, r, "invite", inviteData{
 			CourseName: h.Course.Get().Resolved.Course.Name, Invalid: true,
 		})
 		return
@@ -105,10 +105,10 @@ func (h *Handler) inviteSubmit(w http.ResponseWriter, r *http.Request) {
 	if keyText := strings.TrimSpace(r.FormValue("key")); keyText != "" {
 		pk, _, _, _, err := gossh.ParseAuthorizedKey([]byte(keyText))
 		if err != nil {
-			renderPage(w, "invite", inviteData{
+			h.renderPage(w, r, "invite", inviteData{
 				CourseName: h.Course.Get().Resolved.Course.Name,
 				Token:      r.PathValue("token"), Login: target.Login,
-				Error: "unparseable SSH key; paste one authorized_keys line or leave it empty",
+				Error: "unparseable_ssh_key",
 			})
 			return
 		}
@@ -152,7 +152,7 @@ func (h *Handler) registerPage(w http.ResponseWriter, r *http.Request) {
 	if !h.openMode(w, r) {
 		return
 	}
-	renderPage(w, "register", registerData{CourseName: h.Course.Get().Resolved.Course.Name})
+	h.renderPage(w, r, "register", registerData{CourseName: h.Course.Get().Resolved.Course.Name})
 }
 
 // registerSubmit is open-mode self-registration, gated by the course code
@@ -170,22 +170,22 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.FormValue("name"))
 	fail := func(msg string) {
 		w.WriteHeader(http.StatusUnprocessableEntity)
-		renderPage(w, "register", registerData{
+		h.renderPage(w, r, "register", registerData{
 			CourseName: course.Resolved.Course.Name,
 			Login:      login, Name: name, Error: msg,
 		})
 	}
 	if r.FormValue("course_code") != course.Resolved.Course.Registration.CourseCode {
-		fail("wrong course code")
+		fail("wrong_course_code")
 		return
 	}
 	if !ident.ValidLogin(login) {
-		fail("invalid login: lowercase letters, digits, ._- only")
+		fail("invalid_login")
 		return
 	}
 	target, err := h.DB.CreateUser(r.Context(), login, name, "student")
 	if err != nil {
-		fail("login already taken")
+		fail("login_taken")
 		return
 	}
 	token, err := h.DB.IssueToken(r.Context(), target.ID)
@@ -217,7 +217,7 @@ type tokenOnceData struct {
 // registration, self-service regen, teacher reset).
 func (h *Handler) renderTokenOnce(w http.ResponseWriter, r *http.Request, login, token string, withGit bool) {
 	u, _ := h.currentUser(r)
-	renderPage(w, "token_once", tokenOnceData{
+	h.renderPage(w, r, "token_once", tokenOnceData{
 		CourseName:   h.Course.Get().Resolved.Course.Name,
 		User:         userView{u.Login, u.DisplayName, u.Role},
 		Login:        login,

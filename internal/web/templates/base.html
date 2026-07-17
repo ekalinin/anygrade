@@ -1,5 +1,5 @@
 {{define "base"}}<!DOCTYPE html>
-<html lang="en">
+<html lang="{{lang}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -11,20 +11,25 @@
 <body>
 <header class="topbar">
   <a class="brand" href="/">{{.CourseName}}</a>
+  <div class="topbar-right">
   {{if .User.Login}}
   <nav>
     {{if eq .User.Role "teacher"}}
-    <a href="/matrix">matrix</a>
-    <a href="/queue">queue</a>
-    <a href="/students">students</a>
-    <a href="/audit">audit</a>
+    <a href="/matrix">{{t "nav.matrix"}}</a>
+    <a href="/queue">{{t "nav.queue"}}</a>
+    <a href="/students">{{t "nav.students"}}</a>
+    <a href="/audit">{{t "nav.audit"}}</a>
     {{end}}
-    <a href="/leaderboard">leaderboard</a>
-    <a href="/settings">settings</a>
-    <span class="who">{{if .User.DisplayName}}{{.User.DisplayName}}{{else}}{{.User.Login}}{{end}}{{if eq .User.Role "teacher"}} (teacher){{end}}</span>
-    <form method="post" action="/logout" class="inline"><button type="submit" class="linklike">log out</button></form>
+    <a href="/leaderboard">{{t "nav.leaderboard"}}</a>
+    <a href="/settings">{{t "nav.settings"}}</a>
+    <span class="who">{{if .User.DisplayName}}{{.User.DisplayName}}{{else}}{{.User.Login}}{{end}}{{if eq .User.Role "teacher"}}{{t "nav.teacher_suffix"}}{{end}}</span>
+    <form method="post" action="/logout" class="inline"><button type="submit" class="linklike">{{t "nav.logout"}}</button></form>
   </nav>
   {{end}}
+  <form method="post" action="/lang" class="inline lang-switch">
+    {{range locales}}<button type="submit" name="lang" value="{{.}}" class="linklike{{if eq . (lang)}} active{{end}}">{{upper .}}</button>{{end}}
+  </form>
+  </div>
 </header>
 <main>
 {{block "content" .}}{{end}}

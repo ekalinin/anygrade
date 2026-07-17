@@ -1,16 +1,16 @@
 {{define "content"}}
 <section class="login">
-<h1>Course activation</h1>
+<h1>{{t "invite.title"}}</h1>
 {{if .Invalid}}
-<p class="flash error">This invite link is invalid, expired, or already used. Ask your teacher for a new one.</p>
+<p class="flash error">{{t "invite.invalid"}}</p>
 {{else}}
-<p>Welcome, <strong>{{.Login}}</strong>. Activating creates your personal access token{{if not .Error}} and optionally registers an SSH key{{end}}.</p>
-{{if .Error}}<p class="flash error">{{.Error}}</p>{{end}}
+<p>{{t "invite.welcome"}} <strong>{{.Login}}</strong>. {{t "invite.activation_creates"}}{{if not .Error}}{{t "invite.and_ssh"}}{{end}}.</p>
+{{if .Error}}<p class="flash error">{{tFlash .Error}}</p>{{end}}
 <form method="post" action="/invite/{{.Token}}">
-  <label>SSH public key <span class="hint">(optional, authorized_keys line)</span>
+  <label>{{t "invite.ssh_key_label"}} <span class="hint">{{t "invite.ssh_key_hint"}}</span>
     <input name="key" placeholder="ssh-ed25519 AAAA... comment">
   </label>
-  <button type="submit">Activate account</button>
+  <button type="submit">{{t "invite.activate"}}</button>
 </form>
 {{end}}
 </section>

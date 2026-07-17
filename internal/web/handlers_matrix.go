@@ -58,7 +58,7 @@ func (h *Handler) matrixPage(w http.ResponseWriter, r *http.Request) {
 	task := r.URL.Query().Get("task")
 	status := r.URL.Query().Get("status")
 	m.Rows = filterRows(m.Rows, m.Tasks, q, task, status)
-	renderPage(w, "matrix", matrixData{
+	h.renderPage(w, r, "matrix", matrixData{
 		CourseName: h.Course.Get().Resolved.Course.Name,
 		User:       userView{u.Login, u.DisplayName, u.Role},
 		Matrix:     m,
@@ -140,6 +140,7 @@ func (h *Handler) matrixStream(w http.ResponseWriter, r *http.Request) {
 	}
 	events, cancel := h.Hub.SubscribeAll()
 	defer cancel()
+	lang := h.lang(r)
 	for {
 		select {
 		case <-r.Context().Done():
@@ -149,7 +150,7 @@ func (h *Handler) matrixStream(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
-			html, err := renderPartial("matrix-row", matrixRowData{Row: row, Tasks: taskCols(h.Course.Get())})
+			html, err := renderPartial(lang, "matrix-row", matrixRowData{Row: row, Tasks: taskCols(h.Course.Get())})
 			if err != nil {
 				continue
 			}

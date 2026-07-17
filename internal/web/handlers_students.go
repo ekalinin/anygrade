@@ -22,7 +22,7 @@ func (h *Handler) studentsPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "load failed", http.StatusInternalServerError)
 		return
 	}
-	renderPage(w, "students", studentsData{
+	h.renderPage(w, r, "students", studentsData{
 		CourseName: h.Course.Get().Resolved.Course.Name,
 		User:       userView{u.Login, u.DisplayName, u.Role},
 		Students:   users,
@@ -69,7 +69,7 @@ func (h *Handler) studentPage(w http.ResponseWriter, r *http.Request) {
 	keys, _ := h.DB.ListSSHKeys(r.Context(), target.ID)
 	events, _ := h.DB.ListEventsByTarget(r.Context(), target.Login, 20)
 
-	renderPage(w, "student", studentData{
+	h.renderPage(w, r, "student", studentData{
 		CourseName: course.Resolved.Course.Name,
 		User:       userView{u.Login, u.DisplayName, u.Role},
 		Student:    target,
@@ -91,7 +91,7 @@ func (h *Handler) teacherRecheck(w http.ResponseWriter, r *http.Request) {
 	sub, err := h.Recheck.TeacherRecheck(r.Context(), actor, target.ID, taskID)
 	switch {
 	case errors.Is(err, intake.ErrNothingToRecheck):
-		http.Redirect(w, r, "/students/"+target.Login+"?flash=nothing+to+recheck", http.StatusSeeOther)
+		http.Redirect(w, r, "/students/"+target.Login+"?flash=nothing_to_recheck", http.StatusSeeOther)
 	case err != nil:
 		http.Error(w, "recheck failed", http.StatusInternalServerError)
 	default:

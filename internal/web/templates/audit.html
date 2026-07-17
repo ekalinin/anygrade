@@ -1,26 +1,26 @@
 {{define "content"}}
-<h1>Audit log</h1>
+<h1>{{t "audit.title"}}</h1>
 <form method="get" action="/audit" class="filters">
   <select name="kind">
-    <option value="">any kind</option>
+    <option value="">{{t "audit.any_kind"}}</option>
     {{range .Kinds}}<option value="{{.}}" {{if eq $.Kind .}}selected{{end}}>{{.}}</option>{{end}}
   </select>
-  <input type="text" name="target" value="{{.Target}}" placeholder="target substring">
-  <button type="submit">filter</button>
-  {{if or .Kind .Target}}<a href="/audit">clear</a>{{end}}
+  <input type="text" name="target" value="{{.Target}}" placeholder="{{t "audit.target_placeholder"}}">
+  <button type="submit">{{t "common.filter"}}</button>
+  {{if or .Kind .Target}}<a href="/audit">{{t "common.clear"}}</a>{{end}}
 </form>
 {{if .Events}}
 <table>
-  <thead><tr><th>When</th><th>Actor</th><th>Kind</th><th>Target</th><th>Detail</th></tr></thead>
+  <thead><tr><th>{{t "common.when"}}</th><th>{{t "common.actor"}}</th><th>{{t "common.kind"}}</th><th>{{t "common.target"}}</th><th>{{t "common.detail"}}</th></tr></thead>
   <tbody>
   {{range .Events}}
-  <tr><td>{{fmtTime .CreatedAt}}</td><td>{{if .ActorLogin}}{{.ActorLogin}}{{else}}system{{end}}</td><td>{{.Kind}}</td><td>{{.Target}}</td><td>{{.Detail}}</td></tr>
+  <tr><td>{{fmtTime .CreatedAt}}</td><td>{{if .ActorLogin}}{{.ActorLogin}}{{else}}{{t "common.system"}}{{end}}</td><td>{{.Kind}}</td><td>{{.Target}}</td><td>{{.Detail}}</td></tr>
   {{end}}
   </tbody>
 </table>
-{{else}}<p class="hint">No recorded events.</p>{{end}}
+{{else}}<p class="hint">{{t "common.no_events"}}</p>{{end}}
 <p class="pager">
-  {{if .HasPrev}}<a href="/audit?kind={{.Kind}}&target={{.Target}}&page={{.PrevPage}}">prev</a>{{end}}
-  {{if .HasNext}}<a href="/audit?kind={{.Kind}}&target={{.Target}}&page={{.NextPage}}">next</a>{{end}}
+  {{if .HasPrev}}<a href="/audit?kind={{.Kind}}&target={{.Target}}&page={{.PrevPage}}">{{t "common.prev"}}</a>{{end}}
+  {{if .HasNext}}<a href="/audit?kind={{.Kind}}&target={{.Target}}&page={{.NextPage}}">{{t "common.next"}}</a>{{end}}
 </p>
 {{end}}

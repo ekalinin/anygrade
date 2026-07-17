@@ -32,7 +32,7 @@ func (h *Handler) loginForm(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
 	}
-	renderPage(w, "login", h.loginData(r, ""))
+	h.renderPage(w, r, "login", h.loginData(r, ""))
 }
 
 func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
@@ -45,7 +45,7 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	key := ratelimit.AuthKey(r.RemoteAddr, login)
 	if h.Limit != nil && h.Limit.Blocked(key) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		renderPage(w, "login", h.loginData(r, "too many failed attempts, try again later"))
+		h.renderPage(w, r, "login", h.loginData(r, "too_many_attempts"))
 		return
 	}
 	u, ok, err := h.DB.VerifyToken(r.Context(), token)
@@ -58,7 +58,7 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 			h.Limit.Fail(key)
 		}
 		w.WriteHeader(http.StatusUnauthorized)
-		renderPage(w, "login", h.loginData(r, "unknown login or token"))
+		h.renderPage(w, r, "login", h.loginData(r, "unknown_login"))
 		return
 	}
 	if h.Limit != nil {

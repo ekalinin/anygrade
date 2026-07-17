@@ -323,6 +323,39 @@ func testTeacherCourseUpdate(t *testing.T, e *env) {
 // 12. auth and rate limit: unauthenticated access redirects to login,
 // students get 404 on teacher routes, and repeated bad logins trip the
 // shared rate limiter.
+// 12b. language switcher: the public /lang endpoint flips the anonymous login
+// page to Russian via a cookie, and rejects unsupported codes. The fixture
+// course sets no `language:`, so the default is English.
+func testLanguageSwitcher(t *testing.T, e *env) {
+	c := newClient(t)
+
+	status, body := get(t, c, e.baseURL+"/login")
+	if status != http.StatusOK || !strings.Contains(body, "Sign in") {
+		t.Fatalf("default /login: status %d, want English 'Sign in':\n%s", status, body)
+	}
+
+	resp, _ := postForm(t, c, e.baseURL+"/lang", url.Values{"lang": {"ru"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("POST /lang ru: status %d, want 303", resp.StatusCode)
+	}
+
+	status, body = get(t, c, e.baseURL+"/login")
+	if status != http.StatusOK {
+		t.Fatalf("/login after switch: status %d", status)
+	}
+	if !strings.Contains(body, "Вход") {
+		t.Errorf("/login after switch: missing Russian heading:\n%s", body)
+	}
+	if !strings.Contains(body, `lang="ru"`) {
+		t.Errorf("/login after switch: missing lang=\"ru\" attribute")
+	}
+
+	resp, _ = postForm(t, c, e.baseURL+"/lang", url.Values{"lang": {"xx"}})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST /lang xx: status %d, want 400", resp.StatusCode)
+	}
+}
+
 func testAuthAndRateLimit(t *testing.T, e *env) {
 	anon := newClient(t)
 	resp, _ := get2(t, anon, e.baseURL+"/")

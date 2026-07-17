@@ -1,49 +1,49 @@
 {{define "content"}}
-<p class="crumbs"><a href="/students">students</a> / {{.Student.Login}}</p>
+<p class="crumbs"><a href="/students">{{t "students.crumb"}}</a> / {{.Student.Login}}</p>
 <h1>{{if .Student.DisplayName}}{{.Student.DisplayName}}{{else}}{{.Student.Login}}{{end}}
-  <span class="badge {{if eq .Student.State "active"}}st-passed{{else}}st-failed{{end}}">{{.Student.State}}</span>
+  <span class="badge {{if eq .Student.State "active"}}st-passed{{else}}st-failed{{end}}">{{t (print "state." .Student.State)}}</span>
 </h1>
-{{if .Flash}}<p class="flash">{{.Flash}}</p>{{end}}
+{{if .Flash}}<p class="flash">{{tFlash .Flash}}</p>{{end}}
 
 <section class="admin-actions">
   <form method="post" action="/students/{{.Student.Login}}/token/reset" class="inline">
-    <button type="submit">reset token</button>
+    <button type="submit">{{t "student.reset_token"}}</button>
   </form>
   <form method="post" action="/students/{{.Student.Login}}/state" class="inline">
     {{if eq .Student.State "active"}}
-    <input type="hidden" name="state" value="disabled"><button type="submit">deactivate</button>
+    <input type="hidden" name="state" value="disabled"><button type="submit">{{t "student.deactivate"}}</button>
     {{else}}
-    <input type="hidden" name="state" value="active"><button type="submit">reactivate</button>
+    <input type="hidden" name="state" value="active"><button type="submit">{{t "student.reactivate"}}</button>
     {{end}}
   </form>
 </section>
 
-<h2>Tasks</h2>
+<h2>{{t "common.tasks"}}</h2>
 <table>
-  <thead><tr><th>Task</th><th>Status</th><th>Score</th><th>Override</th><th></th></tr></thead>
+  <thead><tr><th>{{t "common.task"}}</th><th>{{t "common.status"}}</th><th>{{t "common.score"}}</th><th>{{t "student.override_col"}}</th><th></th></tr></thead>
   <tbody>
   {{$login := .Student.Login}}
   {{range .Tasks}}
   <tr>
-    <td>{{.View.Task.Name}}{{if .View.Latest}} <a href="/students/{{$login}}/submissions/{{.View.Latest.ID}}/code">code</a>{{end}}</td>
-    <td><span class="badge {{statusClass .View.Status}}">{{.View.Status}}</span></td>
+    <td>{{.View.Task.Name}}{{if .View.Latest}} <a href="/students/{{$login}}/submissions/{{.View.Latest.ID}}/code">{{t "student.code_link"}}</a>{{end}}</td>
+    <td><span class="badge {{statusClass .View.Status}}">{{tStatus .View.Status}}</span></td>
     <td>{{if .View.Score}}{{score .View.Score}}{{else}}&mdash;{{end}} / {{.View.Task.Score}}</td>
     <td>
       {{if .Override}}<strong>{{score .Override.Score}}</strong> <span class="hint" title="{{.Override.Comment}}">{{.Override.Comment}}</span>{{else}}&mdash;{{end}}
     </td>
     <td class="admin-cell">
       <form method="post" action="/students/{{$login}}/tasks/{{.View.Task.ID}}/override" class="inline override-form">
-        <input name="score" type="number" step="0.1" min="0" placeholder="score" required>
-        <input name="comment" placeholder="comment">
-        <button type="submit">set</button>
+        <input name="score" type="number" step="0.1" min="0" placeholder="{{t "student.score_placeholder"}}" required>
+        <input name="comment" placeholder="{{t "student.comment_placeholder"}}">
+        <button type="submit">{{t "student.set"}}</button>
       </form>
       {{if .Override}}
       <form method="post" action="/students/{{$login}}/tasks/{{.View.Task.ID}}/override/delete" class="inline">
-        <button type="submit" class="linklike">clear</button>
+        <button type="submit" class="linklike">{{t "common.clear"}}</button>
       </form>
       {{end}}
       <form method="post" action="/students/{{$login}}/tasks/{{.View.Task.ID}}/recheck" class="inline">
-        <button type="submit" class="linklike">recheck</button>
+        <button type="submit" class="linklike">{{t "common.recheck"}}</button>
       </form>
     </td>
   </tr>
@@ -51,20 +51,20 @@
   </tbody>
 </table>
 
-<h2>SSH keys</h2>
+<h2>{{t "common.ssh_keys"}}</h2>
 {{if .Keys}}
-<ul>{{range .Keys}}<li><code>{{.Fingerprint}}</code> <span class="hint">added {{fmtTime .CreatedAt}}</span></li>{{end}}</ul>
-{{else}}<p class="hint">No keys registered.</p>{{end}}
+<ul>{{range .Keys}}<li><code>{{.Fingerprint}}</code> <span class="hint">{{t "common.added"}} {{fmtTime .CreatedAt}}</span></li>{{end}}</ul>
+{{else}}<p class="hint">{{t "common.no_keys"}}</p>{{end}}
 
-<h2>Recent activity</h2>
+<h2>{{t "student.recent_activity"}}</h2>
 {{if .Events}}
 <table>
-  <thead><tr><th>When</th><th>Actor</th><th>Action</th><th>Target</th><th>Detail</th></tr></thead>
+  <thead><tr><th>{{t "common.when"}}</th><th>{{t "common.actor"}}</th><th>{{t "student.action_col"}}</th><th>{{t "common.target"}}</th><th>{{t "common.detail"}}</th></tr></thead>
   <tbody>
   {{range .Events}}
-  <tr><td>{{fmtTime .CreatedAt}}</td><td>{{if .ActorLogin}}{{.ActorLogin}}{{else}}system{{end}}</td><td>{{.Kind}}</td><td>{{.Target}}</td><td>{{.Detail}}</td></tr>
+  <tr><td>{{fmtTime .CreatedAt}}</td><td>{{if .ActorLogin}}{{.ActorLogin}}{{else}}{{t "common.system"}}{{end}}</td><td>{{.Kind}}</td><td>{{.Target}}</td><td>{{.Detail}}</td></tr>
   {{end}}
   </tbody>
 </table>
-{{else}}<p class="hint">No recorded events.</p>{{end}}
+{{else}}<p class="hint">{{t "common.no_events"}}</p>{{end}}
 {{end}}
