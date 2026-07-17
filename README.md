@@ -197,6 +197,7 @@ Requirements: Go 1.26+, the `git` binary, and optionally docker for the docker r
 ```sh
 make check     # build + vet + gofmt + tests
 make binary    # build ./anygrade
+make e2e       # end-to-end regression suite (needs git, no docker)
 ```
 
 The full specification is in [SPEC.md](SPEC.md).
