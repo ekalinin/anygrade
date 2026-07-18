@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>anygrade - a single Go binary that turns a git repo of tasks into a grading system</title>
+  <meta name="description" content="anygrade is a single self-hosted Go binary that turns any git repository of course tasks into an autograder. Students submit with git push; checks run sandboxed in Docker; results stream live.">
+  <link rel="canonical" href="https://ekalinin.github.io/anygrade/">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+
+  <!-- Open Graph / Twitter (absolute URLs required by crawlers) -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="anygrade">
+  <meta property="og:title" content="anygrade - git push, and it grades">
+  <meta property="og:description" content="A single self-hosted Go binary that turns any git repository of course tasks into an autograder. Students push; sandboxed checks run; results stream live.">
+  <meta property="og:url" content="https://ekalinin.github.io/anygrade/">
+  <meta property="og:image" content="https://ekalinin.github.io/anygrade/og-image.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="anygrade - git push, and it grades">
+  <meta name="twitter:description" content="A single self-hosted Go binary that turns any git repository of course tasks into an autograder.">
+  <meta name="twitter:image" content="https://ekalinin.github.io/anygrade/og-image.png">
+
+  <link rel="stylesheet" href="styles.css">
+  <script src="main.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a class="brand" href="#top">anygrade</a>
+      <nav class="topnav" aria-label="Sections">
+        <a href="#how">How it works</a>
+        <a href="#features">Features</a>
+        <a href="#quick-start">Quick start</a>
+        <a href="#security">Security</a>
+      </nav>
+      <a class="btn btn-ghost topnav-gh" href="https://github.com/ekalinin/anygrade" rel="noopener">GitHub <span aria-hidden="true">&#9733;</span></a>
+    </div>
+  </header>
+
+  <main id="content">
+    <span id="top"></span>
+
+    <!-- Hero -->
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div class="hero-copy">
+          <h1 class="headline">A single Go binary that turns any git repo of course tasks into a grading system.</h1>
+          <p class="sub">Students push. It grades. You teach.</p>
+          <p class="lead">Point <span class="mono">anygrade</span> at a course repo and it serves a git interface for submissions, a live web UI for students and teachers, and a local mode for offline self-checks. Behavior is driven by YAML metadata, not code changes. Any language works.</p>
+          <div class="cta-row">
+            <a class="btn btn-primary" href="#quick-start">Get started</a>
+            <a class="btn btn-ghost" href="https://github.com/ekalinin/anygrade" rel="noopener">GitHub <span aria-hidden="true">&#9733;</span></a>
+          </div>
+        </div>
+
+        <div class="terminal hero-term" role="img" aria-label="Example git push output: two tasks detected, one queued, one rejected past the hard deadline">
+          <div class="terminal-bar" aria-hidden="true">
+            <span class="dot dot-red"></span><span class="dot dot-yellow"></span><span class="dot dot-green"></span>
+            <span class="terminal-title">git push origin main</span>
+          </div>
+<pre class="terminal-body"><span class="t-dim">remote:</span> anygrade: <span class="t-accent">2 task(s)</span> detected
+<span class="t-dim">remote:</span>   01-intro   <span class="t-ok">submission #142 queued</span>   http://host/submissions/142
+<span class="t-dim">remote:</span>   02-structs <span class="t-bad">rejected: hard deadline passed</span> (2026-10-01 23:59 +03)</pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- How it works -->
+    <section id="how" class="section">
+      <div class="wrap">
+        <h2>How it works</h2>
+        <p class="section-lead">A familiar clone / edit / commit / push loop for students. No new tools to learn.</p>
+
+        <ol class="steps">
+          <li class="step">
+            <div class="step-num">1</div>
+            <h3>Tasks live in a git repo</h3>
+            <p>The teacher keeps tasks in a plain git repo. Each task is a directory with a <span class="mono">task.yaml</span> that declares its checks, score, deadline, and limits.</p>
+          </li>
+          <li class="step">
+            <div class="step-num">2</div>
+            <h3>Each student gets a personal clone</h3>
+            <p>Every student gets a personal server-side clone of the course. They clone it, edit their solution files, commit, and push - over SSH or smart HTTP.</p>
+          </li>
+          <li class="step">
+            <div class="step-num">3</div>
+            <h3>A push hook detects submissions</h3>
+            <p>The hook diffs the pushed head against the last processed commit, maps changed paths to tasks, and queues one submission per changed task. Feedback starts right in the push output.</p>
+          </li>
+          <li class="step">
+            <div class="step-num">4</div>
+            <h3>A worker grades in a clean workspace</h3>
+            <p>A worker assembles authoritative task files + the student's <span class="mono">solution_files</span> + hidden tests, runs the checks in Docker or on the host, and streams results live in the web UI.</p>
+          </li>
+        </ol>
+
+        <div class="callout">
+          <p><strong>Tamper-resistant by construction.</strong> Editing open tests, <span class="mono">task.yaml</span>, or build files in the student repo is ineffective: the authoritative versions are restored before checking, and such edits are logged for the teacher. Pushes are never rejected for policy reasons - deadlines and attempt limits reject the submission, reported in the push output, not the push itself.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features -->
+    <section id="features" class="section section-alt">
+      <div class="wrap">
+        <h2>Features</h2>
+        <p class="section-lead">Metadata-driven and language-agnostic. A check is an arbitrary command, so any language runs if the environment can run it.</p>
+
+        <div class="feature-cols">
+          <div class="feature-group">
+            <h3 class="feature-title">For teachers</h3>
+            <ul class="feature-list">
+              <li><strong>YAML-configured.</strong> Courses and tasks are configured with <span class="mono">course.yaml</span> / <span class="mono">task.yaml</span> - no plugin code.</li>
+              <li><strong>Any language.</strong> A check is an arbitrary command run in a Docker image or on the host.</li>
+              <li><strong>Score matrix.</strong> Students by tasks, with click-through to any student's submitted code.</li>
+              <li><strong>Manual overrides.</strong> Adjust a score with a comment; export everything as CSV.</li>
+              <li><strong>Hidden tests.</strong> Extra tests from a private repo or local path, with an offline cache fallback - students never see them.</li>
+              <li><strong>Deadlines &amp; limits.</strong> Soft/hard deadlines with late penalties, attempt limits, cooldowns, and <span class="mono">best</span> or <span class="mono">latest</span> scoring.</li>
+              <li><strong>Live queue.</strong> Watch, cancel, and recheck submissions as they run. Optional leaderboard with anonymized aliases.</li>
+            </ul>
+          </div>
+
+          <div class="feature-group">
+            <h3 class="feature-title">For students</h3>
+            <ul class="feature-list">
+              <li><strong>Just git.</strong> Clone, edit, commit, push. Feedback starts in the push output.</li>
+              <li><strong>Live results.</strong> Per-task status, submission history, per-check results, penalty breakdown, and streaming logs while checks run.</li>
+              <li><strong>Self-check offline.</strong> <span class="mono">anygrade check</span> runs the open tests locally before you push.</li>
+              <li><strong>Easy rechecks.</strong> A <span class="mono">[recheck &lt;task-id&gt;]</span> commit marker or a button on the task page.</li>
+              <li><strong>Bilingual UI.</strong> English or Russian, with a per-user switcher.</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Quick start -->
+    <section id="quick-start" class="section">
+      <div class="wrap">
+        <h2>Quick start</h2>
+        <p class="section-lead">Requirements: Go 1.26+, the <span class="mono">git</span> binary, and optionally Docker (colima on macOS).</p>
+
+        <h3 class="qs-step">1. Build</h3>
+<pre data-lang="sh"><code>go build -o anygrade ./cmd/anygrade</code></pre>
+
+        <h3 class="qs-step">2. Serve a course</h3>
+        <p class="qs-note">Run in the course repo, and add <span class="mono">.anygrade/</span> to its <span class="mono">.gitignore</span>.</p>
+<pre data-lang="sh"><code>./anygrade validate
+./anygrade user add --login prof --role teacher
+./anygrade serve --http-addr :8080 --ssh-addr :2222</code></pre>
+
+        <h3 class="qs-step">3. Students clone and push</h3>
+        <p class="qs-note">The personal token is the git-over-HTTP password and the web login. SSH auth is by key only.</p>
+
+        <div class="tabs" data-tabs>
+          <div class="tablist" role="tablist" aria-label="Git transport">
+            <button class="tab" role="tab" id="tab-http" aria-controls="panel-http" aria-selected="true">HTTP</button>
+            <button class="tab" role="tab" id="tab-ssh" aria-controls="panel-ssh" aria-selected="false" tabindex="-1">SSH</button>
+          </div>
+          <div class="tabpanel" role="tabpanel" id="panel-http" aria-labelledby="tab-http">
+<pre data-lang="sh"><code># username = login, password = the token
+git clone http://host:8080/git/&lt;login&gt;/course.git
+git remote add upstream http://host:8080/git/course.git</code></pre>
+          </div>
+          <div class="tabpanel" role="tabpanel" id="panel-ssh" aria-labelledby="tab-ssh">
+<pre data-lang="sh"><code># once an SSH key is added, at activation or in settings
+git clone ssh://git@host:2222/&lt;login&gt;/course.git
+git remote add upstream ssh://git@host:2222/course.git</code></pre>
+          </div>
+        </div>
+
+        <h3 class="qs-step">A task, in YAML</h3>
+        <p class="qs-note">Raw score = <span class="mono">score &times; (passed weight / total weight)</span>. A required check gates the run.</p>
+<pre data-lang="yaml"><code>name: "Intro task"
+score: 100
+
+solution_files:        # allowlist of student-editable paths
+  - main.go
+
+deadline:
+  soft: 2026-09-24T23:59:59+03:00
+  hard: 2026-10-01T23:59:59+03:00
+  penalty: {percent: 10, per: 24h, max_percent: 50}
+
+checks:
+  - name: build
+    required: true     # failure stops the run, submission scores 0
+    run: go build ./...
+  - name: basic
+    weight: 60
+    run: go test -run 'TestBasic' ./...
+  - name: advanced
+    weight: 40
+    run: go test -run 'TestAdvanced' ./...</code></pre>
+
+        <p class="qs-more">More in the <a href="https://github.com/ekalinin/anygrade#readme" rel="noopener">README</a> and the full <a href="https://github.com/ekalinin/anygrade/blob/main/specs/SPEC.md" rel="noopener">specification</a>.</p>
+      </div>
+    </section>
+
+    <!-- Security + why -->
+    <section id="security" class="section section-alt">
+      <div class="wrap">
+        <h2>Security &amp; why it's different</h2>
+        <p class="section-lead">Student code is untrusted, and the runner treats it that way.</p>
+
+        <div class="why-grid">
+          <div class="why-card">
+            <h3>Sandboxed checks</h3>
+            <p>One ephemeral Docker container per check: memory/cpu/pids limits, no network by default, read-only base image, non-root user, tmpfs workspace, and a hard wall-clock timeout. Serving untrusted code on the local runner over a non-loopback address refuses to start without an explicit flag.</p>
+          </div>
+          <div class="why-card">
+            <h3>Locked-down auth</h3>
+            <p>Tokens and invite links are stored hashed. SSH is limited to git commands. Failed logins are rate-limited per client and login across both git and the web. Role checks on every route - students see 404, not 403, on teacher pages.</p>
+          </div>
+          <div class="why-card">
+            <h3>One binary, one directory</h3>
+            <p>SQLite storage and embedded web assets ship in a single Go binary. Everything mutable lives in one data dir - backup is a copy of the directory. The only external dependencies are <span class="mono">git</span> and, optionally, Docker.</p>
+          </div>
+          <div class="why-card">
+            <h3>Self-hosted, no lock-in</h3>
+            <p>No external identity provider, no LMS coupling - CSV export is the integration point. One running instance serves exactly one course, on your own hardware.</p>
+          </div>
+        </div>
+
+        <div class="cta-row cta-center">
+          <a class="btn btn-primary" href="#quick-start">Get started</a>
+          <a class="btn btn-ghost" href="https://github.com/ekalinin/anygrade" rel="noopener">Star on GitHub <span aria-hidden="true">&#9733;</span></a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <span class="footer-brand mono">anygrade</span>
+      <nav class="footer-links" aria-label="Footer">
+        <a href="https://github.com/ekalinin/anygrade" rel="noopener">GitHub</a>
+        <a href="https://github.com/ekalinin/anygrade/blob/main/specs/SPEC.md" rel="noopener">Spec</a>
+        <a href="https://github.com/ekalinin/anygrade/blob/main/LICENSE" rel="noopener">MIT License</a>
+      </nav>
+      <span class="footer-meta">Built with Go &middot; by <a href="https://github.com/ekalinin" rel="noopener">Eugene Kalinin</a></span>
+    </div>
+  </footer>
+</body>
+</html>
