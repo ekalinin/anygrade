@@ -22,7 +22,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture
 
-One binary turns a git repo of course tasks into a grading system. SPEC.md is the authoritative spec (section references like §7 point there); README.md covers user-facing behavior. `example/go-web-dev-2024-04-26/` is a real configured course.
+One binary turns a git repo of course tasks into a grading system. `specs/SPEC.md` is the authoritative spec (section references like §7 point there); README.md covers user-facing behavior. `example/go-web-dev-2024-04-26/` is a real configured course.
 
 Submission flow (the path that touches most packages):
 

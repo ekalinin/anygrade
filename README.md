@@ -201,4 +201,4 @@ make binary    # build ./anygrade
 make e2e       # end-to-end regression suite (needs git, no docker)
 ```
 
-The full specification is in [SPEC.md](SPEC.md).
+The full specification is in [specs/SPEC.md](specs/SPEC.md).
