@@ -1,7 +1,8 @@
 # Deploy the static landing page (landing/) to GitHub Pages.
 # GitHub Pages "Deploy from a branch" only allows the repo root or /docs, so the
-# landing/ folder is published through Actions instead. Enable it once in
-# Settings -> Pages -> Source: "GitHub Actions".
+# landing/ folder is published through Actions instead. configure-pages with
+# enablement:true turns on Pages in "GitHub Actions" mode automatically, so this
+# does not depend on the repository setting being flipped by hand first.
 name: Deploy landing to Pages
 
 on:
@@ -31,6 +32,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: landing
