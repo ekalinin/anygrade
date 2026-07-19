@@ -11,6 +11,11 @@ nav.leaderboard: "leaderboard"
 nav.settings: "settings"
 nav.logout: "log out"
 nav.teacher_suffix: " (teacher)"
+nav.skip: "Skip to content"
+theme.toggle: "Toggle color theme"
+theme.auto: "Auto"
+theme.light: "Light"
+theme.dark: "Dark"
 
 # Words shared across several pages.
 common.task: "Task"

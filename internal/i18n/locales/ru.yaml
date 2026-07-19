@@ -9,6 +9,11 @@ nav.leaderboard: "рейтинг"
 nav.settings: "настройки"
 nav.logout: "выйти"
 nav.teacher_suffix: " (преподаватель)"
+nav.skip: "Перейти к содержимому"
+theme.toggle: "Переключить тему"
+theme.auto: "Авто"
+theme.light: "Светлая"
+theme.dark: "Тёмная"
 
 # Words shared across several pages.
 common.task: "Задача"
