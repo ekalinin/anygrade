@@ -15,6 +15,7 @@
 </form>
 {{$tasks := .Matrix.Tasks}}
 {{if .Filtered}}
+<div class="table-scroll">
 <table class="matrix">
   <thead><tr>
     <th>{{t "common.student"}}</th>
@@ -25,8 +26,10 @@
   {{range .Matrix.Rows}}{{template "matrix-row" (dict "Row" . "Tasks" $tasks)}}{{end}}
   </tbody>
 </table>
+</div>
 {{else}}
 <div hx-ext="sse" sse-connect="/matrix/stream">
+<div class="table-scroll">
 <table class="matrix">
   <thead><tr>
     <th>{{t "common.student"}}</th>
@@ -37,6 +40,7 @@
   {{range .Matrix.Rows}}{{template "matrix-row" (dict "Row" . "Tasks" $tasks)}}{{end}}
   </tbody>
 </table>
+</div>
 </div>
 {{end}}
 {{end}}

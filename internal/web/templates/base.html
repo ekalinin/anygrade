@@ -3,12 +3,25 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d1117" media="(prefers-color-scheme: dark)">
   <title>{{.CourseName}} - anygrade</title>
+  <script>
+  // Apply the saved theme before first paint (auto = no attribute, follows OS).
+  (function () {
+    try {
+      var t = localStorage.getItem("ag-theme");
+      if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+    } catch (e) {}
+    document.documentElement.classList.add("js");
+  })();
+  </script>
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/htmx.min.js"></script>
   <script src="/static/htmx-sse.js"></script>
 </head>
 <body>
+<a class="skip-link" href="#main">{{t "nav.skip"}}</a>
 <header class="topbar">
   <a class="brand" href="/">{{.CourseName}}</a>
   <div class="topbar-right">
@@ -26,13 +39,40 @@
     <form method="post" action="/logout" class="inline"><button type="submit" class="linklike">{{t "nav.logout"}}</button></form>
   </nav>
   {{end}}
+  <button type="button" id="theme-toggle" class="linklike theme-toggle"
+    data-label-auto="{{t "theme.auto"}}" data-label-light="{{t "theme.light"}}" data-label-dark="{{t "theme.dark"}}"
+    aria-label="{{t "theme.toggle"}}" title="{{t "theme.toggle"}}"><span aria-hidden="true">◐</span><span class="theme-label"></span></button>
   <form method="post" action="/lang" class="inline lang-switch">
     {{range locales}}<button type="submit" name="lang" value="{{.}}" class="linklike{{if eq . (lang)}} active{{end}}">{{upper .}}</button>{{end}}
   </form>
   </div>
 </header>
-<main>
+<main id="main">
 {{block "content" .}}{{end}}
 </main>
+<script>
+// Wire the theme toggle: cycle auto -> light -> dark, persist, reflect the label.
+(function () {
+  var btn = document.getElementById("theme-toggle");
+  if (!btn) return;
+  var label = btn.querySelector(".theme-label");
+  var order = ["auto", "light", "dark"];
+  var labels = { auto: btn.dataset.labelAuto, light: btn.dataset.labelLight, dark: btn.dataset.labelDark };
+  function current() {
+    try { return localStorage.getItem("ag-theme") || "auto"; } catch (e) { return "auto"; }
+  }
+  function apply(mode) {
+    if (mode === "light" || mode === "dark") document.documentElement.setAttribute("data-theme", mode);
+    else document.documentElement.removeAttribute("data-theme");
+    if (label) label.textContent = labels[mode] || labels.auto;
+  }
+  apply(current());
+  btn.addEventListener("click", function () {
+    var next = order[(order.indexOf(current()) + 1) % order.length];
+    try { localStorage.setItem("ag-theme", next); } catch (e) {}
+    apply(next);
+  });
+})();
+</script>
 </body>
 </html>{{end}}
