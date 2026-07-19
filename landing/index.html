@@ -224,6 +224,14 @@ checks:
             <h3>Self-hosted, no lock-in</h3>
             <p>No external identity provider, no LMS coupling - CSV export is the integration point. One running instance serves exactly one course, on your own hardware.</p>
           </div>
+          <div class="why-card">
+            <h3>No git server to run</h3>
+            <p>Nothing to install or configure - no GitLab, no Gitea. anygrade <em>is</em> the git server: it wraps the system <span class="mono">git</span> over SSH and smart HTTP, so pushes just work. Point it at a course repo and go.</p>
+          </div>
+          <div class="why-card">
+            <h3>Light on resources</h3>
+            <p>Go under the hood: one static binary with SQLite and embedded assets - no JVM, language runtime, or interpreter to feed. The footprint stays small enough for a modest VM.</p>
+          </div>
         </div>
 
         <div class="cta-row cta-center">
