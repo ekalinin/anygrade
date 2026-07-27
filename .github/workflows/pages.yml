@@ -10,7 +10,7 @@ on:
     branches: [main]
     paths:
       - "landing/**"
-      - "Makefile" # holds the landing-build target
+      - "Makefile"  # holds the landing-build target
       - ".github/workflows/pages.yml"
   # Called by release.yml once a release is published, so the page picks up the
   # new version. An `on: release` trigger would never fire: goreleaser creates
@@ -35,8 +35,8 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
+      - uses: actions/checkout@v6
+      - uses: actions/configure-pages@v6
         with:
           enablement: true
       # `gh release view` reports the latest published release (drafts and
@@ -50,8 +50,8 @@ jobs:
           v="$(gh release view --json tagName --jq .tagName 2>/dev/null || true)"
           echo "version=${v:-latest}" >> "$GITHUB_OUTPUT"
       - run: make landing-build LANDING_VERSION=${{ steps.rel.outputs.version }}
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: dist/landing
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
