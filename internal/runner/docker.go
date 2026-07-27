@@ -24,10 +24,8 @@ import (
 // `docker kill` while the remaining checks continue in fresh containers;
 // filesystem state persists across checks via the shared mount.
 type DockerRunner struct {
-	// User is the container --user value ("uid:gid"). Empty = image default;
-	// the server passes its non-root service uid on Linux (SPEC §14). On
-	// macOS/colima it must stay empty: virtiofs remaps bind mounts to
-	// root:root, so only root can write to the workspace.
+	// User overrides the container --user value ("uid:gid"). Empty means the
+	// per-platform default from userArg.
 	User   string
 	Mirror io.Writer // optional live copy of check output
 }
@@ -43,6 +41,26 @@ func (r *DockerRunner) Run(ctx context.Context, job Job) ([]Outcome, error) {
 		return nil, err
 	}
 	return runAll(ctx, job, r)
+}
+
+// userArg resolves the container --user value. An explicit User wins.
+//
+// On Linux the default is the current uid:gid: student code must not run as
+// root (SPEC §14), and since the container drops every capability, an
+// image-default root has no CAP_DAC_OVERRIDE to write into the bind-mounted
+// workspace, which is owned by the server's user - checks that produce files
+// would fail with "permission denied".
+//
+// On macOS/colima it stays empty: virtiofs remaps bind mounts to root:root, so
+// only the image-default root can write to the workspace.
+func (r *DockerRunner) userArg() string {
+	if r.User != "" {
+		return r.User
+	}
+	if runtime.GOOS == "linux" {
+		return fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+	}
+	return ""
 }
 
 // checkMountablePath rejects workspace locations that colima does not mount
@@ -103,8 +121,8 @@ func (r *DockerRunner) execCheck(ctx context.Context, job Job, c config.Check, l
 		"-e", "GOMODCACHE=/tmp/go/pkg/mod",
 		"-e", "GOPATH=/tmp/go",
 	}
-	if r.User != "" {
-		args = append(args, "--user", r.User)
+	if u := r.userArg(); u != "" {
+		args = append(args, "--user", u)
 	}
 	args = append(args, "--entrypoint", "sh", job.Spec.Image, "-c", c.Run)
 
