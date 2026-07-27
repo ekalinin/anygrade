@@ -1,6 +1,7 @@
 package runner
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,6 +48,22 @@ func dockerSpec(timeout time.Duration) config.ResolvedRunner {
 		Memory:  256 << 20,
 		CPUs:    1,
 		Network: "none",
+	}
+}
+
+// TestDockerUserArg pins the platform defaults: on Linux the container runs as
+// the process that owns the workspace (an image-default root could not write
+// into it with all capabilities dropped), on macOS as the image default.
+func TestDockerUserArg(t *testing.T) {
+	if got := (&DockerRunner{User: "1000:1000"}).userArg(); got != "1000:1000" {
+		t.Errorf("explicit User: got %q, want %q", got, "1000:1000")
+	}
+	want := ""
+	if runtime.GOOS == "linux" {
+		want = fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+	}
+	if got := (&DockerRunner{}).userArg(); got != want {
+		t.Errorf("default User on %s: got %q, want %q", runtime.GOOS, got, want)
 	}
 }
 
