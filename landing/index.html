@@ -54,6 +54,9 @@
           <div class="cta-row">
             <a class="btn btn-primary" href="#quick-start">Get started</a>
             <a class="btn btn-ghost" href="https://github.com/ekalinin/anygrade" rel="noopener">GitHub <span aria-hidden="true">&#9733;</span></a>
+            <a class="btn btn-ghost btn-ver" href="https://github.com/ekalinin/anygrade/releases/latest" rel="noopener" title="Latest release">
+              <span class="mono">{{VERSION}}</span> <span aria-hidden="true">&#8595;</span>
+            </a>
           </div>
         </div>
 
@@ -142,10 +145,16 @@
     <section id="quick-start" class="section">
       <div class="wrap">
         <h2>Quick start</h2>
-        <p class="section-lead">Requirements: Go 1.26+, the <span class="mono">git</span> binary, and optionally Docker (colima on macOS).</p>
+        <p class="section-lead">Requirements: the <span class="mono">git</span> binary and optionally Docker (colima on macOS). Building from source needs Go 1.26+.</p>
 
-        <h3 class="qs-step">1. Build</h3>
-<pre data-lang="sh"><code>go build -o anygrade ./cmd/anygrade</code></pre>
+        <h3 class="qs-step">1. Install</h3>
+        <p class="qs-note">Linux and macOS, amd64 and arm64 - every build is on the <a href="https://github.com/ekalinin/anygrade/releases/latest" rel="noopener">releases page</a>.</p>
+<pre data-lang="sh"><code># linux/amd64
+curl -fsSL https://github.com/ekalinin/anygrade/releases/download/{{VERSION}}/anygrade_{{VERSION_NUM}}_linux_amd64.tar.gz | tar xz
+sudo install anygrade /usr/local/bin/
+
+# or build it yourself
+go install github.com/ekalinin/anygrade/cmd/anygrade@latest</code></pre>
 
         <h3 class="qs-step">2. Serve a course</h3>
         <p class="qs-note">Run in the course repo, and add <span class="mono">.anygrade/</span> to its <span class="mono">.gitignore</span>.</p>
@@ -250,7 +259,7 @@ checks:
         <a href="https://github.com/ekalinin/anygrade/blob/main/specs/SPEC.md" rel="noopener">Spec</a>
         <a href="https://github.com/ekalinin/anygrade/blob/main/LICENSE" rel="noopener">MIT License</a>
       </nav>
-      <span class="footer-meta">Built with Go &middot; by <a href="https://github.com/ekalinin" rel="noopener">Eugene Kalinin</a></span>
+      <span class="footer-meta"><a class="mono" href="https://github.com/ekalinin/anygrade/releases/latest" rel="noopener">{{VERSION}}</a> &middot; Built with Go &middot; by <a href="https://github.com/ekalinin" rel="noopener">Eugene Kalinin</a></span>
     </div>
   </footer>
 </body>
