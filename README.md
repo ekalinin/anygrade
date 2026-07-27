@@ -99,6 +99,24 @@ checks:
 
 Raw score = `score × (passed weight / total weight)`. Late submissions between the soft and hard deadline get a percentage penalty per started interval; past the hard deadline they are recorded but not graded.
 
+## Install
+
+Grab the archive for your platform from the [releases page](https://github.com/ekalinin/anygrade/releases), unpack it and put the binary on your `PATH` (`checksums.txt` holds the SHA256 of every archive):
+
+```sh
+tar xzf anygrade_<version>_linux_amd64.tar.gz
+sudo install anygrade /usr/local/bin/
+anygrade version
+```
+
+Or build it yourself, which also works for the latest untagged code:
+
+```sh
+go install github.com/ekalinin/anygrade/cmd/anygrade@latest
+```
+
+Releases cover linux and darwin, amd64 and arm64. There is no windows build: the server needs `sh`, process groups and a unix socket.
+
 ## Quick start
 
 ```sh
@@ -201,5 +219,7 @@ make check     # build + vet + gofmt + tests
 make binary    # build ./anygrade
 make e2e       # end-to-end regression suite (needs git, no docker)
 ```
+
+Releasing: push a `vX.Y.Z` tag and the release workflow runs the test suite, then publishes the archives and checksums built by goreleaser. Before tagging, `make release-check` validates `.goreleaser.yaml` and `make release-snapshot` builds the whole set into `dist/` without publishing.
 
 The full specification is in [specs/SPEC.md](specs/SPEC.md).

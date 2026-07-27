@@ -1,0 +1,95 @@
+# Release build: cross-compiled binaries, archives and checksums for a pushed
+# vX.Y.Z tag (see .github/workflows/release.yml). Validate with
+# `make release-check`, dry-run with `make release-snapshot`.
+version: 2
+project_name: anygrade
+
+before:
+  hooks:
+    # Not `go mod tidy`: it may rewrite go.mod/go.sum mid-release.
+    - go mod download
+
+builds:
+  - id: anygrade
+    main: ./cmd/anygrade
+    binary: anygrade
+    # Every dependency is pure Go (modernc.org/sqlite, not the cgo driver), so
+    # cross-compilation needs no toolchain beyond the Go one.
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    # No windows: the server is unix-only by design - `sh -c` checks, process
+    # groups for timeouts, a unix socket between the push hook and the server.
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      # .Version has the tag's leading "v" stripped; put it back so the binary
+      # reports the tag as written (`anygrade v0.1.0`).
+      - -X github.com/ekalinin/anygrade/internal/version.Version=v{{ .Version }}
+      - -X github.com/ekalinin/anygrade/internal/version.Commit={{ .ShortCommit }}
+      - -X github.com/ekalinin/anygrade/internal/version.Date={{ .CommitDate }}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - specs/SPEC.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: git
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^feat(\(.+\))?:'
+      order: 0
+    - title: Fixes
+      regexp: '^fix(\(.+\))?:'
+      order: 1
+    - title: Performance
+      regexp: '^perf(\(.+\))?:'
+      order: 2
+    - title: Refactoring
+      regexp: '^refactor(\(.+\))?:'
+      order: 3
+    - title: Documentation
+      regexp: '^docs(\(.+\))?:'
+      order: 4
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - '^chore(\(.+\))?:'
+      - '^Merge pull request'
+      - '^Merge branch'
+
+release:
+  # v1.0.0-rc1 and friends are published as pre-releases automatically.
+  prerelease: auto
+  footer: |
+    ## Install
+
+    Download the archive for your platform, unpack it and put `anygrade` on your `PATH`:
+
+    ```sh
+    tar xzf anygrade_{{ .Version }}_linux_amd64.tar.gz
+    sudo install anygrade /usr/local/bin/
+    anygrade version
+    ```
+
+    Or build it yourself:
+
+    ```sh
+    go install github.com/ekalinin/anygrade/cmd/anygrade@{{ .Tag }}
+    ```
+
+    `checksums.txt` holds the SHA256 of every archive.
