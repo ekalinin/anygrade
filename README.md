@@ -220,6 +220,39 @@ make binary    # build ./anygrade
 make e2e       # end-to-end regression suite (needs git, no docker)
 ```
 
-Releasing: push a `vX.Y.Z` tag and the release workflow runs the test suite, then publishes the archives and checksums built by goreleaser. Before tagging, `make release-check` validates `.goreleaser.yaml` and `make release-snapshot` builds the whole set into `dist/` without publishing.
+## Releasing
+
+A release is a pushed tag - everything else is automatic.
+
+1. Dry-run locally - needs [goreleaser](https://goreleaser.com) (`brew install goreleaser`). `release-check` validates `.goreleaser.yaml`; `release-snapshot` builds every archive and `checksums.txt` into `dist/` without publishing anything. Unpack the archive for your platform and check that `anygrade version` reports the stamped metadata:
+
+   ```sh
+   make release-check
+   make release-snapshot
+   ls dist/
+   ```
+
+2. Tag `main` and push the tag:
+
+   ```sh
+   git tag -a v0.1.0 -m "v0.1.0"
+   git push origin v0.1.0
+   ```
+
+3. The `Release` workflow then runs the whole test suite, and only if it is green: builds linux/darwin × amd64/arm64, publishes the archives and `checksums.txt` with a changelog grouped by conventional commit type, and rebuilds the landing page so it advertises the new version.
+
+   ```sh
+   gh run watch                 # ci -> release -> pages
+   gh release view v0.1.0
+   ```
+
+Tags are `vX.Y.Z`; archives drop the leading `v` (`anygrade_0.1.0_linux_amd64.tar.gz`). A pre-release tag (`v0.2.0-rc1`) is published as a pre-release: it does not become the latest release, so the landing page keeps pointing at the last stable one.
+
+To take back a bad release, delete it and its tag, then fix and tag again:
+
+```sh
+gh release delete v0.1.0
+git push --delete origin v0.1.0
+```
 
 The full specification is in [specs/SPEC.md](specs/SPEC.md).
