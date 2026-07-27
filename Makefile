@@ -1,4 +1,4 @@
-.PHONY: build test test-short vet fmt check binary e2e landing-serve landing-og
+.PHONY: build test test-short vet fmt check binary e2e release-check release-snapshot landing-serve landing-og
 
 # Build metadata stamped into the binary (internal/version). A release build
 # gets these from goreleaser instead; here they describe the working copy.
@@ -32,6 +32,15 @@ binary:
 
 e2e:
 	go test -tags e2e ./e2e -count=1 -timeout 600s
+
+# Validate .goreleaser.yaml without building anything.
+release-check:
+	goreleaser check
+
+# Full release build into dist/ without publishing: same archives, checksums
+# and ldflags the tag push would produce.
+release-snapshot:
+	goreleaser release --snapshot --clean
 
 # Serve the static landing page locally (http://localhost:8000/).
 landing-serve:

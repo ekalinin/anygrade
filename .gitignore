@@ -6,5 +6,8 @@
 *.out
 /anygrade
 
+# goreleaser build output
+/dist/
+
 # OS
 .DS_Store

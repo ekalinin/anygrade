@@ -19,6 +19,7 @@ Guidance for AI coding agents (Claude Code and any tool that reads `AGENTS.md`) 
 - single test: `go test ./internal/<pkg> -run TestName -count=1`
 - e2e files are behind a build tag: `go test -tags e2e ./e2e` (plain `./...` skips them; gopls shows "no packages found" for them - not an error)
 - `./anygrade validate --repo <dir>` - check course metadata
+- `make release-check` / `make release-snapshot` - validate `.goreleaser.yaml` / build the whole release set into `dist/` without publishing
 
 ## Architecture
 
