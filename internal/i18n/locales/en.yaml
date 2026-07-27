@@ -16,6 +16,7 @@ theme.toggle: "Toggle color theme"
 theme.auto: "Auto"
 theme.light: "Light"
 theme.dark: "Dark"
+footer.source: "Source code on GitHub"
 
 # Words shared across several pages.
 common.task: "Task"

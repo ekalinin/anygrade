@@ -50,6 +50,11 @@
 <main id="main">
 {{block "content" .}}{{end}}
 </main>
+<footer class="sitefoot">
+  <a href="https://github.com/ekalinin/anygrade" target="_blank" rel="noopener noreferrer"
+     title="{{t "footer.source"}}">anygrade</a>
+  <span class="sitefoot-ver">{{version}}</span>
+</footer>
 <script>
 // Wire the theme toggle: cycle auto -> light -> dark, persist, reflect the label.
 (function () {
