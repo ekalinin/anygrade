@@ -1,0 +1,35 @@
+# Build, vet, gofmt and the full test suite on every pull request and on main.
+# Also callable from other workflows (workflow_call) so the release workflow can
+# gate publishing on the same job instead of duplicating the steps.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A new push to a PR supersedes the previous run; main runs are never cancelled.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # build + vet + gofmt + unit tests. The docker runner tests skip
+      # themselves when no daemon is reachable and use alpine:3 when there is.
+      - run: make check
+      # End-to-end suite: spawns the real binary and drives CLI, HTTP and git.
+      # Needs the git binary (preinstalled on the runner), no docker.
+      - run: make e2e
