@@ -166,6 +166,7 @@ anygrade check   [--runner local|docker] [--timeout D] [--keep] [-v] [TASK ...]
 anygrade validate
 anygrade user    add|list|remove|invite|reset-token|add-key ...
 anygrade export  scores --format csv
+anygrade version
 ```
 
 `serve --local` runs with a single implicit user and no auth for offline use; it refuses to bind to non-loopback addresses.

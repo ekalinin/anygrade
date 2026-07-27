@@ -1,5 +1,15 @@
 .PHONY: build test test-short vet fmt check binary e2e landing-serve landing-og
 
+# Build metadata stamped into the binary (internal/version). A release build
+# gets these from goreleaser instead; here they describe the working copy.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null)
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+VERSION_PKG = github.com/ekalinin/anygrade/internal/version
+LDFLAGS = -X $(VERSION_PKG).Version=$(VERSION) \
+          -X $(VERSION_PKG).Commit=$(COMMIT) \
+          -X $(VERSION_PKG).Date=$(DATE)
+
 check: build vet fmt test
 
 build:
@@ -18,7 +28,7 @@ fmt:
 	test -z "$$(gofmt -l cmd internal e2e)"
 
 binary:
-	go build -o anygrade ./cmd/anygrade
+	go build -ldflags "$(LDFLAGS)" -o anygrade ./cmd/anygrade
 
 e2e:
 	go test -tags e2e ./e2e -count=1 -timeout 600s

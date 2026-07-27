@@ -27,6 +27,8 @@ func Run(args []string) int {
 		return cmdExport(rest)
 	case "hook":
 		return cmdHook(rest)
+	case "version":
+		return cmdVersion(rest)
 	default:
 		printUsage()
 		return 2
@@ -41,4 +43,5 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  validate   validate course.yaml and all task.yaml files")
 	fmt.Fprintln(os.Stderr, "  user       manage users")
 	fmt.Fprintln(os.Stderr, "  export     export course data")
+	fmt.Fprintln(os.Stderr, "  version    print version and build info")
 }
