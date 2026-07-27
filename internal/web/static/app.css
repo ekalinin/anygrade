@@ -100,6 +100,17 @@ h1 .badge, h2 .badge { vertical-align: middle; font-size: 0.8rem; }
 .lang-switch .linklike { text-decoration: none; color: var(--muted); font-size: 0.8rem; }
 .lang-switch .active { color: var(--accent); font-weight: 700; text-decoration: none; }
 
+/* Site footer: project link and the version of the running binary */
+.sitefoot {
+  display: flex; justify-content: center; align-items: center; gap: 0.5rem;
+  padding: 1rem 1.25rem 1.5rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted); font-size: 0.82rem;
+}
+.sitefoot a { color: var(--muted); }
+.sitefoot a:hover { color: var(--accent); }
+.sitefoot-ver { font-family: var(--mono); }
+
 .inline { display: inline; }
 
 /* Text-style action (logout, cancel, remove, lang switch) */

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ekalinin/anygrade/internal/i18n"
+	"github.com/ekalinin/anygrade/internal/version"
 )
 
 // TestPagesParsePerLocale fails loudly if any template references a function or
@@ -41,6 +42,25 @@ func TestRenderLoginLocalized(t *testing.T) {
 		}
 		if !strings.Contains(out, `lang="`+lang+`"`) {
 			t.Errorf("login [%s]: missing html lang attribute", lang)
+		}
+	}
+}
+
+// TestRenderFooter checks the footer carries the project link and the running
+// version. The footer lives in base.html and reads the version through a
+// template func, so one page per locale covers every page.
+func TestRenderFooter(t *testing.T) {
+	for _, lang := range i18n.Locales() {
+		var buf bytes.Buffer
+		if err := pages[lang]["login"].ExecuteTemplate(&buf, "base", loginData{Next: "/"}); err != nil {
+			t.Fatalf("render login [%s]: %v", lang, err)
+		}
+		out := buf.String()
+		if !strings.Contains(out, "https://github.com/ekalinin/anygrade") {
+			t.Errorf("footer [%s]: missing the project link", lang)
+		}
+		if !strings.Contains(out, version.Short()) {
+			t.Errorf("footer [%s]: missing version %q", lang, version.Short())
 		}
 	}
 }
