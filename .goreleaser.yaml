@@ -34,10 +34,12 @@ builds:
 archives:
   - formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # Just what someone running the binary needs: the license (required when
+    # redistributing) and the user-facing docs. specs/SPEC.md is written for
+    # people working on anygrade, not for people installing it.
     files:
       - README.md
       - LICENSE
-      - specs/SPEC.md
 
 checksum:
   name_template: checksums.txt
