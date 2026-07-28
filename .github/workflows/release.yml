@@ -34,3 +34,14 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Rebuild the landing page so it advertises the version just published. The
+  # permissions have to be granted here: a called workflow never gets more than
+  # its caller.
+  pages:
+    needs: release
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml

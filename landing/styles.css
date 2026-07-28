@@ -118,6 +118,10 @@ a:hover { text-decoration: underline; }
 }
 .btn-ghost:hover { border-color: var(--muted); }
 .btn-ghost span { color: var(--warn); }
+/* Latest release: the version reads as plain text, only the arrow is accented
+   (the .btn-ghost rule above paints every span like the GitHub star). */
+.btn-ver .mono { color: var(--fg); }
+.btn-ver span[aria-hidden] { color: var(--accent); }
 
 /* Hero */
 .hero { padding: 4rem 0 3rem; }

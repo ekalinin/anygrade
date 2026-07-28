@@ -20,6 +20,7 @@ Guidance for AI coding agents (Claude Code and any tool that reads `AGENTS.md`) 
 - e2e files are behind a build tag: `go test -tags e2e ./e2e` (plain `./...` skips them; gopls shows "no packages found" for them - not an error)
 - `./anygrade validate --repo <dir>` - check course metadata
 - `make release-check` / `make release-snapshot` - validate `.goreleaser.yaml` / build the whole release set into `dist/` without publishing
+- `make landing-build` - render `landing/` into `dist/landing` with the release version substituted (`LANDING_VERSION=v0.1.0` to override); `make landing-serve` builds first, then serves that directory
 
 ## Architecture
 
