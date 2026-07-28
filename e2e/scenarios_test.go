@@ -75,16 +75,19 @@ func testCloneAndPushHTTP(t *testing.T, e *env) {
 	git(t, e.aliceDir, nil, "commit", "-q", "-m", "solve sum")
 	out := git(t, e.aliceDir, nil, "push", "origin", "main")
 
-	// Alice's very first push diffs against the empty tree (no baseline yet),
-	// so every task in the freshly cloned repo is detected, not just sum.
-	if !reTaskCount.MatchString(out) {
-		t.Fatalf("push output missing task detection:\n%s", out)
+	// The personal repo is seeded with an intake baseline at provisioning, so
+	// the first push diffs against the course template: only the task alice
+	// actually changed (sum) is detected, not the untouched greet/late.
+	if !strings.Contains(out, "1 task(s) detected") {
+		t.Fatalf("first push should detect exactly one task (sum), got:\n%s", out)
+	}
+	for _, untouched := range []string{"greet", "late"} {
+		if regexp.MustCompile(untouched + `\s+submission #\d+ queued`).MatchString(out) {
+			t.Fatalf("untouched task %q should not be queued on first push:\n%s", untouched, out)
+		}
 	}
 	e.aliceSumSubID = taskSubmissionID(t, out, "sum")
 }
-
-// reTaskCount matches the "anygrade: N task(s) detected" push-feedback line.
-var reTaskCount = regexp.MustCompile(`\d+ task\(s\) detected`)
 
 // taskSubmissionID extracts the submission id queued for one specific task
 // from git push output.

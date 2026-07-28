@@ -112,6 +112,12 @@ func (m *RepoManager) EnsureStudent(ctx context.Context, login string) (string, 
 		if _, err := runGitAt(ctx, "clone", "--bare", m.CourseDir(), dir); err != nil {
 			return "", err
 		}
+		// Seed the intake baseline to the cloned head so the student's first
+		// push diffs against the course template, not the empty tree: only the
+		// tasks they actually change are detected, not every task at once.
+		if _, err := runGit(ctx, dir, "update-ref", "refs/anygrade/baseline", "HEAD"); err != nil {
+			return "", err
+		}
 	}
 
 	if _, err := runGit(ctx, dir, "config", "receive.maxInputSize", strconv.FormatInt(m.maxInputSize(), 10)); err != nil {
