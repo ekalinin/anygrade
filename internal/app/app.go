@@ -101,12 +101,13 @@ func Run(ctx context.Context, opts Options) error {
 
 	socket := filepath.Join(opts.DataDir, "anygrade.sock")
 	hub := web.NewHub()
+	log := slog.New(slog.NewTextHandler(logw, nil))
 	// Hidden-tests credentials come from the environment only (SPEC §11),
 	// never from the course repo.
 	hcache := &hidden.Cache{
 		Dir:   filepath.Join(opts.DataDir, "hidden"),
 		Token: os.Getenv("ANYGRADE_HIDDEN_GIT_TOKEN"),
-		Log:   slog.New(slog.NewTextHandler(logw, nil)),
+		Log:   log,
 	}
 	q := &queue.Queue{
 		Store:   db,
@@ -118,6 +119,7 @@ func Run(ctx context.Context, opts Options) error {
 		DB: db, Queue: q, Repos: repos, Course: holder,
 		BaseURL: baseURL(opts),
 		Events:  hub,
+		Log:     log,
 	}
 	auth := storeAuth{db}
 	// One failure budget per (client IP, login) pair, shared between git

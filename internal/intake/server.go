@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"regexp"
@@ -42,6 +43,16 @@ type Server struct {
 	Course  *Holder
 	BaseURL string          // submission link prefix in push output; "" = no links
 	Events  queue.Publisher // optional live-update sink for rejected rows
+	Log     *slog.Logger    // server log for ref bookkeeping failures; nil = discard
+}
+
+// log returns the configured logger, or a discarding one so the zero value and
+// tests work without wiring.
+func (s *Server) log() *slog.Logger {
+	if s.Log == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return s.Log
 }
 
 // publish mirrors queue.publish for rows intake writes itself (rejections);
@@ -252,14 +263,9 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, newSHA str
 		}
 	}
 
-	defer func() {
-		// Advance only after submissions are enqueued: a crash re-detects
-		// this commit on the next push instead of losing it.
-		_, _ = gitserver.Git(ctx, dir, "update-ref", "refs/anygrade/baseline", newSHA)
-	}()
-
 	if len(taskIDs) == 0 {
-		return []string{"anygrade: no tasks changed"}
+		return append([]string{"anygrade: no tasks changed"},
+			s.advanceBaseline(ctx, dir, newSHA, true)...)
 	}
 
 	width := 0
@@ -267,11 +273,13 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, newSHA str
 		width = max(width, len(id))
 	}
 	lines := []string{fmt.Sprintf("anygrade: %d task(s) detected", len(taskIDs))}
+	processed := true
 	for _, id := range taskIDs {
 		task, _, _ := c.Task(id)
 		history, err := s.DB.ListByUserTask(ctx, user.ID, id)
 		if err != nil {
 			lines = append(lines, fmt.Sprintf("  %-*s error: %v", width, id, err))
+			processed = false
 			continue
 		}
 		d := queue.Admit(task, history, now, false)
@@ -283,6 +291,7 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, newSHA str
 			rej, err := s.DB.RecordRejected(ctx, ns, d.RejectStatus)
 			if err != nil {
 				lines = append(lines, fmt.Sprintf("  %-*s error: %v", width, id, err))
+				processed = false
 				continue
 			}
 			s.publish(rej, d.RejectStatus)
@@ -292,18 +301,54 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, newSHA str
 		sub, err := s.Queue.Enqueue(ctx, ns)
 		if err != nil {
 			lines = append(lines, fmt.Sprintf("  %-*s error: %v", width, id, err))
+			processed = false
 			continue
 		}
-		// Pin the graded commit so it survives force pushes (SPEC §6 step 7).
-		_, _ = gitserver.Git(ctx, dir, "update-ref",
-			fmt.Sprintf("refs/anygrade/submissions/%d", sub.ID), newSHA)
 		line := fmt.Sprintf("  %-*s submission #%d queued", width, id, sub.ID)
 		if s.BaseURL != "" {
 			line += fmt.Sprintf("   %s/submissions/%d", strings.TrimSuffix(s.BaseURL, "/"), sub.ID)
 		}
 		lines = append(lines, line)
+		if err := s.pinSubmission(ctx, dir, sub.ID, newSHA); err != nil {
+			lines = append(lines, fmt.Sprintf("  %-*s warning: commit not pinned, a force push can drop it",
+				width, id))
+		}
 	}
-	return lines
+	return append(lines, s.advanceBaseline(ctx, dir, newSHA, processed)...)
+}
+
+// advanceBaseline moves refs/anygrade/baseline to newSHA, but only once every
+// detected task has been processed. The ref is the "last processed commit"
+// marker, so advancing it past a task that failed to record would lose that
+// change for good: the next push would diff against a commit that already
+// contains it. Deliberately not deferred, so the error paths above matter.
+// Returns the push-output lines for the cases where the ref did not move.
+func (s *Server) advanceBaseline(ctx context.Context, dir, newSHA string, processed bool) []string {
+	if !processed {
+		s.log().Warn("baseline kept after a processing error",
+			"repo", dir, "commit", newSHA)
+		return []string{"anygrade: baseline kept; the next push re-detects these changes"}
+	}
+	if _, err := gitserver.Git(ctx, dir, "update-ref", "refs/anygrade/baseline", newSHA); err != nil {
+		s.log().Error("baseline update failed", "repo", dir, "commit", newSHA, "err", err)
+		return []string{"anygrade: baseline update failed; the next push re-detects these changes"}
+	}
+	return nil
+}
+
+// pinSubmission creates refs/anygrade/submissions/<id> at commit so a graded
+// tree survives a force push (SPEC §6 step 7). The submission is already
+// queued by the time this runs, so a failure is reported and logged, never
+// fatal: grading proceeds, only the audit guarantee is lost. Details stay in
+// the server log; the student-visible line says what it means for them.
+func (s *Server) pinSubmission(ctx context.Context, dir string, subID int64, commit string) error {
+	_, err := gitserver.Git(ctx, dir, "update-ref",
+		fmt.Sprintf("refs/anygrade/submissions/%d", subID), commit)
+	if err != nil {
+		s.log().Error("pinning the submitted commit failed",
+			"submission", subID, "repo", dir, "commit", commit, "err", err)
+	}
+	return err
 }
 
 func quarantineEnv(req hookproto.Request) []string {

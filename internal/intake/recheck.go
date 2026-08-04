@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ekalinin/anygrade/internal/gitserver"
 	"github.com/ekalinin/anygrade/internal/queue"
 	"github.com/ekalinin/anygrade/internal/store"
 )
@@ -86,8 +85,8 @@ func (s *Server) recheck(ctx context.Context, userID int64, taskID string, teach
 	if err != nil {
 		return store.Submission{}, d, err
 	}
-	// Pin the rechecked commit like a push does (SPEC §6 step 7).
-	_, _ = gitserver.Git(ctx, s.Repos.StudentDir(user.Login), "update-ref",
-		fmt.Sprintf("refs/anygrade/submissions/%d", sub.ID), commit)
+	// Pin the rechecked commit like a push does (SPEC §6 step 7). There is no
+	// push output here, so a failure is logged and the recheck stands.
+	_ = s.pinSubmission(ctx, s.Repos.StudentDir(user.Login), sub.ID, commit)
 	return sub, d, nil
 }

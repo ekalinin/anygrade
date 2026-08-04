@@ -1,6 +1,8 @@
 package intake
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -193,6 +195,85 @@ func TestProcessPushFullFlow(t *testing.T) {
 	})
 	if !strings.Contains(joined(resp), "only main is graded") {
 		t.Errorf("branch line missing: %v", resp.Lines)
+	}
+}
+
+// failingHistory makes the submission-history read fail so gradePush takes its
+// error path with the rest of the store intact.
+type failingHistory struct {
+	store.Store
+	fail bool
+}
+
+func (f *failingHistory) ListByUserTask(ctx context.Context, userID int64, taskID string) ([]store.Submission, error) {
+	if f.fail {
+		return nil, errors.New("history unavailable")
+	}
+	return f.Store.ListByUserTask(ctx, userID, taskID)
+}
+
+// TestGradePushKeepsBaselineOnError: a task that fails to record must not move
+// the baseline, so the next push re-detects the change instead of losing it.
+func TestGradePushKeepsBaselineOnError(t *testing.T) {
+	s, work, _, user := newIntakeFixture(t)
+	studentDir := s.Repos.StudentDir("alice")
+	before := git(t, studentDir, "rev-parse", "refs/anygrade/baseline")
+
+	failing := &failingHistory{Store: s.DB, fail: true}
+	s.DB = failing
+
+	if err := os.WriteFile(filepath.Join(work, "tasks", "t1", "main.go"), []byte("package main // v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old, head := push(t, work, "solve t1")
+	out := joined(s.dispatch(t.Context(), postReceive(old, head)))
+	if !strings.Contains(out, "error: history unavailable") || !strings.Contains(out, "baseline kept") {
+		t.Fatalf("want the task error and the kept-baseline note: %s", out)
+	}
+	if base := git(t, studentDir, "rev-parse", "refs/anygrade/baseline"); base != before {
+		t.Fatalf("baseline moved to %s, want %s", base, before)
+	}
+
+	// The store recovers: the same commit is re-detected and graded.
+	failing.fail = false
+	out = joined(s.dispatch(t.Context(), postReceive(old, head)))
+	if !strings.Contains(out, "submission #1 queued") {
+		t.Fatalf("change lost after recovery: %s", out)
+	}
+	subs, err := s.DB.ListByUserTask(t.Context(), user.ID, "t1")
+	if err != nil || len(subs) != 1 || subs[0].CommitSHA != head {
+		t.Fatalf("t1 submissions: %+v err=%v", subs, err)
+	}
+	if base := git(t, studentDir, "rev-parse", "refs/anygrade/baseline"); base != head {
+		t.Fatalf("baseline = %s, want %s", base, head)
+	}
+}
+
+// TestGradePushReportsUnpinnedCommit: pinning is best-effort, but its failure
+// must be visible instead of silently dropping the audit guarantee.
+func TestGradePushReportsUnpinnedCommit(t *testing.T) {
+	s, work, _, _ := newIntakeFixture(t)
+	studentDir := s.Repos.StudentDir("alice")
+
+	// refs/anygrade/submissions as a ref of its own blocks every
+	// refs/anygrade/submissions/<id> below it (git's D/F conflict).
+	git(t, studentDir, "update-ref", "refs/anygrade/submissions",
+		git(t, studentDir, "rev-parse", "HEAD"))
+
+	if err := os.WriteFile(filepath.Join(work, "tasks", "t1", "main.go"), []byte("package main // v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old, head := push(t, work, "solve t1")
+	out := joined(s.dispatch(t.Context(), postReceive(old, head)))
+	if !strings.Contains(out, "submission #1 queued") {
+		t.Fatalf("submission must still be queued: %s", out)
+	}
+	if !strings.Contains(out, "commit not pinned") {
+		t.Fatalf("want the unpinned warning: %s", out)
+	}
+	// A failed pin is not a processing failure: the baseline still advances.
+	if base := git(t, studentDir, "rev-parse", "refs/anygrade/baseline"); base != head {
+		t.Fatalf("baseline = %s, want %s", base, head)
 	}
 }
 
