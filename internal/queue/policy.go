@@ -35,15 +35,8 @@ func Admit(t config.ResolvedTask, history []store.Submission, now time.Time, tea
 		}
 	}
 
-	// Attempts: infra_error stays in flight (the same submission retries, it
-	// never double-consumes); rejected_* never ran and do not count.
 	if max := t.Limits.MaxAttempts; max > 0 {
-		consumed := 0
-		for _, s := range history {
-			if s.Counts && countsAsAttempt(s.Status) {
-				consumed++
-			}
-		}
+		consumed := CountAttempts(history)
 		if consumed >= max {
 			return Decision{
 				RejectStatus: store.StatusRejectedLimit,
@@ -52,15 +45,11 @@ func Admit(t config.ResolvedTask, history []store.Submission, now time.Time, tea
 		}
 	}
 
-	// Cooldown: measured from the most recent counting submission.
+	// Cooldown: measured from the most recent submission that consumed an
+	// attempt. Same rule as the limit above, so a submission the student was
+	// never charged for does not hold them back either.
 	if cd := t.Limits.Cooldown; cd > 0 {
-		var last *time.Time
-		for i := range history {
-			s := &history[i]
-			if s.Counts && countsAsAttempt(s.Status) && (last == nil || s.ReceivedAt.After(*last)) {
-				last = &s.ReceivedAt
-			}
-		}
+		last := lastAttemptAt(history)
 		if last != nil && now.Before(last.Add(cd)) {
 			wait := last.Add(cd).Sub(now).Round(time.Second)
 			return Decision{
@@ -73,31 +62,60 @@ func Admit(t config.ResolvedTask, history []store.Submission, now time.Time, tea
 	return Decision{Admit: true, Counts: true}
 }
 
-func countsAsAttempt(status string) bool {
-	switch status {
-	case store.StatusQueued, store.StatusRunning, store.StatusDone, store.StatusInfraError:
-		return true
-	default: // rejected_deadline, rejected_limit
+// countsAsAttempt reports whether a submission holds one of the task's
+// attempt slots. Queued and running rows are in flight: they hold a slot so a
+// burst of pushes cannot overshoot max_attempts before anything finishes. An
+// infra_error holds its slot only while a retry is scheduled - that is the
+// same submission coming back, and releasing the slot would let it be paid
+// for twice. Once it is terminal (retries exhausted, or a teacher cancel,
+// which also clears Counts) the submission never ran, so per SPEC §13 it
+// consumes no attempt and the student gets the slot back.
+func countsAsAttempt(s store.Submission) bool {
+	if !s.Counts { // teacher recheck, or a canceled row
 		return false
 	}
+	switch s.Status {
+	case store.StatusQueued, store.StatusRunning, store.StatusDone:
+		return true
+	case store.StatusInfraError:
+		return s.RetryAt != nil
+	default: // rejected_deadline, rejected_limit: never ran
+		return false
+	}
+}
+
+// CountAttempts is how many of the task's attempts a history has consumed:
+// the admission rule above, exported so the UI displays the same number the
+// policy enforces.
+func CountAttempts(history []store.Submission) int {
+	n := 0
+	for _, s := range history {
+		if countsAsAttempt(s) {
+			n++
+		}
+	}
+	return n
+}
+
+// lastAttemptAt is the receipt time of the most recent attempt-consuming
+// submission (the cooldown anchor); nil when there is none.
+func lastAttemptAt(history []store.Submission) *time.Time {
+	var last *time.Time
+	for i := range history {
+		s := &history[i]
+		if countsAsAttempt(*s) && (last == nil || s.ReceivedAt.After(*last)) {
+			last = &s.ReceivedAt
+		}
+	}
+	return last
 }
 
 // Quota derives the task-page display numbers from the same rules as Admit
 // (single source of truth for the attempt/cooldown math): attempts left
 // (unlimited when max_attempts is 0) and when the active cooldown ends.
 func Quota(t config.ResolvedTask, history []store.Submission, now time.Time) (attemptsLeft int, unlimited bool, cooldownUntil *time.Time) {
-	consumed := 0
-	var last *time.Time
-	for i := range history {
-		s := &history[i]
-		if !s.Counts || !countsAsAttempt(s.Status) {
-			continue
-		}
-		consumed++
-		if last == nil || s.ReceivedAt.After(*last) {
-			last = &s.ReceivedAt
-		}
-	}
+	consumed := CountAttempts(history)
+	last := lastAttemptAt(history)
 	if cd := t.Limits.Cooldown; cd > 0 && last != nil {
 		if until := last.Add(cd); now.Before(until) {
 			cooldownUntil = &until

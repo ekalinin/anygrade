@@ -164,14 +164,3 @@ func DisplayScore(history []store.Submission, policy string) *float64 {
 	}
 	return score
 }
-
-// CountAttempts mirrors the queue policy's counting rule for display.
-func CountAttempts(history []store.Submission) int {
-	n := 0
-	for _, s := range history {
-		if s.Counts && s.Status != store.StatusRejectedDeadline && s.Status != store.StatusRejectedLimit {
-			n++
-		}
-	}
-	return n
-}
