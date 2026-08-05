@@ -12,10 +12,65 @@ const submissionCols = `id, user_id, task_id, commit_sha, received_at, attempt_n
 	counts, status, raw_score, penalty_percent, final_score, log_dir,
 	worker_note, retries, retry_at, started_at, canceled_at`
 
+// dbtx is the subset of *sql.DB and *sql.Tx the submission queries need, so
+// one implementation serves both the standalone and the transactional path.
+type dbtx interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// AdmitSubmission implements SubmissionStore: history read, policy decision,
+// and insert happen inside one transaction, so two concurrent pushes (or a
+// push racing a UI recheck) cannot both claim the last free attempt slot.
+//
+// The DSN sets _txlock=immediate, so the write lock is taken before the
+// history is read: no other writer can slip in between the SELECT and the
+// INSERT, in this process or another one.
+//
+// decide runs while the single write connection is held. It must be pure and
+// fast, and must never touch the store - that would deadlock on the one
+// connection this transaction owns.
+func (s *DB) AdmitSubmission(ctx context.Context, ns NewSubmission,
+	decide func(history []Submission) Admission) (Submission, error) {
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Submission{}, err
+	}
+	defer tx.Rollback()
+
+	history, err := listByUserTask(ctx, tx, ns.UserID, ns.TaskID)
+	if err != nil {
+		return Submission{}, err
+	}
+	a := decide(history)
+	// The verdict owns Counts: taking it from the caller's NewSubmission
+	// would let the row disagree with the decision that produced it.
+	ns.Counts = a.Counts
+
+	var sub Submission
+	if a.Admit {
+		sub, err = enqueueRow(ctx, tx, ns)
+	} else {
+		sub, err = rejectedRow(ctx, tx, ns, a.RejectStatus)
+	}
+	if err != nil {
+		return Submission{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Submission{}, err
+	}
+	return sub, nil
+}
+
 // Enqueue implements SubmissionStore. attempt_no is assigned inside the INSERT
 // so concurrent enqueues cannot race (all writes serialize on one connection).
 func (s *DB) Enqueue(ctx context.Context, ns NewSubmission) (Submission, error) {
-	row := s.db.QueryRowContext(ctx, `
+	return enqueueRow(ctx, s.db, ns)
+}
+
+func enqueueRow(ctx context.Context, q dbtx, ns NewSubmission) (Submission, error) {
+	row := q.QueryRowContext(ctx, `
 		INSERT INTO submissions
 		  (user_id, task_id, commit_sha, received_at, counts, attempt_no, status)
 		VALUES (?, ?, ?, ?, ?,
@@ -30,12 +85,13 @@ func (s *DB) Enqueue(ctx context.Context, ns NewSubmission) (Submission, error) 
 	return scanSubmission(row)
 }
 
-// RecordRejected implements SubmissionStore.
-func (s *DB) RecordRejected(ctx context.Context, ns NewSubmission, status string) (Submission, error) {
+// rejectedRow persists a submission the policy refused: recorded for the
+// student's history, never queued (SPEC §6 step 4).
+func rejectedRow(ctx context.Context, q dbtx, ns NewSubmission, status string) (Submission, error) {
 	if status != StatusRejectedDeadline && status != StatusRejectedLimit {
-		return Submission{}, fmt.Errorf("RecordRejected: invalid status %q", status)
+		return Submission{}, fmt.Errorf("rejected submission: invalid status %q", status)
 	}
-	row := s.db.QueryRowContext(ctx, `
+	row := q.QueryRowContext(ctx, `
 		INSERT INTO submissions
 		  (user_id, task_id, commit_sha, received_at, counts, attempt_no, status)
 		VALUES (?, ?, ?, ?, ?, NULL, ?)
@@ -157,7 +213,11 @@ func (s *DB) Requeue(ctx context.Context, id int64) error {
 
 // ListByUserTask implements SubmissionStore.
 func (s *DB) ListByUserTask(ctx context.Context, userID int64, taskID string) ([]Submission, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	return listByUserTask(ctx, s.db, userID, taskID)
+}
+
+func listByUserTask(ctx context.Context, q dbtx, userID int64, taskID string) ([]Submission, error) {
+	rows, err := q.QueryContext(ctx, `
 		SELECT `+submissionCols+` FROM submissions
 		WHERE user_id = ? AND task_id = ? ORDER BY received_at ASC`, userID, taskID)
 	if err != nil {

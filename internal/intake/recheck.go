@@ -52,6 +52,8 @@ func (s *Server) recheck(ctx context.Context, userID int64, taskID string, teach
 	if err != nil {
 		return store.Submission{}, queue.Decision{}, err
 	}
+	// This read only picks which commit to re-grade; the attempt/cooldown
+	// decision is taken again inside Submit's transaction.
 	history, err := s.DB.ListByUserTask(ctx, userID, taskID)
 	if err != nil {
 		return store.Submission{}, queue.Decision{}, err
@@ -67,23 +69,14 @@ func (s *Server) recheck(ctx context.Context, userID int64, taskID string, teach
 		return store.Submission{}, queue.Decision{}, ErrNothingToRecheck
 	}
 
-	now := time.Now()
-	d := queue.Admit(task, history, now, teacher)
-	ns := store.NewSubmission{
-		UserID: userID, TaskID: taskID, CommitSHA: commit,
-		ReceivedAt: now, Counts: d.Counts,
-	}
-	if !d.Admit {
-		sub, err := s.DB.RecordRejected(ctx, ns, d.RejectStatus)
-		if err != nil {
-			return store.Submission{}, d, err
-		}
-		s.publish(sub, d.RejectStatus)
-		return sub, d, nil
-	}
-	sub, err := s.Queue.Enqueue(ctx, ns)
+	sub, d, err := s.Queue.Submit(ctx, task, store.NewSubmission{
+		UserID: userID, TaskID: taskID, CommitSHA: commit, ReceivedAt: time.Now(),
+	}, teacher)
 	if err != nil {
 		return store.Submission{}, d, err
+	}
+	if !d.Admit {
+		return sub, d, nil
 	}
 	// Pin the rechecked commit like a push does (SPEC §6 step 7). There is no
 	// push output here, so a failure is logged and the recheck stands.

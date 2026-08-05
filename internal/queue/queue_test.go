@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -100,6 +101,96 @@ func waitStatus(t *testing.T, db *store.DB, id int64, want string) store.Submiss
 	sub, _, _ := db.GetSubmission(t.Context(), id)
 	t.Fatalf("submission %d: status %q, want %q (note: %s)", id, sub.Status, want, sub.WorkerNote)
 	return store.Submission{}
+}
+
+// TestSubmitAdmitsOneSlotUnderRace: the last free attempt goes to exactly one
+// of N concurrent submissions. Before the verdict moved inside the write
+// transaction every caller read the same empty history and all of them were
+// admitted, overshooting max_attempts.
+func TestSubmitAdmitsOneSlotUnderRace(t *testing.T) {
+	q, db, u, _ := newTestQueue(t)
+	task := policyTask(1, 0, nil)
+
+	const n = 8
+	decisions := make([]Decision, n)
+	errs := make([]error, n)
+	start := make(chan struct{})
+	now := time.Now()
+
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			<-start // release them all at once
+			_, d, err := q.Submit(t.Context(), task, store.NewSubmission{
+				UserID: u.ID, TaskID: "t1", CommitSHA: fmt.Sprintf("c%d", i),
+				ReceivedAt: now,
+			}, false)
+			decisions[i], errs[i] = d, err
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	admitted := 0
+	for i, d := range decisions {
+		if errs[i] != nil {
+			t.Fatalf("submit %d: %v", i, errs[i])
+		}
+		if d.Admit {
+			admitted++
+			continue
+		}
+		if d.RejectStatus != store.StatusRejectedLimit {
+			t.Errorf("submit %d rejected as %q, want %q", i, d.RejectStatus, store.StatusRejectedLimit)
+		}
+	}
+	if admitted != 1 {
+		t.Fatalf("admitted %d of %d, want exactly 1", admitted, n)
+	}
+
+	// Every attempt is still recorded for the student's history; only one of
+	// them consumed the slot.
+	history, err := db.ListByUserTask(t.Context(), u.ID, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != n {
+		t.Fatalf("history has %d rows, want %d", len(history), n)
+	}
+	if got := CountAttempts(history); got != 1 {
+		t.Errorf("CountAttempts = %d, want 1", got)
+	}
+}
+
+// TestSubmitCooldownUnderRace: a burst that arrives together may not slip
+// past an active cooldown either.
+func TestSubmitCooldownUnderRace(t *testing.T) {
+	q, db, u, _ := newTestQueue(t)
+	task := policyTask(0, time.Hour, nil)
+	now := time.Now()
+
+	const n = 6
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Go(func() {
+			<-start
+			_, _, _ = q.Submit(t.Context(), task, store.NewSubmission{
+				UserID: u.ID, TaskID: "t1", CommitSHA: fmt.Sprintf("c%d", i),
+				ReceivedAt: now,
+			}, false)
+		})
+	}
+	close(start)
+	wg.Wait()
+
+	history, err := db.ListByUserTask(t.Context(), u.ID, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := CountAttempts(history); got != 1 {
+		t.Fatalf("CountAttempts = %d, want 1: the cooldown admitted more than one", got)
+	}
 }
 
 // TestPipelineScoresAndPersists: full pipeline over the local runner, with the

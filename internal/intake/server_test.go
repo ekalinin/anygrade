@@ -198,18 +198,21 @@ func TestProcessPushFullFlow(t *testing.T) {
 	}
 }
 
-// failingHistory makes the submission-history read fail so gradePush takes its
-// error path with the rest of the store intact.
-type failingHistory struct {
+// failingAdmit makes the admission write fail so gradePush takes its error
+// path with the rest of the store intact. It wraps the one call the push path
+// makes to record a submission - the read, the verdict and the insert now all
+// happen inside AdmitSubmission.
+type failingAdmit struct {
 	store.Store
 	fail bool
 }
 
-func (f *failingHistory) ListByUserTask(ctx context.Context, userID int64, taskID string) ([]store.Submission, error) {
+func (f *failingAdmit) AdmitSubmission(ctx context.Context, ns store.NewSubmission,
+	decide func(history []store.Submission) store.Admission) (store.Submission, error) {
 	if f.fail {
-		return nil, errors.New("history unavailable")
+		return store.Submission{}, errors.New("admission unavailable")
 	}
-	return f.Store.ListByUserTask(ctx, userID, taskID)
+	return f.Store.AdmitSubmission(ctx, ns, decide)
 }
 
 // TestGradePushKeepsBaselineOnError: a task that fails to record must not move
@@ -219,15 +222,18 @@ func TestGradePushKeepsBaselineOnError(t *testing.T) {
 	studentDir := s.Repos.StudentDir("alice")
 	before := git(t, studentDir, "rev-parse", "refs/anygrade/baseline")
 
-	failing := &failingHistory{Store: s.DB, fail: true}
+	// Both handles have to be swapped: gradePush reads through Server.DB and
+	// records through the queue's own store reference.
+	failing := &failingAdmit{Store: s.DB, fail: true}
 	s.DB = failing
+	s.Queue.Store = failing
 
 	if err := os.WriteFile(filepath.Join(work, "tasks", "t1", "main.go"), []byte("package main // v2\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	old, head := push(t, work, "solve t1")
 	out := joined(s.dispatch(t.Context(), postReceive(old, head)))
-	if !strings.Contains(out, "error: history unavailable") || !strings.Contains(out, "baseline kept") {
+	if !strings.Contains(out, "error: admission unavailable") || !strings.Contains(out, "baseline kept") {
 		t.Fatalf("want the task error and the kept-baseline note: %s", out)
 	}
 	if base := git(t, studentDir, "rev-parse", "refs/anygrade/baseline"); base != before {

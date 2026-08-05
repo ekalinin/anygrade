@@ -217,6 +217,64 @@ func TestLastByUserTask(t *testing.T) {
 	}
 }
 
+// TestAdmitSubmission: decide sees the (user, task) history and its verdict
+// decides both the row written and its Counts flag.
+func TestAdmitSubmission(t *testing.T) {
+	db := openTestDB(t)
+	u := testUser(t, db)
+
+	ns := func(sha string) NewSubmission {
+		// Counts is deliberately wrong here: the verdict must win.
+		return NewSubmission{UserID: u.ID, TaskID: "t1", CommitSHA: sha,
+			ReceivedAt: time.Now(), Counts: true}
+	}
+
+	var seen int
+	first, err := db.AdmitSubmission(t.Context(), ns("a"), func(h []Submission) Admission {
+		seen = len(h)
+		return Admission{Admit: true, Counts: true}
+	})
+	if err != nil || seen != 0 {
+		t.Fatalf("first admit: history len %d, err %v", seen, err)
+	}
+	if first.Status != StatusQueued || !first.Counts {
+		t.Errorf("first = %q counts=%v, want queued/true", first.Status, first.Counts)
+	}
+
+	// Non-counting verdict (teacher recheck) overrides the caller's flag.
+	recheck, err := db.AdmitSubmission(t.Context(), ns("b"), func(h []Submission) Admission {
+		seen = len(h)
+		return Admission{Admit: true, Counts: false}
+	})
+	if err != nil || seen != 1 {
+		t.Fatalf("second admit: history len %d, err %v", seen, err)
+	}
+	if recheck.Counts || recheck.AttemptNo != nil {
+		t.Errorf("recheck = counts %v attempt %v, want false/nil", recheck.Counts, recheck.AttemptNo)
+	}
+
+	rejected, err := db.AdmitSubmission(t.Context(), ns("c"), func(h []Submission) Admission {
+		return Admission{RejectStatus: StatusRejectedLimit}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rejected.Status != StatusRejectedLimit || rejected.Counts {
+		t.Errorf("rejected = %q counts=%v, want rejected_limit/false", rejected.Status, rejected.Counts)
+	}
+
+	// An invalid verdict must not leave a row behind.
+	if _, err := db.AdmitSubmission(t.Context(), ns("d"), func(h []Submission) Admission {
+		return Admission{RejectStatus: "nonsense"}
+	}); err == nil {
+		t.Fatal("invalid reject status must fail")
+	}
+	all, err := db.ListByUserTask(t.Context(), u.ID, "t1")
+	if err != nil || len(all) != 3 {
+		t.Fatalf("history has %d rows, want 3 (the failed admit rolled back): %v", len(all), err)
+	}
+}
+
 // TestEnqueueAttemptNumbering: counting submissions get a gap-free sequence;
 // teacher rechecks get nil and do not bump it.
 func TestEnqueueAttemptNumbering(t *testing.T) {

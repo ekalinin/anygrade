@@ -102,8 +102,39 @@ func (q *Queue) init() {
 	})
 }
 
-// Enqueue admits nothing by itself (policy is the caller's job via Admit);
-// it persists the submission and wakes a worker.
+// Submit is the single entry point for an incoming submission (SPEC §6
+// step 4): it applies the admission policy and records the outcome - queued
+// or rejected_* - then publishes it and wakes a worker.
+//
+// Reading the history, deciding, and writing the row must not be interleaved:
+// two concurrent pushes, or a push racing a UI recheck, would otherwise both
+// see the last free attempt slot and both take it. AdmitSubmission holds the
+// whole sequence in one write transaction; Admit itself stays pure, so the
+// policy remains testable without a database.
+//
+// The verdict is taken at ns.ReceivedAt - the moment the server accepted the
+// push, never a commit timestamp (SPEC §6).
+func (q *Queue) Submit(ctx context.Context, t config.ResolvedTask,
+	ns store.NewSubmission, teacherRecheck bool) (store.Submission, Decision, error) {
+
+	q.init()
+	var d Decision
+	sub, err := q.Store.AdmitSubmission(ctx, ns, func(history []store.Submission) store.Admission {
+		d = Admit(t, history, ns.ReceivedAt, teacherRecheck)
+		return store.Admission{Admit: d.Admit, RejectStatus: d.RejectStatus, Counts: d.Counts}
+	})
+	if err != nil {
+		return store.Submission{}, Decision{}, err
+	}
+	q.publish(sub, sub.Status)
+	if d.Admit {
+		q.wake()
+	}
+	return sub, d, nil
+}
+
+// Enqueue persists an already-admitted submission and wakes a worker. Submit
+// is the normal path; this stays for callers that own the policy themselves.
 func (q *Queue) Enqueue(ctx context.Context, ns store.NewSubmission) (store.Submission, error) {
 	q.init()
 	sub, err := q.Store.Enqueue(ctx, ns)
