@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -45,13 +46,25 @@ func enqueueN(t *testing.T, db *DB, userID int64, task string, n int) []Submissi
 	return subs
 }
 
+// enqueueAcrossTasks queues one submission per task t1..tn. Rows of the same
+// (user, task) are claimed one at a time, so a test that wants n rows in
+// flight at once has to spread them over n tasks.
+func enqueueAcrossTasks(t *testing.T, db *DB, userID int64, n int) []Submission {
+	t.Helper()
+	subs := make([]Submission, n)
+	for i := range n {
+		subs[i] = enqueueN(t, db, userID, fmt.Sprintf("t%d", i+1), 1)[0]
+	}
+	return subs
+}
+
 // TestConcurrentClaimUniqueness: N workers racing over M queued rows must
 // produce exactly M distinct claims.
 func TestConcurrentClaimUniqueness(t *testing.T) {
 	db := openTestDB(t)
 	u := testUser(t, db)
 	const queued, workers = 5, 12
-	enqueueN(t, db, u.ID, "t1", queued)
+	enqueueAcrossTasks(t, db, u.ID, queued)
 
 	var mu sync.Mutex
 	claimed := map[int64]int{}
@@ -85,11 +98,56 @@ func TestConcurrentClaimUniqueness(t *testing.T) {
 	}
 }
 
+// TestClaimSerializesOneTask: successive pushes to one task run in order, one
+// at a time, while other tasks keep flowing past them (SPEC §13).
+func TestClaimSerializesOneTask(t *testing.T) {
+	db := openTestDB(t)
+	u := testUser(t, db)
+	first := enqueueN(t, db, u.ID, "t1", 1)[0]
+	second := enqueueN(t, db, u.ID, "t1", 1)[0]
+	other := enqueueN(t, db, u.ID, "t2", 1)[0]
+
+	claimed, ok, err := db.ClaimNext(t.Context(), time.Now())
+	if err != nil || !ok {
+		t.Fatalf("first claim: ok=%v err=%v", ok, err)
+	}
+	if claimed.ID != first.ID {
+		t.Fatalf("claimed #%d first, want the oldest #%d", claimed.ID, first.ID)
+	}
+
+	// t1 is busy, so the next claim skips its queued row and takes t2.
+	claimed, ok, err = db.ClaimNext(t.Context(), time.Now())
+	if err != nil || !ok {
+		t.Fatalf("second claim: ok=%v err=%v", ok, err)
+	}
+	if claimed.ID != other.ID {
+		t.Fatalf("claimed #%d, want #%d: a busy task must not block other tasks",
+			claimed.ID, other.ID)
+	}
+
+	// Nothing else is claimable while both tasks are running.
+	if got, ok, err := db.ClaimNext(t.Context(), time.Now()); err != nil || ok {
+		t.Fatalf("claimed #%d while its task was running", got.ID)
+	}
+
+	// Once the first finishes, the queued row of the same task follows it.
+	if err := db.FinishSubmission(t.Context(), first.ID, SubmissionResult{Status: StatusDone}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err = db.ClaimNext(t.Context(), time.Now())
+	if err != nil || !ok {
+		t.Fatalf("third claim: ok=%v err=%v", ok, err)
+	}
+	if claimed.ID != second.ID {
+		t.Fatalf("claimed #%d, want #%d", claimed.ID, second.ID)
+	}
+}
+
 // TestRequeueRunning: startup recovery returns running rows to the queue.
 func TestRequeueRunning(t *testing.T) {
 	db := openTestDB(t)
 	u := testUser(t, db)
-	enqueueN(t, db, u.ID, "t1", 3)
+	enqueueAcrossTasks(t, db, u.ID, 3)
 	for range 2 {
 		if _, ok, err := db.ClaimNext(t.Context(), time.Now()); err != nil || !ok {
 			t.Fatalf("claim failed: ok=%v err=%v", ok, err)

@@ -47,14 +47,30 @@ func (s *DB) RecordRejected(ctx context.Context, ns NewSubmission, status string
 // ClaimNext implements SubmissionStore: one atomic UPDATE...RETURNING flips the
 // oldest eligible row to running. Serialized by MaxOpenConns(1), so concurrent
 // workers always claim distinct rows.
+//
+// A row is skipped while another submission of the same (student, task) is
+// running: successive pushes to one task run in order rather than racing each
+// other (SPEC §13). The row stays queued and is picked up on a later claim, so
+// other students and other tasks keep flowing past it.
+//
+// The guard covers the queued path only. An infra_error waiting on its backoff
+// does not hold the task back - blocking a newer submission behind a retry
+// schedule that can stretch to minutes would cost far more than the ordering
+// is worth.
 func (s *DB) ClaimNext(ctx context.Context, now time.Time) (Submission, bool, error) {
 	row := s.db.QueryRowContext(ctx, `
 		UPDATE submissions SET status = 'running', started_at = ?
 		WHERE id = (
-		  SELECT id FROM submissions
-		  WHERE status = 'queued'
-		     OR (status = 'infra_error' AND retry_at IS NOT NULL AND retry_at <= ?)
-		  ORDER BY received_at ASC
+		  SELECT s.id FROM submissions s
+		  WHERE (s.status = 'queued'
+		     OR (s.status = 'infra_error' AND s.retry_at IS NOT NULL AND s.retry_at <= ?))
+		    AND NOT EXISTS (
+		      SELECT 1 FROM submissions r
+		      WHERE r.status = 'running'
+		        AND r.user_id = s.user_id
+		        AND r.task_id = s.task_id
+		    )
+		  ORDER BY s.received_at ASC, s.id ASC
 		  LIMIT 1
 		)
 		RETURNING `+submissionCols,
