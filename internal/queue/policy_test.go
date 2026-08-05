@@ -21,6 +21,14 @@ func subAt(status string, counts bool, at time.Time) store.Submission {
 	return store.Submission{Status: status, Counts: counts, ReceivedAt: at}
 }
 
+// retrying is an infra_error still scheduled for another run; without a
+// retry_at the same row is terminal and never ran (SPEC §13).
+func retrying(at time.Time, retryAt time.Time) store.Submission {
+	s := subAt(store.StatusInfraError, true, at)
+	s.RetryAt = &retryAt
+	return s
+}
+
 func TestAdmit(t *testing.T) {
 	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	pastHard := now.Add(-time.Hour)
@@ -74,6 +82,40 @@ func TestAdmit(t *testing.T) {
 			admit: true, counts: true,
 		},
 		{
+			name: "terminal infra_error refunds the attempt",
+			task: policyTask(1, 0, nil),
+			history: []store.Submission{
+				subAt(store.StatusInfraError, true, now.Add(-time.Hour)),
+			},
+			admit: true, counts: true,
+		},
+		{
+			name: "retrying infra_error still holds its slot",
+			task: policyTask(1, 0, nil),
+			history: []store.Submission{
+				retrying(now.Add(-time.Hour), now.Add(time.Minute)),
+			},
+			status:    store.StatusRejectedLimit,
+			reasonHas: "attempt limit",
+		},
+		{
+			name: "terminal infra_error does not start a cooldown",
+			task: policyTask(0, 10*time.Minute, nil),
+			history: []store.Submission{
+				subAt(store.StatusInfraError, true, now.Add(-time.Minute)),
+			},
+			admit: true, counts: true,
+		},
+		{
+			name: "retrying infra_error keeps the cooldown running",
+			task: policyTask(0, 10*time.Minute, nil),
+			history: []store.Submission{
+				retrying(now.Add(-time.Minute), now.Add(time.Minute)),
+			},
+			status:    store.StatusRejectedLimit,
+			reasonHas: "cooldown",
+		},
+		{
 			name: "cooldown active",
 			task: policyTask(0, 10*time.Minute, nil),
 			history: []store.Submission{
@@ -117,5 +159,29 @@ func TestAdmit(t *testing.T) {
 				t.Errorf("reason %q must contain %q", d.RejectReason, tc.reasonHas)
 			}
 		})
+	}
+}
+
+// TestQuotaMatchesAdmit: the task page shows the numbers the policy enforces,
+// so a student is never promised an attempt Admit would refuse.
+func TestQuotaMatchesAdmit(t *testing.T) {
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	history := []store.Submission{
+		subAt(store.StatusDone, true, now.Add(-time.Hour)),               // consumed
+		subAt(store.StatusInfraError, true, now.Add(-30*time.Minute)),    // terminal: refunded
+		subAt(store.StatusRejectedLimit, true, now.Add(-20*time.Minute)), // never ran
+		subAt(store.StatusDone, false, now.Add(-15*time.Minute)),         // teacher recheck
+		retrying(now.Add(-time.Minute), now.Add(time.Minute)),            // in flight
+	}
+	if n := CountAttempts(history); n != 2 {
+		t.Fatalf("CountAttempts = %d, want 2", n)
+	}
+	left, unlimited, cooldown := Quota(policyTask(3, 10*time.Minute, nil), history, now)
+	if unlimited || left != 1 {
+		t.Errorf("attempts left = %d (unlimited = %v), want 1", left, unlimited)
+	}
+	// Anchored at the in-flight row, not at the terminal infra_error.
+	if want := now.Add(9 * time.Minute); cooldown == nil || !cooldown.Equal(want) {
+		t.Errorf("cooldown until = %v, want %v", cooldown, want)
 	}
 }

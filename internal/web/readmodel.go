@@ -7,11 +7,13 @@ import (
 	"github.com/ekalinin/anygrade/internal/gradebook"
 	"github.com/ekalinin/anygrade/internal/i18n"
 	"github.com/ekalinin/anygrade/internal/intake"
+	"github.com/ekalinin/anygrade/internal/queue"
 	"github.com/ekalinin/anygrade/internal/store"
 )
 
 // TaskView is one dashboard row / task-page header. Status/score derivation
-// lives in gradebook (shared with the matrix and CSV export).
+// lives in gradebook (shared with the matrix and CSV export); the attempt
+// count comes from queue, which owns the admission rule.
 type TaskView struct {
 	Task     config.ResolvedTask
 	Status   string
@@ -26,7 +28,7 @@ func buildTaskView(t config.ResolvedTask, history []store.Submission, policy str
 		Task:     t,
 		Status:   gradebook.DeriveStatus(history, t.Score),
 		Score:    gradebook.DisplayScore(history, policy),
-		Attempts: gradebook.CountAttempts(history),
+		Attempts: queue.CountAttempts(history),
 	}
 	if len(history) > 0 {
 		v.Latest = &history[len(history)-1]
