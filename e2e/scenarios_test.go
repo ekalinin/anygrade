@@ -418,5 +418,52 @@ func testLocalSelfCheck(t *testing.T, e *env) {
 	}
 }
 
+// 14. force push after submission: a graded commit that a force push drops
+// from the branch survives under refs/anygrade/submissions/<id> (SPEC §6 step
+// 7), and the rewritten branch keeps being graded.
+func testForcePushAfterSubmission(t *testing.T, e *env) {
+	sumPath := filepath.Join(e.aliceDir, "tasks", "sum", "sum.sh")
+	writeFile(t, sumPath, sumSolution+"# graded before the force push\n")
+	git(t, e.aliceDir, nil, "add", "-A")
+	git(t, e.aliceDir, nil, "commit", "-q", "-m", "solve sum once more")
+	graded := strings.TrimSpace(git(t, e.aliceDir, nil, "rev-parse", "HEAD"))
+	out := git(t, e.aliceDir, nil, "push", "origin", "main")
+	gradedID := taskSubmissionID(t, out, "sum")
+	pollSubmission(t, e.aliceClient, e, gradedID)
+
+	// Rewrite history: the graded commit is no longer reachable from main.
+	// The push itself is a change like any other, so it is graded too - and
+	// it moves the baseline off the dropped commit.
+	git(t, e.aliceDir, nil, "reset", "--hard", "HEAD~1")
+	out = git(t, e.aliceDir, nil, "push", "--force", "origin", "main")
+	pollSubmission(t, e.aliceClient, e, taskSubmissionID(t, out, "sum"))
+
+	bare := filepath.Join(e.dataDir, "repos", "students", "alice.git")
+	ref := fmt.Sprintf("refs/anygrade/submissions/%d", gradedID)
+	if got := strings.TrimSpace(git(t, bare, nil, "rev-parse", ref)); got != graded {
+		t.Fatalf("%s = %q, want the graded commit %q", ref, got, graded)
+	}
+	// gc drops every unreachable object: the pin is the only thing left
+	// holding the graded tree.
+	git(t, bare, nil, "gc", "--prune=now", "--quiet")
+	if out, err := gitErr(bare, nil, "cat-file", "-e", graded+"^{commit}"); err != nil {
+		t.Fatalf("graded commit %s gone after the force push and gc: %v\n%s", graded, err, out)
+	}
+	status, body := get(t, e.aliceClient, fmt.Sprintf("%s/submissions/%d", e.baseURL, gradedID))
+	if status != http.StatusOK || !strings.Contains(body, ">done<") {
+		t.Fatalf("submission #%d after the force push: status %d, body:\n%s", gradedID, status, body)
+	}
+
+	// Grading continues on the rewritten branch.
+	writeFile(t, sumPath, sumSolution+"# after the force push\n")
+	git(t, e.aliceDir, nil, "add", "-A")
+	git(t, e.aliceDir, nil, "commit", "-q", "-m", "solve sum after the force push")
+	out = git(t, e.aliceDir, nil, "push", "origin", "main")
+	pollSubmission(t, e.aliceClient, e, taskSubmissionID(t, out, "sum"))
+	if got := fetchScores(t, e)["alice"]["sum"]; got != "100" {
+		t.Fatalf("alice/sum after the force push: got %q, want 100", got)
+	}
+}
+
 // regexpRejected matches either push-rejection phrasing intake.go uses.
 var regexpRejected = regexp.MustCompile(`push rejected|validation failed`)

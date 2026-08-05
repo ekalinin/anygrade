@@ -99,6 +99,7 @@ func TestE2E(t *testing.T) {
 	t.Run("language switcher", func(t *testing.T) { testLanguageSwitcher(t, e) })
 	t.Run("auth and rate limit", func(t *testing.T) { testAuthAndRateLimit(t, e) })
 	t.Run("local self-check", func(t *testing.T) { testLocalSelfCheck(t, e) })
+	t.Run("force push after submission", func(t *testing.T) { testForcePushAfterSubmission(t, e) })
 }
 
 // startEnv builds the course + hidden-tests fixtures, creates the teacher,
