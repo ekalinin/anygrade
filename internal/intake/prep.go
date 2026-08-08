@@ -29,9 +29,14 @@ type Prep struct {
 }
 
 // Prepare implements queue.JobPrep. Errors are retryable infra failures,
-// except an unknown task id, which is terminal (queue.ErrTaskGone).
+// except the teacher-config faults, which are terminal: an unknown task id
+// (queue.ErrTaskGone) and hidden tests that cannot be resolved at all.
 func (p *Prep) Prepare(ctx context.Context, sub store.Submission) (queue.Prepared, error) {
-	task, relDir, ok := p.Course.Get().Task(sub.TaskID)
+	// One snapshot for the whole preparation: the holder is swapped whole on a
+	// teacher push, so reading it twice could pair one version's task metadata
+	// with another version's authoritative tree.
+	course := p.Course.Get()
+	task, relDir, ok := course.Task(sub.TaskID)
 	if !ok {
 		return queue.Prepared{}, fmt.Errorf("%s: %w", sub.TaskID, queue.ErrTaskGone)
 	}
@@ -44,7 +49,7 @@ func (p *Prep) Prepare(ctx context.Context, sub store.Submission) (queue.Prepare
 		return queue.Prepared{}, fmt.Errorf("student repo: %w", err)
 	}
 
-	authoritative := gitserver.GitSource{Dir: p.Repos.CourseDir(), Commit: p.Course.Get().Head}
+	authoritative := gitserver.GitSource{Dir: p.Repos.CourseDir(), Commit: course.Head}
 	student := gitserver.GitSource{Dir: studentDir, Commit: sub.CommitSHA}
 
 	notes, err := gitserver.TamperNotes(ctx, authoritative, student, relDir, task.SolutionFiles)
@@ -56,9 +61,15 @@ func (p *Prep) Prepare(ctx context.Context, sub store.Submission) (queue.Prepare
 	if h := task.Hidden; h != nil {
 		switch h.Source {
 		case "local":
-			if st, err := os.Stat(h.Path); err == nil && st.IsDir() {
-				hiddenSrc = runner.WorkingCopySource{Root: h.Path}
+			// A configured-but-unusable path must never be skipped: grading
+			// the open tests only would silently hand out a passing score.
+			// validate checks that path is set, not that it exists, so a
+			// wrong path first shows up here - and retrying will not fix it,
+			// exactly like the git source's ErrConfig below.
+			if st, err := os.Stat(h.Path); err != nil || !st.IsDir() {
+				return queue.Prepared{}, queue.Terminal("hidden tests unavailable for this task")
 			}
+			hiddenSrc = runner.WorkingCopySource{Root: h.Path}
 		case "git":
 			src, err := p.Hidden.Source(ctx, *h)
 			if errors.Is(err, hidden.ErrConfig) {

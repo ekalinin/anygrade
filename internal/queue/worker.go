@@ -18,6 +18,10 @@ import (
 // repo (SPEC §13): terminal infra_error, surfaced to the teacher, never retried.
 var ErrTaskGone = errors.New("task no longer exists in the course repo")
 
+// ErrTerminal matches any non-retryable preparation failure, so a JobPrep
+// implementation can assert its own classification: errors.Is(err, ErrTerminal).
+var ErrTerminal = errors.New("preparation failed permanently")
+
 // Terminal wraps msg as a non-retryable preparation failure: process flips
 // the submission straight to terminal infra_error with msg as the worker
 // note (verbatim - callers hand over already student-safe text).
@@ -26,6 +30,7 @@ func Terminal(msg string) error { return &terminalError{msg} }
 type terminalError struct{ msg string }
 
 func (e *terminalError) Error() string { return e.msg }
+func (e *terminalError) Unwrap() error { return ErrTerminal }
 
 // Prepared is everything a worker needs to run one submission.
 type Prepared struct {
