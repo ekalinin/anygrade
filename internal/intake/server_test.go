@@ -277,6 +277,129 @@ func TestGradePushReportsUnpinnedCommit(t *testing.T) {
 	}
 }
 
+// recordBothTasks pushes a change to t1 and t2 so both have a submission
+// recorded (t1 queued, t2 rejected past its hard deadline), and returns the
+// commit the baseline pointed at before that push.
+func recordBothTasks(t *testing.T, s *Server, work string) (before string) {
+	t.Helper()
+	for _, id := range []string{"t1", "t2"} {
+		if err := os.WriteFile(filepath.Join(work, "tasks", id, "main.go"),
+			[]byte("package main // v2\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, head := push(t, work, "solve both")
+	if out := joined(s.dispatch(t.Context(), postReceive(before, head))); !strings.Contains(out, "2 task(s) detected") {
+		t.Fatalf("setup push: %s", out)
+	}
+	return before
+}
+
+// rewindBaseline drops refs/anygrade/baseline back to an earlier commit: the
+// state a push leaves behind when it keeps the ref after a task fails to
+// record, and the state two concurrent hooks can leave behind on their own.
+func rewindBaseline(t *testing.T, s *Server, to string) {
+	t.Helper()
+	git(t, s.Repos.StudentDir("alice"), "update-ref", "refs/anygrade/baseline", to)
+}
+
+// TestGradePushSkipsAlreadyRecordedTask: a stale baseline re-detects every
+// task in the skipped range, but a task whose content has not moved since its
+// own last submission must not be graded - and charged - a second time.
+func TestGradePushSkipsAlreadyRecordedTask(t *testing.T) {
+	s, work, _, user := newIntakeFixture(t)
+	rewindBaseline(t, s, recordBothTasks(t, s, work))
+
+	if err := os.WriteFile(filepath.Join(work, "notes.md"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old, head := push(t, work, "notes")
+	out := joined(s.dispatch(t.Context(), postReceive(old, head)))
+
+	if !strings.Contains(out, "2 task(s) already graded at this content, skipped") {
+		t.Fatalf("want the skipped summary, got: %s", out)
+	}
+	// t2's row is a rejection: any recorded row means the content was seen.
+	for _, id := range []string{"t1", "t2"} {
+		subs, err := s.DB.ListByUserTask(t.Context(), user.ID, id)
+		if err != nil || len(subs) != 1 {
+			t.Fatalf("%s: %d submissions, want 1 - re-detection charged another: %v", id, len(subs), err)
+		}
+	}
+	if base := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); base != head {
+		t.Errorf("baseline = %s, want %s", base, head)
+	}
+}
+
+// TestGradePushRegradesChangedTaskAfterRewind guards the other side of the
+// filter: a task that really did move is still graded.
+func TestGradePushRegradesChangedTaskAfterRewind(t *testing.T) {
+	s, work, _, user := newIntakeFixture(t)
+	rewindBaseline(t, s, recordBothTasks(t, s, work))
+
+	if err := os.WriteFile(filepath.Join(work, "tasks", "t1", "main.go"),
+		[]byte("package main // v3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old, head := push(t, work, "improve t1")
+	out := joined(s.dispatch(t.Context(), postReceive(old, head)))
+
+	if !strings.Contains(out, "1 task(s) detected") {
+		t.Fatalf("t1 changed and must be detected: %s", out)
+	}
+	subs, err := s.DB.ListByUserTask(t.Context(), user.ID, "t1")
+	if err != nil || len(subs) != 2 || subs[1].CommitSHA != head {
+		t.Fatalf("t1 submissions: %+v err=%v", subs, err)
+	}
+	if !strings.Contains(out, "1 task(s) already graded") {
+		t.Errorf("t2 did not move and must still be skipped: %s", out)
+	}
+}
+
+// TestGradePushRecheckMarkerBypassesSkip: an explicit [recheck t1] is the
+// student asking for a re-run, so unchanged content is no reason to drop it -
+// and the task must not be counted as skipped either.
+func TestGradePushRecheckMarkerBypassesSkip(t *testing.T) {
+	s, work, _, user := newIntakeFixture(t)
+	rewindBaseline(t, s, recordBothTasks(t, s, work))
+
+	old, head := push(t, work, "please [recheck t1]")
+	out := joined(s.dispatch(t.Context(), postReceive(old, head)))
+
+	subs, err := s.DB.ListByUserTask(t.Context(), user.ID, "t1")
+	if err != nil || len(subs) != 2 {
+		t.Fatalf("t1 has %d submissions, want 2 - the marker must bypass the filter: %v", len(subs), err)
+	}
+	if !strings.Contains(out, "1 task(s) already graded") {
+		t.Errorf("only t2 stayed skipped, the count must exclude t1: %s", out)
+	}
+}
+
+// TestGradePushSkipsRecordedTasksWithoutBaseline covers the self-heal path
+// that exists for repos provisioned before the baseline seed: with no
+// baseline ref the diff runs against the empty tree and re-detects every task
+// that has files, including ones already graded.
+func TestGradePushSkipsRecordedTasksWithoutBaseline(t *testing.T) {
+	s, work, _, user := newIntakeFixture(t)
+	recordBothTasks(t, s, work)
+	git(t, s.Repos.StudentDir("alice"), "update-ref", "-d", "refs/anygrade/baseline")
+
+	if err := os.WriteFile(filepath.Join(work, "notes.md"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old, head := push(t, work, "notes")
+	out := joined(s.dispatch(t.Context(), postReceive(old, head)))
+
+	if !strings.Contains(out, "2 task(s) already graded at this content, skipped") {
+		t.Fatalf("want the skipped summary, got: %s", out)
+	}
+	for _, id := range []string{"t1", "t2"} {
+		if subs, _ := s.DB.ListByUserTask(t.Context(), user.ID, id); len(subs) != 1 {
+			t.Fatalf("%s: %d submissions, want 1", id, len(subs))
+		}
+	}
+}
+
 // TestPreReceiveReservedRefs: pushes to refs/anygrade/* are rejected.
 func TestPreReceiveReservedRefs(t *testing.T) {
 	resp := preReceive(hookproto.Request{

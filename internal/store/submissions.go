@@ -159,6 +159,23 @@ func (s *DB) ListByUserTask(ctx context.Context, userID int64, taskID string) ([
 	return subs, rows.Err()
 }
 
+// LastByUserTask implements SubmissionStore: the newest row of the pair, of
+// any status. ok=false when the student has nothing recorded for the task.
+func (s *DB) LastByUserTask(ctx context.Context, userID int64, taskID string) (Submission, bool, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT `+submissionCols+` FROM submissions
+		WHERE user_id = ? AND task_id = ?
+		ORDER BY received_at DESC, id DESC LIMIT 1`, userID, taskID)
+	sub, err := scanSubmission(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Submission{}, false, nil
+	}
+	if err != nil {
+		return Submission{}, false, err
+	}
+	return sub, true, nil
+}
+
 // ListByUser implements SubmissionStore.
 func (s *DB) ListByUser(ctx context.Context, userID int64) ([]Submission, error) {
 	rows, err := s.db.QueryContext(ctx, `
