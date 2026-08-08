@@ -185,13 +185,26 @@ type SubmissionResult struct {
 	Checks  []CheckRow
 }
 
+// Admission is the caller's verdict for one incoming submission, produced
+// inside the transaction that records it. The policy itself lives in queue;
+// store only needs to know which row to write.
+type Admission struct {
+	Admit        bool
+	RejectStatus string // StatusRejectedDeadline | StatusRejectedLimit when !Admit
+	Counts       bool   // false = does not consume an attempt or start a cooldown
+}
+
 // SubmissionStore is the queue plus submission reads.
 type SubmissionStore interface {
 	// Enqueue inserts a queued row and assigns attempt_no race-free
 	// (counting submissions only; teacher rechecks get AttemptNo nil).
 	Enqueue(ctx context.Context, ns NewSubmission) (Submission, error)
-	// RecordRejected persists a rejected_deadline/rejected_limit row (not queued).
-	RecordRejected(ctx context.Context, ns NewSubmission, status string) (Submission, error)
+	// AdmitSubmission reads the (user, task) history, hands it to decide, and
+	// records the outcome - queued or rejected_* - in one transaction, so a
+	// concurrent submission cannot decide against the same stale history.
+	// decide must be pure and must not touch the store.
+	AdmitSubmission(ctx context.Context, ns NewSubmission,
+		decide func(history []Submission) Admission) (Submission, error)
 	// ClaimNext atomically flips the oldest eligible row (queued, or
 	// infra_error whose retry_at has passed) to running. ok=false when
 	// nothing is claimable.

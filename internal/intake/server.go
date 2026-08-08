@@ -41,9 +41,8 @@ type Server struct {
 	Queue   *queue.Queue
 	Repos   *gitserver.RepoManager
 	Course  *Holder
-	BaseURL string          // submission link prefix in push output; "" = no links
-	Events  queue.Publisher // optional live-update sink for rejected rows
-	Log     *slog.Logger    // server log for ref bookkeeping failures; nil = discard
+	BaseURL string       // submission link prefix in push output; "" = no links
+	Log     *slog.Logger // server log for ref bookkeeping failures; nil = discard
 }
 
 // log returns the configured logger, or a discarding one so the zero value and
@@ -53,14 +52,6 @@ func (s *Server) log() *slog.Logger {
 		return slog.New(slog.DiscardHandler)
 	}
 	return s.Log
-}
-
-// publish mirrors queue.publish for rows intake writes itself (rejections);
-// enqueued rows are published by Queue.Enqueue.
-func (s *Server) publish(sub store.Submission, status string) {
-	if s.Events != nil {
-		s.Events.Publish(queue.Event{SubID: sub.ID, UserID: sub.UserID, TaskID: sub.TaskID, Status: status})
-	}
 }
 
 // ListenAndServe accepts hook connections on the unix socket until ctx is
@@ -291,32 +282,16 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, newSHA str
 	processed := true
 	for _, id := range taskIDs {
 		task, _, _ := c.Task(id)
-		history, err := s.DB.ListByUserTask(ctx, user.ID, id)
+		sub, d, err := s.Queue.Submit(ctx, task, store.NewSubmission{
+			UserID: user.ID, TaskID: id, CommitSHA: newSHA, ReceivedAt: now,
+		}, false)
 		if err != nil {
 			lines = append(lines, fmt.Sprintf("  %-*s error: %v", width, id, err))
 			processed = false
 			continue
-		}
-		d := queue.Admit(task, history, now, false)
-		ns := store.NewSubmission{
-			UserID: user.ID, TaskID: id, CommitSHA: newSHA,
-			ReceivedAt: now, Counts: d.Counts,
 		}
 		if !d.Admit {
-			rej, err := s.DB.RecordRejected(ctx, ns, d.RejectStatus)
-			if err != nil {
-				lines = append(lines, fmt.Sprintf("  %-*s error: %v", width, id, err))
-				processed = false
-				continue
-			}
-			s.publish(rej, d.RejectStatus)
 			lines = append(lines, fmt.Sprintf("  %-*s rejected: %s", width, id, d.RejectReason))
-			continue
-		}
-		sub, err := s.Queue.Enqueue(ctx, ns)
-		if err != nil {
-			lines = append(lines, fmt.Sprintf("  %-*s error: %v", width, id, err))
-			processed = false
 			continue
 		}
 		line := fmt.Sprintf("  %-*s submission #%d queued", width, id, sub.ID)

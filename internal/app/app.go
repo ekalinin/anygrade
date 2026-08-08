@@ -118,7 +118,6 @@ func Run(ctx context.Context, opts Options) error {
 	ic := &intake.Server{
 		DB: db, Queue: q, Repos: repos, Course: holder,
 		BaseURL: baseURL(opts),
-		Events:  hub,
 		Log:     log,
 	}
 	auth := storeAuth{db}
