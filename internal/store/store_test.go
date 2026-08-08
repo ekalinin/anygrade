@@ -111,6 +111,54 @@ func TestRequeueRunning(t *testing.T) {
 	}
 }
 
+// TestLastByUserTask: the newest row of the pair wins regardless of status,
+// ties break on id, and an untouched task reports "nothing recorded".
+func TestLastByUserTask(t *testing.T) {
+	db := openTestDB(t)
+	u := testUser(t, db)
+	now := time.Now()
+
+	if _, ok, err := db.LastByUserTask(t.Context(), u.ID, "t1"); err != nil || ok {
+		t.Fatalf("untouched task: ok=%v err=%v, want false/nil", ok, err)
+	}
+
+	if _, err := db.Enqueue(t.Context(), NewSubmission{UserID: u.ID, TaskID: "t1",
+		CommitSHA: "a", ReceivedAt: now.Add(-time.Hour), Counts: true}); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := db.Enqueue(t.Context(), NewSubmission{UserID: u.ID, TaskID: "t1",
+		CommitSHA: "b", ReceivedAt: now, Counts: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A row that left the queue is still the last thing recorded for the pair.
+	if err := db.ScheduleRetry(t.Context(), failed.ID, nil, "boom"); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := db.LastByUserTask(t.Context(), u.ID, "t1")
+	if err != nil || !ok {
+		t.Fatalf("after two rows: ok=%v err=%v", ok, err)
+	}
+	if got.ID != failed.ID || got.Status != StatusInfraError {
+		t.Errorf("last = #%d %q, want #%d %q", got.ID, got.Status, failed.ID, StatusInfraError)
+	}
+
+	// Equal received_at: the higher id is the later row.
+	tie, err := db.Enqueue(t.Context(), NewSubmission{UserID: u.ID, TaskID: "t1",
+		CommitSHA: "c", ReceivedAt: now, Counts: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := db.LastByUserTask(t.Context(), u.ID, "t1"); got.ID != tie.ID {
+		t.Errorf("tie broken to #%d, want the higher id #%d", got.ID, tie.ID)
+	}
+
+	// Another task of the same student is a separate history.
+	if _, ok, _ := db.LastByUserTask(t.Context(), u.ID, "t2"); ok {
+		t.Error("t2 must report nothing recorded")
+	}
+}
+
 // TestEnqueueAttemptNumbering: counting submissions get a gap-free sequence;
 // teacher rechecks get nil and do not bump it.
 func TestEnqueueAttemptNumbering(t *testing.T) {

@@ -249,7 +249,7 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, newSHA str
 			paths = append(paths, p)
 		}
 	}
-	taskIDs := c.DetectTasks(paths)
+	taskIDs, dropped := s.dropAlreadyRecorded(ctx, dir, user.ID, c, c.DetectTasks(paths), newSHA)
 
 	// Explicit [recheck <task-id>] markers; scanned only against a real
 	// baseline (a first push already detects every task by diff).
@@ -263,16 +263,31 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, newSHA str
 		}
 	}
 
+	// A marker can bring a dropped task back; then it was not skipped.
+	skipped := 0
+	for _, id := range dropped {
+		if !slices.Contains(taskIDs, id) {
+			skipped++
+		}
+	}
+	var lines []string
+	if skipped > 0 {
+		lines = append(lines, fmt.Sprintf(
+			"anygrade: %d task(s) already graded at this content, skipped", skipped))
+	}
+
 	if len(taskIDs) == 0 {
-		return append([]string{"anygrade: no tasks changed"},
-			s.advanceBaseline(ctx, dir, newSHA, true)...)
+		if skipped == 0 {
+			lines = append(lines, "anygrade: no tasks changed")
+		}
+		return append(lines, s.advanceBaseline(ctx, dir, newSHA, true)...)
 	}
 
 	width := 0
 	for _, id := range taskIDs {
 		width = max(width, len(id))
 	}
-	lines := []string{fmt.Sprintf("anygrade: %d task(s) detected", len(taskIDs))}
+	lines = append(lines, fmt.Sprintf("anygrade: %d task(s) detected", len(taskIDs)))
 	processed := true
 	for _, id := range taskIDs {
 		task, _, _ := c.Task(id)
@@ -349,6 +364,62 @@ func (s *Server) pinSubmission(ctx context.Context, dir string, subID int64, com
 			"submission", subID, "repo", dir, "commit", commit, "err", err)
 	}
 	return err
+}
+
+// dropAlreadyRecorded splits detected tasks into the ones still to grade and
+// the ones whose content has not moved since the student's own last
+// submission for them.
+//
+// refs/anygrade/baseline marks the last processed commit, but it can lag
+// behind what is already recorded: kept in place after a task fails to
+// record, rolled back by a concurrent hook, or missing entirely on a repo
+// provisioned before the baseline seed - where the diff falls back to the
+// empty tree and re-detects every task that has files. Each re-detection
+// would write another counting submission and charge another attempt for work
+// that was already graded. The commit of the last recorded submission is the
+// same marker at per-task resolution, and it does not lag.
+//
+// Content is compared over the task directory, the criterion DetectTasks uses
+// (course.go), so a task is dropped by exactly what detected it. Ancestry is
+// deliberately not consulted: after a force push the topology lies and the
+// content does not.
+//
+// Any failure keeps the task and is logged: grading it again is the behaviour
+// that existed before this filter, so a spare attempt is the worst outcome,
+// while dropping a task on a failed check would lose the submission entirely.
+func (s *Server) dropAlreadyRecorded(ctx context.Context, dir string, userID int64,
+	c *Course, taskIDs []string, newSHA string) (keep, dropped []string) {
+
+	for _, id := range taskIDs {
+		_, relDir, ok := c.Task(id)
+		if !ok {
+			keep = append(keep, id)
+			continue
+		}
+		last, found, err := s.DB.LastByUserTask(ctx, userID, id)
+		if err != nil {
+			s.log().Warn("re-detection check skipped: history unavailable",
+				"task", id, "user", userID, "err", err)
+		}
+		if err != nil || !found {
+			keep = append(keep, id)
+			continue
+		}
+		changed, err := gitserver.Git(ctx, dir, "diff", "--name-only",
+			last.CommitSHA, newSHA, "--", relDir)
+		if err != nil {
+			// Typically the recorded commit is unreachable: a force push
+			// before its pin ref landed.
+			s.log().Warn("re-detection check skipped: diff failed",
+				"task", id, "repo", dir, "from", last.CommitSHA, "err", err)
+		}
+		if err != nil || changed != "" {
+			keep = append(keep, id)
+			continue
+		}
+		dropped = append(dropped, id)
+	}
+	return keep, dropped
 }
 
 func quarantineEnv(req hookproto.Request) []string {

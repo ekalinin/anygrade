@@ -210,6 +210,9 @@ type SubmissionStore interface {
 	Requeue(ctx context.Context, id int64) error
 
 	ListByUserTask(ctx context.Context, userID int64, taskID string) ([]Submission, error)
+	// LastByUserTask returns the newest submission of the pair, of any
+	// status; ok=false when the student has nothing recorded for the task.
+	LastByUserTask(ctx context.Context, userID int64, taskID string) (Submission, bool, error)
 	// ListByUser returns every submission of one user, ordered by task then
 	// time (dashboard read model).
 	ListByUser(ctx context.Context, userID int64) ([]Submission, error)
