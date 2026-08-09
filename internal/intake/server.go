@@ -1,6 +1,7 @@
 package intake
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -217,9 +218,13 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, newSHA str
 	c := s.Course.Get()
 
 	baseline := ""
-	if out, err := gitserver.Git(ctx, dir, "rev-parse", "--verify", "--quiet", "refs/anygrade/baseline^{commit}"); err == nil {
+	if out, err := gitserver.Git(ctx, dir, "rev-parse", "--verify", "--quiet", "refs/anygrade/baseline"); err == nil {
 		baseline = out
 	}
+	// The ref value advanceBaseline compare-and-swaps against, captured before
+	// the self-healing below can clear `baseline`: a repo whose baseline object
+	// is gone still has to update the ref it actually holds.
+	oldBaseline := baseline
 	base := baseline
 	if base == "" {
 		base = emptyTree
@@ -271,7 +276,7 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, newSHA str
 		if skipped == 0 {
 			lines = append(lines, "anygrade: no tasks changed")
 		}
-		return append(lines, s.advanceBaseline(ctx, dir, newSHA, true)...)
+		return append(lines, s.advanceBaseline(ctx, dir, oldBaseline, newSHA, true)...)
 	}
 
 	width := 0
@@ -304,7 +309,7 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, newSHA str
 				width, id))
 		}
 	}
-	return append(lines, s.advanceBaseline(ctx, dir, newSHA, processed)...)
+	return append(lines, s.advanceBaseline(ctx, dir, oldBaseline, newSHA, processed)...)
 }
 
 // advanceBaseline moves refs/anygrade/baseline to newSHA, but only once every
@@ -313,17 +318,64 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, newSHA str
 // change for good: the next push would diff against a commit that already
 // contains it. Deliberately not deferred, so the error paths above matter.
 // Returns the push-output lines for the cases where the ref did not move.
-func (s *Server) advanceBaseline(ctx context.Context, dir, newSHA string, processed bool) []string {
+//
+// The move is a compare-and-swap against oldSHA, the value read at the start
+// of this push. Hook connections are served concurrently, so the handler of an
+// older push can finish after the handler of a newer one; a blind write would
+// then roll the marker back and make the next push re-walk a range that was
+// already processed. An empty oldSHA means the ref must still be absent, which
+// git spells as the zero SHA - the legacy repos without a baseline are exactly
+// the ones re-detecting everything, so they need the guard most.
+func (s *Server) advanceBaseline(ctx context.Context, dir, oldSHA, newSHA string, processed bool) []string {
 	if !processed {
 		s.log().Warn("baseline kept after a processing error",
 			"repo", dir, "commit", newSHA)
 		return []string{"anygrade: baseline kept; the next push re-detects these changes"}
 	}
-	if _, err := gitserver.Git(ctx, dir, "update-ref", "refs/anygrade/baseline", newSHA); err != nil {
+	expected := cmp.Or(oldSHA, zeroSHA)
+	if _, err := gitserver.Git(ctx, dir, "update-ref", "refs/anygrade/baseline", newSHA, expected); err != nil {
+		if staleBaseline(err) {
+			// A concurrent push already moved the ref past ours. Its handler
+			// covers these changes too, so the newer value stays and the
+			// student has nothing to act on: log only, no push-output line.
+			s.log().Info("baseline left to a concurrent push",
+				"repo", dir, "commit", newSHA, "expected", expected)
+			return nil
+		}
 		s.log().Error("baseline update failed", "repo", dir, "commit", newSHA, "err", err)
 		return []string{"anygrade: baseline update failed; the next push re-detects these changes"}
 	}
 	return nil
+}
+
+// staleBaselineReasons are the tails git appends to "cannot lock ref <ref>"
+// when update-ref's old value does not match, observed on git 2.55:
+//
+//	is at <sha> but expected <sha>       the ref moved under us
+//	reference already exists             we expected it to be absent
+//	unable to resolve reference '<ref>'  we expected it to be present
+//
+// The exit status cannot tell these apart: every update-ref failure exits 128,
+// a genuinely broken ref store included (a D/F conflict reports "<ref> exists;
+// cannot create <ref>/<x>"). So the reason has to come from the message, and
+// the match is deliberately narrow: an unrecognised failure is reported as an
+// error, which is the pre-existing behaviour.
+var staleBaselineReasons = []string{
+	"but expected ",
+	"reference already exists",
+	"unable to resolve reference",
+}
+
+// staleBaseline reports whether err is update-ref rejecting our expected old
+// value rather than failing to write the ref at all.
+func staleBaseline(err error) bool {
+	msg := err.Error()
+	if !strings.Contains(msg, "cannot lock ref") {
+		return false
+	}
+	return slices.ContainsFunc(staleBaselineReasons, func(r string) bool {
+		return strings.Contains(msg, r)
+	})
 }
 
 // pinSubmission creates refs/anygrade/submissions/<id> at commit so a graded
