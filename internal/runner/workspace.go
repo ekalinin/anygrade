@@ -66,9 +66,10 @@ type Assembly struct {
 	// Hidden provides hidden tests overlaid onto the task dir (step 3).
 	// nil = not configured or not available (check mode never fetches).
 	Hidden Source
-	// RunAsUID/RunAsGID: chown the workspace after assembly so a non-root
-	// container can write to it (Linux server path). -1 = leave ownership
-	// (check mode; colima's virtiofs forces root:root anyway).
+	// RunAsUID/RunAsGID: chown the workspace after assembly so the container
+	// user owns the files copied into its tmpfs /work. -1 = leave ownership,
+	// which is what both call sites do: the docker runner runs as the uid that
+	// assembled the workspace. Only an anygrade running as root would need it.
 	RunAsUID int
 	RunAsGID int
 }

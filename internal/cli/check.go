@@ -262,6 +262,10 @@ func runTask(ctx context.Context, repo, dataDir string, t config.ResolvedTask, r
 		Spec:         spec,
 		Checks:       t.Checks,
 		LogDir:       filepath.Join(dataDir, "logs", runID),
+		// --keep is for inspecting the run afterwards, so the docker runner has
+		// to copy its ephemeral /work back out; without it the kept workspace
+		// would only hold the assembled inputs.
+		ExportWorkspace: keep,
 	})
 	if err != nil {
 		return false, err
