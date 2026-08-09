@@ -24,7 +24,7 @@ func (h *Handler) studentsPage(w http.ResponseWriter, r *http.Request) {
 	}
 	h.renderPage(w, r, "students", studentsData{
 		CourseName: h.Course.Get().Resolved.Course.Name,
-		User:       userView{u.Login, u.DisplayName, u.Role},
+		User:       h.userViewOf(u),
 		Students:   users,
 	})
 }
@@ -71,7 +71,7 @@ func (h *Handler) studentPage(w http.ResponseWriter, r *http.Request) {
 
 	h.renderPage(w, r, "student", studentData{
 		CourseName: course.Resolved.Course.Name,
-		User:       userView{u.Login, u.DisplayName, u.Role},
+		User:       h.userViewOf(u),
 		Student:    target,
 		Tasks:      rows,
 		Keys:       keys,

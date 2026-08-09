@@ -13,7 +13,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // 1. validate: `anygrade validate` accepts the fixture course.
@@ -405,6 +407,82 @@ func get2(t *testing.T, client *http.Client, target string) (*http.Response, str
 		t.Fatalf("read body from GET %s: %v", target, err)
 	}
 	return resp, string(body)
+}
+
+// 12c. serve --local: a second server started with --local serves the whole UI
+// to an anonymous browser as the implicit teacher account (SPEC §8), with no
+// way (and no need) to log in or out.
+func testServeLocal(t *testing.T, e *env) {
+	baseURL := startLocalServer(t, e)
+	anon := newClient(t)
+
+	status, body := get(t, anon, baseURL+"/")
+	if status != http.StatusOK {
+		t.Fatalf("local GET /: status %d, want 200", status)
+	}
+	if !strings.Contains(body, "Local User") {
+		t.Fatalf("local GET /: body does not name the implicit user:\n%s", body)
+	}
+	if strings.Contains(body, `action="/logout"`) {
+		t.Errorf("local GET /: log out must be hidden:\n%s", body)
+	}
+	// The implicit user is a teacher, so teacher-only routes are open too.
+	if status, _ := get(t, anon, baseURL+"/matrix"); status != http.StatusOK {
+		t.Fatalf("local GET /matrix: status %d, want 200", status)
+	}
+	// Nothing to sign in to: the login form redirects to the dashboard.
+	resp, _ := get2(t, anon, baseURL+"/login")
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/" {
+		t.Fatalf("local GET /login: status %d, Location %q, want 302 to /",
+			resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+// startLocalServer runs a second `serve --local` over the same course fixture
+// with its own data dir and ports, and returns its base URL.
+func startLocalServer(t *testing.T, e *env) string {
+	t.Helper()
+	httpPort := freePort(t)
+	sshPort := freePort(t)
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", httpPort)
+
+	logPath := filepath.Join(e.root, "serve-local.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		t.Fatalf("create serve-local.log: %v", err)
+	}
+	cmd := exec.Command(bin, "serve",
+		"--repo", e.courseDir,
+		"--data-dir", filepath.Join(e.root, "data-local"),
+		"--http-addr", fmt.Sprintf("127.0.0.1:%d", httpPort),
+		"--ssh-addr", fmt.Sprintf("127.0.0.1:%d", sshPort),
+		"--workers", "1",
+		"--local",
+	)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start serve --local: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+		}
+		logFile.Close()
+		if t.Failed() {
+			if b, err := os.ReadFile(logPath); err == nil {
+				t.Logf("serve-local.log:\n%s", b)
+			}
+		}
+	})
+	waitReady(t, baseURL)
+	return baseURL
 }
 
 // 13. local self-check: `anygrade check` passes against alice's clone, which

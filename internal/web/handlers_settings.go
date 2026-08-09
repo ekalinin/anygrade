@@ -23,7 +23,7 @@ func (h *Handler) settingsPage(w http.ResponseWriter, r *http.Request) {
 	keys, _ := h.DB.ListSSHKeys(r.Context(), u.ID)
 	h.renderPage(w, r, "settings", settingsData{
 		CourseName: h.Course.Get().Resolved.Course.Name,
-		User:       userView{u.Login, u.DisplayName, u.Role},
+		User:       h.userViewOf(u),
 		Keys:       keys,
 		Flash:      r.URL.Query().Get("flash"),
 	})
@@ -121,7 +121,7 @@ func (h *Handler) leaderboardPage(w http.ResponseWriter, r *http.Request) {
 	}
 	h.renderPage(w, r, "leaderboard", leaderboardData{
 		CourseName: course.Resolved.Course.Name,
-		User:       userView{u.Login, u.DisplayName, u.Role},
+		User:       h.userViewOf(u),
 		Rows:       rows,
 		Anonymize:  anonymize,
 	})

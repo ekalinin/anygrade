@@ -56,7 +56,7 @@ func (h *Handler) loadCodeView(w http.ResponseWriter, r *http.Request) (codeData
 	u := user(r)
 	return codeData{
 		CourseName: h.Course.Get().Resolved.Course.Name,
-		User:       userView{u.Login, u.DisplayName, u.Role},
+		User:       h.userViewOf(u),
 		Student:    target.Login,
 		Sub:        sub,
 		Files:      files,

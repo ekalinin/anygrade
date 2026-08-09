@@ -36,7 +36,7 @@
     <a href="/leaderboard">{{t "nav.leaderboard"}}</a>
     <a href="/settings">{{t "nav.settings"}}</a>
     <span class="who">{{if .User.DisplayName}}{{.User.DisplayName}}{{else}}{{.User.Login}}{{end}}{{if eq .User.Role "teacher"}}{{t "nav.teacher_suffix"}}{{end}}</span>
-    <form method="post" action="/logout" class="inline"><button type="submit" class="linklike">{{t "nav.logout"}}</button></form>
+    {{if not .User.Local}}<form method="post" action="/logout" class="inline"><button type="submit" class="linklike">{{t "nav.logout"}}</button></form>{{end}}
   </nav>
   {{end}}
   <button type="button" id="theme-toggle" class="linklike theme-toggle"

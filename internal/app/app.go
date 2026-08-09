@@ -90,13 +90,18 @@ func Run(ctx context.Context, opts Options) error {
 	holder := &intake.Holder{}
 	holder.Set(course)
 
+	// Both are nil unless --local: the zero value keeps git auth and web
+	// sessions on. checkServeSafety above has already refused a non-loopback
+	// bind in that mode.
 	var localID *gitserver.Identity
+	var localUser *store.User
 	if opts.Local {
 		u, err := ensureLocalUser(ctx, db)
 		if err != nil {
 			return err
 		}
 		localID = &gitserver.Identity{UserID: u.ID, Login: u.Login, Role: u.Role}
+		localUser = &u
 	}
 
 	socket := filepath.Join(opts.DataDir, "anygrade.sock")
@@ -144,6 +149,7 @@ func Run(ctx context.Context, opts Options) error {
 		BaseURL: baseURL(opts),
 		SSHAddr: opts.SSHAddr,
 		Limit:   limit,
+		Local:   localUser,
 	})
 	mux := http.NewServeMux()
 	mux.Handle("/git/", &gitserver.HTTPHandler{Repos: repos, Auth: auth, Socket: socket, Local: localID, Limit: limit})

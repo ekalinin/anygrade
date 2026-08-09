@@ -3,6 +3,8 @@ package web
 import (
 	"net/http"
 	"time"
+
+	"github.com/ekalinin/anygrade/internal/store"
 )
 
 type dashboardData struct {
@@ -16,6 +18,14 @@ type userView struct {
 	Login       string
 	DisplayName string
 	Role        string
+	// Local marks `serve --local`: there is no session, so the header hides
+	// the log out button.
+	Local bool
+}
+
+// userViewOf builds the header identity every page carries.
+func (h *Handler) userViewOf(u store.User) userView {
+	return userView{u.Login, u.DisplayName, u.Role, h.Local != nil}
 }
 
 func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) {
@@ -28,7 +38,7 @@ func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) {
 	course := h.Course.Get()
 	h.renderPage(w, r, "dashboard", dashboardData{
 		CourseName: course.Resolved.Course.Name,
-		User:       userView{u.Login, u.DisplayName, u.Role},
+		User:       h.userViewOf(u),
 		Tasks:      buildDashboard(course, subs),
 		Now:        time.Now(),
 	})

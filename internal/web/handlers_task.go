@@ -81,7 +81,7 @@ func (h *Handler) taskPage(w http.ResponseWriter, r *http.Request) {
 
 	h.renderPage(w, r, "task", taskData{
 		CourseName: course.Resolved.Course.Name,
-		User:       userView{u.Login, u.DisplayName, u.Role},
+		User:       h.userViewOf(u),
 		View:       buildTaskView(task, history, course.Resolved.Course.ScoringPolicy),
 		Statement:  statement,
 		History:    rows,
