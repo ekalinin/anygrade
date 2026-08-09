@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ekalinin/anygrade/internal/gitserver"
@@ -90,6 +91,38 @@ func TestPrepareLocalHiddenTestsPresent(t *testing.T) {
 	}
 	if prepared.Assembly.Hidden == nil {
 		t.Fatal("hidden source must be wired when the directory exists")
+	}
+}
+
+// TestPrepareNoteReportsIncludeAndMissingSolution: the worker note must cover
+// both silent restorations - a tampered workspace.include path outside the
+// task dir, and a solution file the student deleted (graded from the
+// authoritative template, SPEC §6.1).
+func TestPrepareNoteReportsIncludeAndMissingSolution(t *testing.T) {
+	s, work, _, user := newIntakeFixture(t)
+
+	if err := os.WriteFile(filepath.Join(work, "go.mod"), []byte("module course.example/hacked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(work, "tasks", "t1", "main.go")); err != nil {
+		t.Fatal(err)
+	}
+	_, head := push(t, work, "tamper with go.mod, drop the solution file")
+
+	prepared, err := newPrep(t, s).Prepare(t.Context(), store.Submission{
+		ID: 1, UserID: user.ID, TaskID: "t1", CommitSHA: head,
+	})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	want := []string{
+		"modified outside solution_files (restored): go.mod",
+		"solution file missing in the submitted commit (template used): tasks/t1/main.go",
+	}
+	for _, line := range want {
+		if !strings.Contains(prepared.Note, line) {
+			t.Errorf("worker note %q is missing %q", prepared.Note, line)
+		}
 	}
 }
 

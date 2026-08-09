@@ -52,7 +52,7 @@ func (p *Prep) Prepare(ctx context.Context, sub store.Submission) (queue.Prepare
 	authoritative := gitserver.GitSource{Dir: p.Repos.CourseDir(), Commit: course.Head}
 	student := gitserver.GitSource{Dir: studentDir, Commit: sub.CommitSHA}
 
-	notes, err := gitserver.TamperNotes(ctx, authoritative, student, relDir, task.SolutionFiles)
+	notes, err := gitserver.TamperNotes(ctx, authoritative, student, relDir, task.SolutionFiles, task.Workspace.Include)
 	if err != nil {
 		return queue.Prepared{}, fmt.Errorf("tamper scan: %w", err)
 	}

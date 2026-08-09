@@ -19,6 +19,7 @@ func newCourseFixture(t *testing.T) (work, bare, head string) {
 	runSrc(t, work, "init", "-b", "main")
 	files := map[string]string{
 		"go.mod":                      "module course.example/fixture\n",
+		"lib/util.sh":                 "util() { echo util; }\n",
 		"tasks/01-intro/task.yaml":    "name: Intro\n",
 		"tasks/01-intro/main.go":      "package main\n",
 		"tasks/01-intro/main_test.go": "package main // tests\n",
@@ -142,34 +143,49 @@ func TestGitSourceFile(t *testing.T) {
 	}
 }
 
+// newStudentWork clones the course fixture, applies edit, and commits the
+// result, returning the clone and its head SHA.
+func newStudentWork(t *testing.T, work string, edit func(dir string)) (dir, head string) {
+	t.Helper()
+	dir = t.TempDir()
+	runSrc(t, work, "clone", work, dir)
+	edit(dir)
+	runSrc(t, dir, "add", "-A")
+	runSrc(t, dir, "-c", "user.name=s", "-c", "user.email=s@s", "commit", "-m", "solve")
+	return dir, runSrc(t, dir, "rev-parse", "HEAD")
+}
+
+// writeIn writes content to a repo-relative path, creating parent directories.
+func writeIn(t *testing.T, dir, rel, content string) {
+	t.Helper()
+	abs := filepath.Join(dir, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestTamperNotes: student edits outside solution_files are reported; edits
 // to solution files are not.
 func TestTamperNotes(t *testing.T) {
 	requireGit(t)
 	work, bare, head := newCourseFixture(t)
 
-	student := t.TempDir()
-	runSrc(t, work, "clone", work, student)
-	write := func(rel, content string) {
-		t.Helper()
-		if err := os.WriteFile(filepath.Join(student, filepath.FromSlash(rel)), []byte(content), 0o644); err != nil {
+	student, studentHead := newStudentWork(t, work, func(dir string) {
+		writeIn(t, dir, "tasks/01-intro/main.go", "package main // solution\n") // allowed
+		writeIn(t, dir, "tasks/01-intro/main_test.go", "package main // hacked\n")
+		writeIn(t, dir, "tasks/01-intro/extra.txt", "cheat sheet\n")
+		if err := os.Remove(filepath.Join(dir, "tasks", "01-intro", "run.sh")); err != nil {
 			t.Fatal(err)
 		}
-	}
-	write("tasks/01-intro/main.go", "package main // solution\n") // allowed
-	write("tasks/01-intro/main_test.go", "package main // hacked\n")
-	write("tasks/01-intro/extra.txt", "cheat sheet\n")
-	if err := os.Remove(filepath.Join(student, "tasks", "01-intro", "run.sh")); err != nil {
-		t.Fatal(err)
-	}
-	runSrc(t, student, "add", "-A")
-	runSrc(t, student, "-c", "user.name=s", "-c", "user.email=s@s", "commit", "-m", "solve")
-	studentHead := runSrc(t, student, "rev-parse", "HEAD")
+	})
 
 	notes, err := TamperNotes(t.Context(),
 		GitSource{Dir: bare, Commit: head},
 		GitSource{Dir: student, Commit: studentHead},
-		"tasks/01-intro", []string{"main.go"})
+		"tasks/01-intro", []string{"main.go"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,11 +202,71 @@ func TestTamperNotes(t *testing.T) {
 	clean, err := TamperNotes(t.Context(),
 		GitSource{Dir: bare, Commit: head},
 		GitSource{Dir: bare, Commit: head},
-		"tasks/01-intro", []string{"main.go"})
+		"tasks/01-intro", []string{"main.go"}, []string{"go.mod", "lib"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(clean) != 0 {
 		t.Errorf("clean tree notes = %v, want none", clean)
+	}
+}
+
+// TestTamperNotesIncludePaths: workspace.include paths live outside the task
+// dir, yet assembly restores them from the course repo exactly like task-dir
+// files - so tampering with them must be reported too (SPEC §6.1).
+func TestTamperNotesIncludePaths(t *testing.T) {
+	requireGit(t)
+	work, bare, head := newCourseFixture(t)
+
+	student, studentHead := newStudentWork(t, work, func(dir string) {
+		writeIn(t, dir, "go.mod", "module course.example/hacked\n")
+		writeIn(t, dir, "lib/extra.sh", "echo cheat\n")
+		if err := os.Remove(filepath.Join(dir, "lib", "util.sh")); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	notes, err := TamperNotes(t.Context(),
+		GitSource{Dir: bare, Commit: head},
+		GitSource{Dir: student, Commit: studentHead},
+		"tasks/01-intro", []string{"main.go"}, []string{"go.mod", "lib"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"added outside solution_files (ignored): lib/extra.sh",
+		"deleted outside solution_files (restored): lib/util.sh",
+		"modified outside solution_files (restored): go.mod",
+	}
+	if !slices.Equal(notes, want) {
+		t.Errorf("notes = %v, want %v", notes, want)
+	}
+}
+
+// TestTamperNotesMissingSolutionFile: a solution file the student deleted is
+// silently replaced by the authoritative template (SPEC §6.1 allows it), so
+// the teacher has to be told the graded code was not the student's.
+func TestTamperNotesMissingSolutionFile(t *testing.T) {
+	requireGit(t)
+	work, bare, head := newCourseFixture(t)
+
+	student, studentHead := newStudentWork(t, work, func(dir string) {
+		if err := os.Remove(filepath.Join(dir, "tasks", "01-intro", "main.go")); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	notes, err := TamperNotes(t.Context(),
+		GitSource{Dir: bare, Commit: head},
+		GitSource{Dir: student, Commit: studentHead},
+		"tasks/01-intro", []string{"main.go"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"solution file missing in the submitted commit (template used): tasks/01-intro/main.go",
+	}
+	if !slices.Equal(notes, want) {
+		t.Errorf("notes = %v, want %v", notes, want)
 	}
 }
