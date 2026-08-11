@@ -333,19 +333,50 @@ func (s *Server) advanceBaseline(ctx context.Context, dir, oldSHA, newSHA string
 		return []string{"anygrade: baseline kept; the next push re-detects these changes"}
 	}
 	expected := cmp.Or(oldSHA, zeroSHA)
-	if _, err := gitserver.Git(ctx, dir, "update-ref", "refs/anygrade/baseline", newSHA, expected); err != nil {
-		if staleBaseline(err) {
-			// A concurrent push already moved the ref past ours. Its handler
-			// covers these changes too, so the newer value stays and the
-			// student has nothing to act on: log only, no push-output line.
-			s.log().Info("baseline left to a concurrent push",
-				"repo", dir, "commit", newSHA, "expected", expected)
+	// A lost swap is retried rather than abandoned: the handlers finish in any
+	// order, so the push that took the ref may hold an older commit than ours.
+	// Leaving the newer commit outside the baseline is not harmless - the next
+	// push re-walks that range and re-scans it for [recheck <id>] markers,
+	// which the re-detection filter deliberately lets through, so every marker
+	// in it charges a second attempt. The loop is bounded: a ref that keeps
+	// moving under us is better left to its owner than spun on.
+	for range 3 {
+		_, err := gitserver.Git(ctx, dir, "update-ref", "refs/anygrade/baseline", newSHA, expected)
+		if err == nil {
 			return nil
 		}
-		s.log().Error("baseline update failed", "repo", dir, "commit", newSHA, "err", err)
-		return []string{"anygrade: baseline update failed; the next push re-detects these changes"}
+		if !staleBaseline(err) {
+			s.log().Error("baseline update failed", "repo", dir, "commit", newSHA, "err", err)
+			return []string{"anygrade: baseline update failed; the next push re-detects these changes"}
+		}
+		cur, cerr := gitserver.Git(ctx, dir, "rev-parse", "--verify", "--quiet", "refs/anygrade/baseline")
+		if cerr != nil {
+			cur = "" // The ref went away under us: expect an absent one next.
+		}
+		if cur == newSHA {
+			return nil // Another handler already put our commit there.
+		}
+		if cur != "" && !isAncestor(ctx, dir, cur, newSHA) {
+			// The ref holds a commit ours does not descend from: a newer push,
+			// or a history the student rewrote. Either way its handler covers
+			// these changes too, and the student has nothing to act on.
+			s.log().Info("baseline left to a concurrent push",
+				"repo", dir, "commit", newSHA, "baseline", cur)
+			return nil
+		}
+		expected = cmp.Or(cur, zeroSHA)
 	}
+	s.log().Warn("baseline left after repeated concurrent updates",
+		"repo", dir, "commit", newSHA)
 	return nil
+}
+
+// isAncestor reports whether a is reachable from b, i.e. b is the later commit.
+// An object git cannot resolve is not an ancestor: the caller then leaves the
+// ref alone, which costs a re-detection and never a lost change.
+func isAncestor(ctx context.Context, dir, a, b string) bool {
+	_, err := gitserver.Git(ctx, dir, "merge-base", "--is-ancestor", a, b)
+	return err == nil
 }
 
 // staleBaselineReasons are the tails git appends to "cannot lock ref <ref>"
@@ -371,6 +402,14 @@ var staleBaselineReasons = []string{
 func staleBaseline(err error) bool {
 	msg := err.Error()
 	if !strings.Contains(msg, "cannot lock ref") {
+		return false
+	}
+	// A ref file that does not hold a resolvable object id reports "unable to
+	// resolve reference '<ref>': reference broken". It shares the tail a
+	// mismatch produces but is not one: git refuses to move such a ref with
+	// any expected value, and refuses to delete it as well, so the repo cannot
+	// recover on its own. Reporting it is the only thing that can.
+	if strings.Contains(msg, "reference broken") {
 		return false
 	}
 	return slices.ContainsFunc(staleBaselineReasons, func(r string) bool {

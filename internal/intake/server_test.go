@@ -282,12 +282,13 @@ func (a *stallingAdmit) AdmitSubmission(ctx context.Context, ns store.NewSubmiss
 	return a.Store.AdmitSubmission(ctx, ns, decide)
 }
 
-// racePushes lands two pushes back to back and replays their hooks with the
-// older one finishing last: its handler is parked at the admission write until
-// the newer push has been processed end to end. Ordering is by channel only,
-// so the interleaving is the same on every run. Returns the newer commit and
-// the older handler's push output.
-func racePushes(t *testing.T, s *Server, work string) (newer, olderOut string) {
+// racePushes lands two pushes back to back and replays their hooks with one of
+// them finishing last: its handler is parked at the admission write until the
+// other push has been processed end to end. Both orders matter - the handlers
+// read the same baseline and can reach the swap in either order. Ordering is by
+// channel only, so the interleaving is the same on every run. Returns both
+// commits and the parked handler's push output.
+func racePushes(t *testing.T, s *Server, work string, stallNewer bool) (older, newer, stalledOut string) {
 	t.Helper()
 	stall := &stallingAdmit{Store: s.DB, entered: make(chan struct{}), release: make(chan struct{})}
 	// Both handles have to be swapped: gradePush reads through Server.DB and
@@ -306,22 +307,28 @@ func racePushes(t *testing.T, s *Server, work string) (newer, olderOut string) {
 	oldOlder, older := push(t, work, "solve t1")
 	solve("v3")
 	oldNewer, newer := push(t, work, "improve t1")
-	stall.commit = older
 
-	// The older push's handler is parked at its admission write...
+	parkedOld, parked, freeOld, free := oldOlder, older, oldNewer, newer
+	if stallNewer {
+		parkedOld, parked, freeOld, free = oldNewer, newer, oldOlder, older
+	}
+	stall.commit = parked
+
+	// One handler is parked at its admission write, after it has read the
+	// baseline...
 	out := make(chan string, 1)
-	go func() { out <- joined(s.dispatch(t.Context(), postReceive(oldOlder, older))) }()
+	go func() { out <- joined(s.dispatch(t.Context(), postReceive(parkedOld, parked))) }()
 	<-stall.entered
 
-	// ...while the newer push's handler runs to completion and takes the ref.
-	if o := joined(s.dispatch(t.Context(), postReceive(oldNewer, newer))); !strings.Contains(o, "queued") {
-		t.Fatalf("the newer push must be graded: %s", o)
+	// ...while the other runs to completion and takes the ref.
+	if o := joined(s.dispatch(t.Context(), postReceive(freeOld, free))); !strings.Contains(o, "queued") {
+		t.Fatalf("the unparked push must be graded: %s", o)
 	}
-	if base := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); base != newer {
-		t.Fatalf("baseline = %s before the older handler resumes, want %s", base, newer)
+	if base := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); base != free {
+		t.Fatalf("baseline = %s before the parked handler resumes, want %s", base, free)
 	}
 	close(stall.release)
-	return newer, <-out
+	return older, newer, <-out
 }
 
 // TestGradePushConcurrentPushesKeepNewestBaseline: hook connections are served
@@ -332,7 +339,7 @@ func racePushes(t *testing.T, s *Server, work string) (newer, olderOut string) {
 func TestGradePushConcurrentPushesKeepNewestBaseline(t *testing.T) {
 	s, work, _, _ := newIntakeFixture(t)
 
-	newer, out := racePushes(t, s, work)
+	_, newer, out := racePushes(t, s, work, false)
 
 	if base := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); base != newer {
 		t.Fatalf("baseline rolled back to %s, want the newer commit %s", base, newer)
@@ -354,13 +361,45 @@ func TestGradePushConcurrentPushesWithoutBaseline(t *testing.T) {
 	s, work, _, _ := newIntakeFixture(t)
 	git(t, s.Repos.StudentDir("alice"), "update-ref", "-d", "refs/anygrade/baseline")
 
-	newer, out := racePushes(t, s, work)
+	_, newer, out := racePushes(t, s, work, false)
 
 	if base := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); base != newer {
 		t.Fatalf("baseline = %s, want the newer commit %s", base, newer)
 	}
 	if strings.Contains(out, "baseline") {
 		t.Errorf("a lost race must stay out of the push output: %s", out)
+	}
+}
+
+// TestGradePushConcurrentPushesAdvanceToNewest covers the other completion
+// order: the older handler reaches the swap first and puts its own commit on
+// the ref. Accepting that would strand the newer commit outside the baseline,
+// and the next push would re-walk its range - re-scanning it for
+// [recheck <id>] markers, which dropAlreadyRecorded deliberately lets through,
+// so every marker in that range charges a second attempt.
+func TestGradePushConcurrentPushesAdvanceToNewest(t *testing.T) {
+	s, work, _, _ := newIntakeFixture(t)
+
+	_, newer, out := racePushes(t, s, work, true)
+
+	if base := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); base != newer {
+		t.Fatalf("baseline = %s, want the newer commit %s", base, newer)
+	}
+	if strings.Contains(out, "baseline") {
+		t.Errorf("winning the retry must stay out of the push output: %s", out)
+	}
+}
+
+// TestGradePushConcurrentPushesAdvanceWithoutBaseline: the same order on a repo
+// that had no baseline ref, where both handlers start from the zero SHA.
+func TestGradePushConcurrentPushesAdvanceWithoutBaseline(t *testing.T) {
+	s, work, _, _ := newIntakeFixture(t)
+	git(t, s.Repos.StudentDir("alice"), "update-ref", "-d", "refs/anygrade/baseline")
+
+	_, newer, _ := racePushes(t, s, work, true)
+
+	if base := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); base != newer {
+		t.Fatalf("baseline = %s, want the newer commit %s", base, newer)
 	}
 }
 
@@ -419,6 +458,35 @@ func TestGradePushReportsBrokenBaselineRef(t *testing.T) {
 
 	if !strings.Contains(out, "baseline update failed") {
 		t.Fatalf("a broken ref store must be reported, not taken for a race: %s", out)
+	}
+}
+
+// TestGradePushReportsBrokenBaselineContents: a ref file that does not hold a
+// resolvable object id fails with the same "cannot lock ref ... unable to
+// resolve reference" prefix a mismatch produces, but it is not a race - git
+// refuses to move such a ref, and refuses to delete it too, so the repo cannot
+// recover on its own. Taking it for a lost race would hide that forever while
+// every push re-detects every task.
+func TestGradePushReportsBrokenBaselineContents(t *testing.T) {
+	s, work, _, _ := newIntakeFixture(t)
+	studentDir := s.Repos.StudentDir("alice")
+
+	ref := filepath.Join(studentDir, "refs", "anygrade", "baseline")
+	if err := os.MkdirAll(filepath.Dir(ref), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ref, []byte("not-a-sha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(work, "tasks", "t1", "main.go"), []byte("package main // v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old, head := push(t, work, "solve t1")
+	out := joined(s.dispatch(t.Context(), postReceive(old, head)))
+
+	if !strings.Contains(out, "baseline update failed") {
+		t.Fatalf("a broken ref must be reported, not taken for a race: %s", out)
 	}
 }
 
