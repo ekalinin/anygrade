@@ -348,17 +348,65 @@ func TestGradePushSerializesConcurrentPushes(t *testing.T) {
 	solve("v3")
 	oldNewer, newer := push(t, work, "improve t1")
 
-	olderOut, newerOut := racePushes(t, s, oldOlder, older, oldNewer, newer)
+	newerOut, olderOut := racePushes(t, s, oldNewer, newer, oldOlder, older)
 
 	if base := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); base != newer {
 		t.Fatalf("baseline = %s, want the last pushed commit %s", base, newer)
 	}
-	if !strings.Contains(olderOut, "queued") {
-		t.Errorf("the older push must still be graded: %s", olderOut)
+	if !strings.Contains(newerOut, "queued") {
+		t.Errorf("the push that is the head must be graded: %s", newerOut)
+	}
+	if !strings.Contains(olderOut, "superseded") {
+		t.Errorf("the superseded push must say so: %s", olderOut)
 	}
 	for _, out := range []string{olderOut, newerOut} {
 		if strings.Contains(out, "baseline") {
 			t.Errorf("baseline bookkeeping must stay out of the push output: %s", out)
+		}
+	}
+}
+
+// TestGradePushSupersededPushIsNotGraded: the lock orders the handlers, but
+// not by the order their pushes arrived - each does its own work before
+// reaching it, so the handler of the older push can take it second. Grading
+// its commit then would diff backwards from the newer baseline, score content
+// the student has already replaced, and leave the marker on the abandoned
+// commit.
+func TestGradePushSupersededPushIsNotGraded(t *testing.T) {
+	s, work, _, user := newIntakeFixture(t)
+
+	solve := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(work, "tasks", "t1", "main.go"),
+			[]byte("package main // "+body+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	solve("v2")
+	oldOlder, older := push(t, work, "solve t1")
+	solve("v3")
+	oldNewer, newer := push(t, work, "improve t1")
+
+	// The newer push's handler takes the lock first and does the work.
+	if out := joined(s.dispatch(t.Context(), postReceive(oldNewer, newer))); !strings.Contains(out, "queued") {
+		t.Fatalf("the newer push must be graded: %s", out)
+	}
+	// The older one only gets there afterwards.
+	out := joined(s.dispatch(t.Context(), postReceive(oldOlder, older)))
+
+	if strings.Contains(out, "queued") {
+		t.Errorf("a superseded push must not be graded: %s", out)
+	}
+	if base := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); base != newer {
+		t.Fatalf("baseline = %s, want the head %s", base, newer)
+	}
+	subs, err := s.DB.ListByUserTask(t.Context(), user.ID, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sub := range subs {
+		if sub.CommitSHA != newer {
+			t.Errorf("submission #%d recorded %s, want the head %s", sub.ID, sub.CommitSHA, newer)
 		}
 	}
 }
@@ -384,7 +432,9 @@ func TestGradePushConcurrentPushesAdmitAMarkerOnce(t *testing.T) {
 	write("two")
 	oldNewer, newer := push(t, work, "more notes")
 
-	racePushes(t, s, oldOlder, older, oldNewer, newer)
+	// The head's handler is the one that does the work, so it is the one
+	// parked; the superseded push queues up behind it on the student's lock.
+	racePushes(t, s, oldNewer, newer, oldOlder, older)
 
 	subs, err := s.DB.ListByUserTask(t.Context(), user.ID, "t1")
 	if err != nil {
@@ -403,9 +453,6 @@ func TestGradePushConcurrentPushesAdmitAMarkerOnce(t *testing.T) {
 func TestGradePushConcurrentForcePushAdmitsAMarkerOnce(t *testing.T) {
 	s, work, _, user := newIntakeFixture(t)
 
-	// The first push touches t2 so that it has an admission write to be parked
-	// at; t2 is past its hard deadline, so it is recorded rejected and leaves
-	// t1 untouched.
 	if err := os.WriteFile(filepath.Join(work, "tasks", "t2", "main.go"),
 		[]byte("package main // v2\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -420,7 +467,9 @@ func TestGradePushConcurrentForcePushAdmitsAMarkerOnce(t *testing.T) {
 	second := commitAll(t, work, "rewritten [recheck t1]")
 	git(t, work, "push", "--force", "origin", "main")
 
-	racePushes(t, s, base, first, first, second)
+	// The force-pushed sibling is the head, so its handler is the one parked;
+	// the commit it replaced queues up behind it.
+	racePushes(t, s, first, second, base, first)
 
 	subs, err := s.DB.ListByUserTask(t.Context(), user.ID, "t1")
 	if err != nil {

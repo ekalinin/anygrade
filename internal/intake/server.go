@@ -224,7 +224,7 @@ func (s *Server) processPush(ctx context.Context, req hookproto.Request) hookpro
 		case u.New == zeroSHA:
 			lines = append(lines, "anygrade: default branch deleted; nothing to grade")
 		default:
-			lines = append(lines, s.gradePush(ctx, user, dir, u.New, now)...)
+			lines = append(lines, s.gradePush(ctx, user, dir, u.Ref, u.New, now)...)
 		}
 	}
 	if len(lines) == 0 {
@@ -233,22 +233,45 @@ func (s *Server) processPush(ctx context.Context, req hookproto.Request) hookpro
 	return hookproto.Response{Lines: lines}
 }
 
-// gradePush handles one default-branch update.
-func (s *Server) gradePush(ctx context.Context, user store.User, dir, newSHA string, now time.Time) []string {
+// gradePush handles one default-branch update. ref is the branch the update
+// landed on, newSHA the commit the hook was told about.
+func (s *Server) gradePush(ctx context.Context, user store.User, dir, ref, newSHA string, now time.Time) []string {
 	// Hook connections are served concurrently, but every handler of one
 	// student reads refs/anygrade/baseline and then walks the commit range
 	// that starts there. Overlapping handlers read the same baseline, so they
 	// walk overlapping ranges: an explicit [recheck <id>] marker inside the
 	// overlap is admitted by both of them, and each admission costs the
-	// student an attempt. They also race to move the ref, and which commit it
-	// ends on cannot be settled afterwards - git topology does not record the
-	// order pushes arrived in, and after a force push the two heads are not
-	// even related. Serializing the handlers of one student removes the whole
-	// question: each of them starts from the baseline its predecessor left.
-	// The wait is bounded by handleTimeout, which every exchange carries.
+	// student an attempt. Serializing the handlers of one student removes
+	// that: each of them starts from the baseline its predecessor left. The
+	// wait is bounded by handleTimeout, which every exchange carries.
 	lock := s.pushLock(user.Login)
 	lock.Lock()
 	defer lock.Unlock()
+
+	// The lock orders the handlers, but not by the order their pushes arrived:
+	// each of them does its own work before reaching it, and a mutex hands out
+	// ownership to whoever asks, not to whoever pushed first. Nothing about
+	// the commits settles that order either - git records no arrival time, and
+	// after a force push the two heads are not even related.
+	//
+	// The branch ref is the one authority there is: receive-pack moves it
+	// under its own lock and runs this hook only afterwards, so a handler
+	// whose commit is no longer the head has been superseded. Grading it
+	// anyway would diff backwards, score content the student has already
+	// replaced, and leave the baseline on the abandoned history. The handler
+	// of the current head covers this range instead - it either has not run
+	// yet, or has already run and walked past this commit. If it never runs at
+	// all, the baseline stays behind and the next push re-detects everything
+	// from here, which is the guarantee it exists for.
+	head, err := gitserver.Git(ctx, dir, "rev-parse", "--verify", "--quiet", ref)
+	if err != nil || head == "" {
+		return []string{"anygrade: nothing to grade; the branch is gone"}
+	}
+	if head != newSHA {
+		s.log().Info("push superseded before it was graded",
+			"repo", dir, "commit", newSHA, "head", head)
+		return []string{"anygrade: superseded by a later push, which is graded instead"}
+	}
 
 	c := s.Course.Get()
 
