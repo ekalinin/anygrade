@@ -1,6 +1,7 @@
 package intake
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ekalinin/anygrade/internal/config"
@@ -43,6 +45,25 @@ type Server struct {
 	Course  *Holder
 	BaseURL string       // submission link prefix in push output; "" = no links
 	Log     *slog.Logger // server log for ref bookkeeping failures; nil = discard
+
+	mu        sync.Mutex             // guards pushLocks
+	pushLocks map[string]*sync.Mutex // per-student push serialization
+}
+
+// pushLock lazily creates (and reuses) the mutex that serializes the push
+// handlers of one student.
+func (s *Server) pushLock(login string) *sync.Mutex {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pushLocks == nil {
+		s.pushLocks = make(map[string]*sync.Mutex)
+	}
+	lock, ok := s.pushLocks[login]
+	if !ok {
+		lock = &sync.Mutex{}
+		s.pushLocks[login] = lock
+	}
+	return lock
 }
 
 // log returns the configured logger, or a discarding one so the zero value and
@@ -203,7 +224,7 @@ func (s *Server) processPush(ctx context.Context, req hookproto.Request) hookpro
 		case u.New == zeroSHA:
 			lines = append(lines, "anygrade: default branch deleted; nothing to grade")
 		default:
-			lines = append(lines, s.gradePush(ctx, user, dir, u.New, now)...)
+			lines = append(lines, s.gradePush(ctx, user, dir, u.Ref, u.New, now)...)
 		}
 	}
 	if len(lines) == 0 {
@@ -212,14 +233,56 @@ func (s *Server) processPush(ctx context.Context, req hookproto.Request) hookpro
 	return hookproto.Response{Lines: lines}
 }
 
-// gradePush handles one default-branch update.
-func (s *Server) gradePush(ctx context.Context, user store.User, dir, newSHA string, now time.Time) []string {
+// gradePush handles one default-branch update. ref is the branch the update
+// landed on, newSHA the commit the hook was told about.
+func (s *Server) gradePush(ctx context.Context, user store.User, dir, ref, newSHA string, now time.Time) []string {
+	// Hook connections are served concurrently, but every handler of one
+	// student reads refs/anygrade/baseline and then walks the commit range
+	// that starts there. Overlapping handlers read the same baseline, so they
+	// walk overlapping ranges: an explicit [recheck <id>] marker inside the
+	// overlap is admitted by both of them, and each admission costs the
+	// student an attempt. Serializing the handlers of one student removes
+	// that: each of them starts from the baseline its predecessor left. The
+	// wait is bounded by handleTimeout, which every exchange carries.
+	lock := s.pushLock(user.Login)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// The lock orders the handlers, but not by the order their pushes arrived:
+	// each of them does its own work before reaching it, and a mutex hands out
+	// ownership to whoever asks, not to whoever pushed first. Nothing about
+	// the commits settles that order either - git records no arrival time, and
+	// after a force push the two heads are not even related.
+	//
+	// The branch ref is the one authority there is: receive-pack moves it
+	// under its own lock and runs this hook only afterwards, so a handler
+	// whose commit is no longer the head has been superseded. Grading it
+	// anyway would diff backwards, score content the student has already
+	// replaced, and leave the baseline on the abandoned history. The handler
+	// of the current head covers this range instead - it either has not run
+	// yet, or has already run and walked past this commit. If it never runs at
+	// all, the baseline stays behind and the next push re-detects everything
+	// from here, which is the guarantee it exists for.
+	head, err := gitserver.Git(ctx, dir, "rev-parse", "--verify", "--quiet", ref)
+	if err != nil || head == "" {
+		return []string{"anygrade: nothing to grade; the branch is gone"}
+	}
+	if head != newSHA {
+		s.log().Info("push superseded before it was graded",
+			"repo", dir, "commit", newSHA, "head", head)
+		return []string{"anygrade: superseded by a later push, which is graded instead"}
+	}
+
 	c := s.Course.Get()
 
 	baseline := ""
-	if out, err := gitserver.Git(ctx, dir, "rev-parse", "--verify", "--quiet", "refs/anygrade/baseline^{commit}"); err == nil {
+	if out, err := gitserver.Git(ctx, dir, "rev-parse", "--verify", "--quiet", "refs/anygrade/baseline"); err == nil {
 		baseline = out
 	}
+	// The ref value advanceBaseline compare-and-swaps against, captured before
+	// the self-healing below can clear `baseline`: a repo whose baseline object
+	// is gone still has to update the ref it actually holds.
+	oldBaseline := baseline
 	base := baseline
 	if base == "" {
 		base = emptyTree
@@ -271,7 +334,7 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, newSHA str
 		if skipped == 0 {
 			lines = append(lines, "anygrade: no tasks changed")
 		}
-		return append(lines, s.advanceBaseline(ctx, dir, newSHA, true)...)
+		return append(lines, s.advanceBaseline(ctx, dir, oldBaseline, newSHA, true)...)
 	}
 
 	width := 0
@@ -304,7 +367,7 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, newSHA str
 				width, id))
 		}
 	}
-	return append(lines, s.advanceBaseline(ctx, dir, newSHA, processed)...)
+	return append(lines, s.advanceBaseline(ctx, dir, oldBaseline, newSHA, processed)...)
 }
 
 // advanceBaseline moves refs/anygrade/baseline to newSHA, but only once every
@@ -313,17 +376,73 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, newSHA str
 // change for good: the next push would diff against a commit that already
 // contains it. Deliberately not deferred, so the error paths above matter.
 // Returns the push-output lines for the cases where the ref did not move.
-func (s *Server) advanceBaseline(ctx context.Context, dir, newSHA string, processed bool) []string {
+//
+// The move is a compare-and-swap against oldSHA, the value read at the start
+// of this push. Hook connections are served concurrently, so the handler of an
+// older push can finish after the handler of a newer one; a blind write would
+// then roll the marker back and make the next push re-walk a range that was
+// already processed. An empty oldSHA means the ref must still be absent, which
+// git spells as the zero SHA - the legacy repos without a baseline are exactly
+// the ones re-detecting everything, so they need the guard most.
+func (s *Server) advanceBaseline(ctx context.Context, dir, oldSHA, newSHA string, processed bool) []string {
 	if !processed {
 		s.log().Warn("baseline kept after a processing error",
 			"repo", dir, "commit", newSHA)
 		return []string{"anygrade: baseline kept; the next push re-detects these changes"}
 	}
-	if _, err := gitserver.Git(ctx, dir, "update-ref", "refs/anygrade/baseline", newSHA); err != nil {
+	expected := cmp.Or(oldSHA, zeroSHA)
+	if _, err := gitserver.Git(ctx, dir, "update-ref", "refs/anygrade/baseline", newSHA, expected); err != nil {
+		if staleBaseline(err) {
+			// Unreachable while the handlers of one student are serialized;
+			// kept as a backstop for a ref moved from outside this process,
+			// where the mutex does not reach. Whoever moved it walked these
+			// changes too, so the student has nothing to act on: log only.
+			s.log().Info("baseline left to a concurrent writer",
+				"repo", dir, "commit", newSHA, "expected", expected)
+			return nil
+		}
 		s.log().Error("baseline update failed", "repo", dir, "commit", newSHA, "err", err)
 		return []string{"anygrade: baseline update failed; the next push re-detects these changes"}
 	}
 	return nil
+}
+
+// staleBaselineReasons are the tails git appends to "cannot lock ref <ref>"
+// when update-ref's old value does not match, observed on git 2.55:
+//
+//	is at <sha> but expected <sha>       the ref moved under us
+//	reference already exists             we expected it to be absent
+//	unable to resolve reference '<ref>'  we expected it to be present
+//
+// The exit status cannot tell these apart: every update-ref failure exits 128,
+// a genuinely broken ref store included (a D/F conflict reports "<ref> exists;
+// cannot create <ref>/<x>"). So the reason has to come from the message, and
+// the match is deliberately narrow: an unrecognised failure is reported as an
+// error, which is the pre-existing behaviour.
+var staleBaselineReasons = []string{
+	"but expected ",
+	"reference already exists",
+	"unable to resolve reference",
+}
+
+// staleBaseline reports whether err is update-ref rejecting our expected old
+// value rather than failing to write the ref at all.
+func staleBaseline(err error) bool {
+	msg := err.Error()
+	if !strings.Contains(msg, "cannot lock ref") {
+		return false
+	}
+	// A ref file that does not hold a resolvable object id reports "unable to
+	// resolve reference '<ref>': reference broken". It shares the tail a
+	// mismatch produces but is not one: git refuses to move such a ref with
+	// any expected value, and refuses to delete it as well, so the repo cannot
+	// recover on its own. Reporting it is the only thing that can.
+	if strings.Contains(msg, "reference broken") {
+		return false
+	}
+	return slices.ContainsFunc(staleBaselineReasons, func(r string) bool {
+		return strings.Contains(msg, r)
+	})
 }
 
 // pinSubmission creates refs/anygrade/submissions/<id> at commit so a graded

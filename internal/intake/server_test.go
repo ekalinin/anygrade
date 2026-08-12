@@ -7,7 +7,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/ekalinin/anygrade/internal/gitserver"
 	"github.com/ekalinin/anygrade/internal/hookproto"
@@ -252,6 +254,319 @@ func TestGradePushKeepsBaselineOnError(t *testing.T) {
 	}
 	if base := git(t, studentDir, "rev-parse", "refs/anygrade/baseline"); base != head {
 		t.Fatalf("baseline = %s, want %s", base, head)
+	}
+}
+
+// stallingAdmit parks the push that records commit `commit` at its admission
+// write until release is closed, so one hook handler can be held mid-push
+// while another runs to completion. It blocks before delegating, never inside
+// the real call: the store keeps a single connection, so a parked transaction
+// would stall the other handler instead of racing it.
+type stallingAdmit struct {
+	store.Store
+	commit  string        // stall the push recording this commit
+	entered chan struct{} // closed once that push is parked
+	release chan struct{} // close to let it through
+	once    sync.Once     // park at the first task only, not at every one
+}
+
+func (a *stallingAdmit) AdmitSubmission(ctx context.Context, ns store.NewSubmission,
+	decide func(history []store.Submission) store.Admission) (store.Submission, error) {
+	if ns.CommitSHA == a.commit {
+		// Only the stalled push ever reaches Do, so the other handler is
+		// never held by Once itself.
+		a.once.Do(func() {
+			close(a.entered)
+			<-a.release
+		})
+	}
+	return a.Store.AdmitSubmission(ctx, ns, decide)
+}
+
+// racePushes replays the hooks of two back-to-back pushes concurrently, with
+// the handler of the first parked at its admission write. It asserts on the way
+// that the second handler cannot get past the per-student lock while that
+// lasts, so the interleaving is the same on every run. Returns both outputs.
+func racePushes(t *testing.T, s *Server, firstOld, first, secondOld, second string) (firstOut, secondOut string) {
+	t.Helper()
+	stall := &stallingAdmit{Store: s.DB, commit: first,
+		entered: make(chan struct{}), release: make(chan struct{})}
+	// Both handles have to be swapped: gradePush reads through Server.DB and
+	// records through the queue's own store reference.
+	s.DB = stall
+	s.Queue.Store = stall
+
+	out1 := make(chan string, 1)
+	go func() { out1 <- joined(s.dispatch(t.Context(), postReceive(firstOld, first))) }()
+	select {
+	case <-stall.entered:
+	case <-time.After(60 * time.Second):
+		// The park never happened: the first push admits nothing, so it has no
+		// admission write to hold the lock at. This is a fuse against a
+		// mis-specified test, not a timing assertion, so it is set far above
+		// anything a loaded machine can need.
+		t.Fatal("the first push never reached its admission write")
+	}
+
+	out2 := make(chan string, 1)
+	go func() { out2 <- joined(s.dispatch(t.Context(), postReceive(secondOld, second))) }()
+
+	// The parked handler holds the student's lock, so the second one cannot
+	// read the baseline - let alone act on the range behind it - until the
+	// first is done. A handler that got through here would be reading a
+	// baseline that is about to change under it.
+	select {
+	case o := <-out2:
+		t.Fatalf("the second handler ran while the first was parked: %s", o)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	close(stall.release)
+	return <-out1, <-out2
+}
+
+// TestGradePushSerializesConcurrentPushes: hook connections are served
+// concurrently, but every handler of one student diffs from
+// refs/anygrade/baseline and then walks the range that starts there. Letting
+// two of them overlap means both read the same baseline, so both walk the same
+// range and both race to move the ref - and which commit it ends on depends on
+// who gets there first, which git topology cannot even settle after a force
+// push. Serialized, the second handler starts from the baseline the first one
+// left, and the ref ends on the last commit pushed.
+func TestGradePushSerializesConcurrentPushes(t *testing.T) {
+	s, work, _, _ := newIntakeFixture(t)
+
+	solve := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(work, "tasks", "t1", "main.go"),
+			[]byte("package main // "+body+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	solve("v2")
+	oldOlder, older := push(t, work, "solve t1")
+	solve("v3")
+	oldNewer, newer := push(t, work, "improve t1")
+
+	newerOut, olderOut := racePushes(t, s, oldNewer, newer, oldOlder, older)
+
+	if base := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); base != newer {
+		t.Fatalf("baseline = %s, want the last pushed commit %s", base, newer)
+	}
+	if !strings.Contains(newerOut, "queued") {
+		t.Errorf("the push that is the head must be graded: %s", newerOut)
+	}
+	if !strings.Contains(olderOut, "superseded") {
+		t.Errorf("the superseded push must say so: %s", olderOut)
+	}
+	for _, out := range []string{olderOut, newerOut} {
+		if strings.Contains(out, "baseline") {
+			t.Errorf("baseline bookkeeping must stay out of the push output: %s", out)
+		}
+	}
+}
+
+// TestGradePushSupersededPushIsNotGraded: the lock orders the handlers, but
+// not by the order their pushes arrived - each does its own work before
+// reaching it, so the handler of the older push can take it second. Grading
+// its commit then would diff backwards from the newer baseline, score content
+// the student has already replaced, and leave the marker on the abandoned
+// commit.
+func TestGradePushSupersededPushIsNotGraded(t *testing.T) {
+	s, work, _, user := newIntakeFixture(t)
+
+	solve := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(work, "tasks", "t1", "main.go"),
+			[]byte("package main // "+body+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	solve("v2")
+	oldOlder, older := push(t, work, "solve t1")
+	solve("v3")
+	oldNewer, newer := push(t, work, "improve t1")
+
+	// The newer push's handler takes the lock first and does the work.
+	if out := joined(s.dispatch(t.Context(), postReceive(oldNewer, newer))); !strings.Contains(out, "queued") {
+		t.Fatalf("the newer push must be graded: %s", out)
+	}
+	// The older one only gets there afterwards.
+	out := joined(s.dispatch(t.Context(), postReceive(oldOlder, older)))
+
+	if strings.Contains(out, "queued") {
+		t.Errorf("a superseded push must not be graded: %s", out)
+	}
+	if base := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); base != newer {
+		t.Fatalf("baseline = %s, want the head %s", base, newer)
+	}
+	subs, err := s.DB.ListByUserTask(t.Context(), user.ID, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sub := range subs {
+		if sub.CommitSHA != newer {
+			t.Errorf("submission #%d recorded %s, want the head %s", sub.ID, sub.CommitSHA, newer)
+		}
+	}
+}
+
+// TestGradePushConcurrentPushesAdmitAMarkerOnce pins the same defect in the
+// unit the student pays it in. An explicit [recheck <id>] marker is picked up
+// from the commit range behind the baseline, and the re-detection filter lets
+// it through by design, so a range two handlers both walk charges two attempts
+// for one marker.
+func TestGradePushConcurrentPushesAdmitAMarkerOnce(t *testing.T) {
+	s, work, _, user := newIntakeFixture(t)
+
+	// Neither push touches a task file, so t1 can only come from the marker.
+	notes := filepath.Join(work, "NOTES.md")
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(notes, []byte(body+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("one")
+	oldOlder, older := push(t, work, "notes [recheck t1]")
+	write("two")
+	oldNewer, newer := push(t, work, "more notes")
+
+	// The head's handler is the one that does the work, so it is the one
+	// parked; the superseded push queues up behind it on the student's lock.
+	racePushes(t, s, oldNewer, newer, oldOlder, older)
+
+	subs, err := s.DB.ListByUserTask(t.Context(), user.ID, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subs) != 1 {
+		t.Fatalf("one marker admitted %d times, want once", len(subs))
+	}
+}
+
+// TestGradePushConcurrentForcePushAdmitsAMarkerOnce: the two heads of a force
+// push are siblings, so neither reachability nor any other property of the
+// commits says which one arrived later. Serialization never has to answer
+// that: the second handler starts from the baseline the first one left and
+// walks only the range beyond it.
+func TestGradePushConcurrentForcePushAdmitsAMarkerOnce(t *testing.T) {
+	s, work, _, user := newIntakeFixture(t)
+
+	if err := os.WriteFile(filepath.Join(work, "tasks", "t2", "main.go"),
+		[]byte("package main // v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base, first := push(t, work, "solve t2")
+
+	// A sibling of the first commit, carrying the marker, force-pushed over it.
+	git(t, work, "reset", "--hard", base)
+	if err := os.WriteFile(filepath.Join(work, "NOTES.md"), []byte("two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := commitAll(t, work, "rewritten [recheck t1]")
+	git(t, work, "push", "--force", "origin", "main")
+
+	// The force-pushed sibling is the head, so its handler is the one parked;
+	// the commit it replaced queues up behind it.
+	racePushes(t, s, first, second, base, first)
+
+	subs, err := s.DB.ListByUserTask(t.Context(), user.ID, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subs) != 1 {
+		t.Fatalf("one marker admitted %d times, want once", len(subs))
+	}
+	if b := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); b != second {
+		t.Fatalf("baseline = %s, want the last pushed commit %s", b, second)
+	}
+}
+
+// TestGradePushAdvancesBaselineWithMissingObject covers the self-heal path for
+// a baseline whose object is gone: the diff falls back to the empty tree, but
+// the compare-and-swap still has to expect the value the ref store holds, or
+// the repo would never get a usable baseline back.
+func TestGradePushAdvancesBaselineWithMissingObject(t *testing.T) {
+	s, work, _, _ := newIntakeFixture(t)
+	studentDir := s.Repos.StudentDir("alice")
+
+	if err := os.WriteFile(filepath.Join(work, "tasks", "t1", "main.go"), []byte("package main // v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old, head := push(t, work, "solve t1")
+
+	// A commit reachable only from the baseline ref, then dropped from the
+	// object store: the ref still reads, every diff against it fails. Done
+	// after the push, the way it happens in the wild - receive-pack refuses
+	// to serve a repo that already has a dangling ref.
+	tree := git(t, studentDir, "rev-parse", "HEAD^{tree}")
+	dangling := git(t, studentDir, "-c", "user.name=t", "-c", "user.email=t@t",
+		"commit-tree", "-m", "gone", tree)
+	git(t, studentDir, "update-ref", "refs/anygrade/baseline", dangling)
+	if err := os.Remove(filepath.Join(studentDir, "objects", dangling[:2], dangling[2:])); err != nil {
+		t.Fatal(err)
+	}
+
+	out := joined(s.dispatch(t.Context(), postReceive(old, head)))
+
+	if !strings.Contains(out, "queued") {
+		t.Fatalf("the push must still be graded: %s", out)
+	}
+	if base := git(t, studentDir, "rev-parse", "refs/anygrade/baseline"); base != head {
+		t.Fatalf("baseline = %s, want %s - the repo cannot self-heal", base, head)
+	}
+}
+
+// TestGradePushReportsBrokenBaselineRef: only a lost race is silent. A ref
+// store that cannot take the write at all is still an error the student sees,
+// because their next push really does re-detect these changes.
+func TestGradePushReportsBrokenBaselineRef(t *testing.T) {
+	s, work, _, _ := newIntakeFixture(t)
+	studentDir := s.Repos.StudentDir("alice")
+
+	// refs/anygrade/baseline/x blocks refs/anygrade/baseline itself (git's
+	// D/F conflict), so update-ref fails for a reason that is not a mismatch.
+	git(t, studentDir, "update-ref", "-d", "refs/anygrade/baseline")
+	git(t, studentDir, "update-ref", "refs/anygrade/baseline/x", git(t, studentDir, "rev-parse", "HEAD"))
+
+	if err := os.WriteFile(filepath.Join(work, "tasks", "t1", "main.go"), []byte("package main // v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old, head := push(t, work, "solve t1")
+	out := joined(s.dispatch(t.Context(), postReceive(old, head)))
+
+	if !strings.Contains(out, "baseline update failed") {
+		t.Fatalf("a broken ref store must be reported, not taken for a race: %s", out)
+	}
+}
+
+// TestGradePushReportsBrokenBaselineContents: a ref file that does not hold a
+// resolvable object id fails with the same "cannot lock ref ... unable to
+// resolve reference" prefix a mismatch produces, but it is not a race - git
+// refuses to move such a ref, and refuses to delete it too, so the repo cannot
+// recover on its own. Taking it for a lost race would hide that forever while
+// every push re-detects every task.
+func TestGradePushReportsBrokenBaselineContents(t *testing.T) {
+	s, work, _, _ := newIntakeFixture(t)
+	studentDir := s.Repos.StudentDir("alice")
+
+	ref := filepath.Join(studentDir, "refs", "anygrade", "baseline")
+	if err := os.MkdirAll(filepath.Dir(ref), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ref, []byte("not-a-sha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(work, "tasks", "t1", "main.go"), []byte("package main // v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old, head := push(t, work, "solve t1")
+	out := joined(s.dispatch(t.Context(), postReceive(old, head)))
+
+	if !strings.Contains(out, "baseline update failed") {
+		t.Fatalf("a broken ref must be reported, not taken for a race: %s", out)
 	}
 }
 
