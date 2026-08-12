@@ -191,7 +191,7 @@ anygrade version
 
 ## Security
 
-- Student code is untrusted: the docker runner (one ephemeral container per check) applies memory/cpu/pids limits, no network by default, read-only base image, and a hard wall-clock timeout. Serving on a non-loopback address with any task on the local runner refuses to start unless `--allow-local-runner` is passed explicitly.
+- Student code is untrusted: the docker runner (one ephemeral container per submission) applies memory/cpu/pids limits, no network by default, read-only base image, a non-root user, a tmpfs workspace copied into the container instead of a host bind mount, and a hard wall-clock timeout. Serving on a non-loopback address with any task on the local runner refuses to start unless `--allow-local-runner` is passed explicitly.
 - Tokens and invite links are stored hashed; SSH is limited to git commands; failed logins are rate limited per client and login across git and the web.
 - Role checks on every route; students can only read their own submissions.
 

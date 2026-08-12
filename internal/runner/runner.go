@@ -19,8 +19,8 @@ import (
 // Job describes one submission run: all checks of one task over one assembled
 // workspace.
 type Job struct {
-	// WorkspaceDir is the assembled workspace root (bind-mounted at /work by
-	// the docker runner). Must be built by Assemble.
+	// WorkspaceDir is the assembled workspace root (copied into the docker
+	// runner's tmpfs /work). Must be built by Assemble.
 	WorkspaceDir string
 	// TaskRelDir is the task directory relative to WorkspaceDir (slash-
 	// separated); it is the working directory of every check command.
@@ -28,6 +28,12 @@ type Job struct {
 	Spec       config.ResolvedRunner
 	Checks     []config.Check // run in order
 	LogDir     string         // per-check log files are written here
+	// ExportWorkspace copies the container's /work back onto WorkspaceDir when
+	// the run finishes (docker runner only). The workspace lives in a tmpfs
+	// inside the container, so this is the only way files a check produced
+	// reach the host: `anygrade check --keep` asks for it, the server does not
+	// (it deletes the workspace right after the run).
+	ExportWorkspace bool
 }
 
 // Outcome is the result of one check.
@@ -50,8 +56,8 @@ type Runner interface {
 }
 
 // New returns the runner for spec.Type. dockerUser is the --user value for
-// containers ("" = image default; the server passes its service uid:gid on
-// Linux). mirror, when non-nil, receives a live copy of all check output.
+// containers ("" = the uid:gid of this process, see DockerRunner.userArg).
+// mirror, when non-nil, receives a live copy of all check output.
 func New(spec config.ResolvedRunner, dockerUser string, mirror io.Writer) (Runner, error) {
 	switch spec.Type {
 	case "local":
