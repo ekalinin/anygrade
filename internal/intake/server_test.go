@@ -334,6 +334,45 @@ func racePushes(t *testing.T, s *Server, firstOld, first, secondOld, second stri
 // push. Serialized, the second handler starts from the baseline the first one
 // left, and the ref ends on the last commit pushed.
 func TestGradePushSerializesConcurrentPushes(t *testing.T) {
+	s, work, _, _ := newIntakeFixture(t)
+
+	solve := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(work, "tasks", "t1", "main.go"),
+			[]byte("package main // "+body+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	solve("v2")
+	oldOlder, older := push(t, work, "solve t1")
+	solve("v3")
+	oldNewer, newer := push(t, work, "improve t1")
+
+	newerOut, olderOut := racePushes(t, s, oldNewer, newer, oldOlder, older)
+
+	if base := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); base != newer {
+		t.Fatalf("baseline = %s, want the last pushed commit %s", base, newer)
+	}
+	if !strings.Contains(newerOut, "queued") {
+		t.Errorf("the push that is the head must be graded: %s", newerOut)
+	}
+	if !strings.Contains(olderOut, "superseded") {
+		t.Errorf("the superseded push must say so: %s", olderOut)
+	}
+	for _, out := range []string{olderOut, newerOut} {
+		if strings.Contains(out, "baseline") {
+			t.Errorf("baseline bookkeeping must stay out of the push output: %s", out)
+		}
+	}
+}
+
+// TestGradePushSupersededPushIsNotGraded: the lock orders the handlers, but
+// not by the order their pushes arrived - each does its own work before
+// reaching it, so the handler of the older push can take it second. Grading
+// its commit then would diff backwards from the newer baseline, score content
+// the student has already replaced, and leave the marker on the abandoned
+// commit.
+func TestGradePushSupersededPushIsNotGraded(t *testing.T) {
 	s, work, _, user := newIntakeFixture(t)
 
 	solve := func(body string) {
@@ -348,67 +387,27 @@ func TestGradePushSerializesConcurrentPushes(t *testing.T) {
 	solve("v3")
 	oldNewer, newer := push(t, work, "improve t1")
 
-	olderOut, newerOut := racePushes(t, s, oldOlder, older, oldNewer, newer)
+	// The newer push's handler takes the lock first and does the work.
+	if out := joined(s.dispatch(t.Context(), postReceive(oldNewer, newer))); !strings.Contains(out, "queued") {
+		t.Fatalf("the newer push must be graded: %s", out)
+	}
+	// The older one only gets there afterwards.
+	out := joined(s.dispatch(t.Context(), postReceive(oldOlder, older)))
 
+	if strings.Contains(out, "queued") {
+		t.Errorf("a superseded push must not be graded: %s", out)
+	}
 	if base := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); base != newer {
-		t.Fatalf("baseline = %s, want the last pushed commit %s", base, newer)
-	}
-	for _, out := range []string{olderOut, newerOut} {
-		if !strings.Contains(out, "queued") {
-			t.Errorf("both pushes must be graded, this one was not: %s", out)
-		}
-		if strings.Contains(out, "baseline") {
-			t.Errorf("baseline bookkeeping must stay out of the push output: %s", out)
-		}
+		t.Fatalf("baseline = %s, want the head %s", base, newer)
 	}
 	subs, err := s.DB.ListByUserTask(t.Context(), user.ID, "t1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(subs) != 2 || subs[0].CommitSHA != older || subs[1].CommitSHA != newer {
-		t.Fatalf("want one submission per push, on its own commit: %+v", subs)
-	}
-}
-
-// TestGradePushRevertingPushIsStillGraded: the handler of an earlier push can
-// run after its successor, and the successor may undo exactly what it did. Its
-// range therefore has to be graded on its own - folded into the successor's,
-// the two cancel out and an accepted push that changed a task leaves no
-// submission at all (SPEC §13).
-func TestGradePushRevertingPushIsStillGraded(t *testing.T) {
-	s, work, _, user := newIntakeFixture(t)
-
-	solution := filepath.Join(work, "tasks", "t1", "main.go")
-	original, err := os.ReadFile(solution)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(solution, []byte("package main // v2\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	oldFirst, first := push(t, work, "solve t1")
-	if err := os.WriteFile(solution, original, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	oldSecond, second := push(t, work, "back to the template")
-
-	// The second push's handler goes first and has to recover the first's
-	// range before grading its own.
-	secondOut := joined(s.dispatch(t.Context(), postReceive(oldSecond, second)))
-	firstOut := joined(s.dispatch(t.Context(), postReceive(oldFirst, first)))
-
-	if !strings.Contains(firstOut, "already graded") {
-		t.Errorf("the late handler must find its range done, not redo it: %s", firstOut)
-	}
-	subs, err := s.DB.ListByUserTask(t.Context(), user.ID, "t1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(subs) != 2 || subs[0].CommitSHA != first || subs[1].CommitSHA != second {
-		t.Fatalf("want one submission per push, on its own commit: %+v (%s)", subs, secondOut)
-	}
-	if base := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); base != second {
-		t.Errorf("baseline = %s, want %s", base, second)
+	for _, sub := range subs {
+		if sub.CommitSHA != newer {
+			t.Errorf("submission #%d recorded %s, want the head %s", sub.ID, sub.CommitSHA, newer)
+		}
 	}
 }
 
@@ -433,9 +432,9 @@ func TestGradePushConcurrentPushesAdmitAMarkerOnce(t *testing.T) {
 	write("two")
 	oldNewer, newer := push(t, work, "more notes")
 
-	// The push carrying the marker is the one parked; the other queues up
-	// behind it on the student's lock.
-	racePushes(t, s, oldOlder, older, oldNewer, newer)
+	// The head's handler is the one that does the work, so it is the one
+	// parked; the superseded push queues up behind it on the student's lock.
+	racePushes(t, s, oldNewer, newer, oldOlder, older)
 
 	subs, err := s.DB.ListByUserTask(t.Context(), user.ID, "t1")
 	if err != nil {
@@ -468,9 +467,9 @@ func TestGradePushConcurrentForcePushAdmitsAMarkerOnce(t *testing.T) {
 	second := commitAll(t, work, "rewritten [recheck t1]")
 	git(t, work, "push", "--force", "origin", "main")
 
-	// The replaced commit is graded on its own range first; the sibling that
-	// force-pushed over it queues up behind on the student's lock.
-	racePushes(t, s, base, first, first, second)
+	// The force-pushed sibling is the head, so its handler is the one parked;
+	// the commit it replaced queues up behind it.
+	racePushes(t, s, first, second, base, first)
 
 	subs, err := s.DB.ListByUserTask(t.Context(), user.ID, "t1")
 	if err != nil {
@@ -620,18 +619,9 @@ func recordBothTasks(t *testing.T, s *Server, work string) (before string) {
 // rewindBaseline drops refs/anygrade/baseline back to an earlier commit: the
 // state a push leaves behind when it keeps the ref after a task fails to
 // record, and the state two concurrent hooks can leave behind on their own.
-// rewindBaseline puts the repo in the state a lagging baseline leaves behind:
-// the ref points at an earlier commit and the graded markers of the pushes in
-// between are gone. Both halves are needed to be faithful - every way a
-// baseline falls behind in the wild (a push kept after a processing error, a
-// repo provisioned before any of this existed) leaves no markers either.
 func rewindBaseline(t *testing.T, s *Server, to string) {
 	t.Helper()
-	dir := s.Repos.StudentDir("alice")
-	git(t, dir, "update-ref", "refs/anygrade/baseline", to)
-	for _, ref := range strings.Fields(git(t, dir, "for-each-ref", "--format=%(refname)", "refs/anygrade/graded")) {
-		git(t, dir, "update-ref", "-d", ref)
-	}
+	git(t, s.Repos.StudentDir("alice"), "update-ref", "refs/anygrade/baseline", to)
 }
 
 // TestGradePushSkipsAlreadyRecordedTask: a stale baseline re-detects every
@@ -682,10 +672,8 @@ func TestGradePushRegradesChangedTaskAfterRewind(t *testing.T) {
 	if err != nil || len(subs) != 2 || subs[1].CommitSHA != head {
 		t.Fatalf("t1 submissions: %+v err=%v", subs, err)
 	}
-	// The recovered range is graded on its own, and at its end both tasks
-	// still hold the content they were recorded at.
-	if !strings.Contains(out, "2 task(s) already graded") {
-		t.Errorf("the recovered range must be skipped wholesale: %s", out)
+	if !strings.Contains(out, "1 task(s) already graded") {
+		t.Errorf("t2 did not move and must still be skipped: %s", out)
 	}
 }
 
@@ -703,10 +691,8 @@ func TestGradePushRecheckMarkerBypassesSkip(t *testing.T) {
 	if err != nil || len(subs) != 2 {
 		t.Fatalf("t1 has %d submissions, want 2 - the marker must bypass the filter: %v", len(subs), err)
 	}
-	// t1 is skipped in the recovered range, where its content had not moved,
-	// and admitted in this push's own range, where the marker asks for it.
-	if !strings.Contains(out, "2 task(s) already graded") || !strings.Contains(out, "1 task(s) detected") {
-		t.Errorf("the marker must bring t1 back in this push's own range: %s", out)
+	if !strings.Contains(out, "1 task(s) already graded") {
+		t.Errorf("only t2 stayed skipped, the count must exclude t1: %s", out)
 	}
 }
 
@@ -716,8 +702,7 @@ func TestGradePushRecheckMarkerBypassesSkip(t *testing.T) {
 // that has files, including ones already graded.
 func TestGradePushSkipsRecordedTasksWithoutBaseline(t *testing.T) {
 	s, work, _, user := newIntakeFixture(t)
-	// Such a repo has no per-push markers either: it predates both refs.
-	rewindBaseline(t, s, recordBothTasks(t, s, work))
+	recordBothTasks(t, s, work)
 	git(t, s.Repos.StudentDir("alice"), "update-ref", "-d", "refs/anygrade/baseline")
 
 	if err := os.WriteFile(filepath.Join(work, "notes.md"), []byte("hi\n"), 0o644); err != nil {
