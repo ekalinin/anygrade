@@ -101,6 +101,7 @@ func TestE2E(t *testing.T) {
 	t.Run("serve --local", func(t *testing.T) { testServeLocal(t, e) })
 	t.Run("local self-check", func(t *testing.T) { testLocalSelfCheck(t, e) })
 	t.Run("force push after submission", func(t *testing.T) { testForcePushAfterSubmission(t, e) })
+	t.Run("tamper notes", func(t *testing.T) { testTamperNotes(t, e) })
 }
 
 // startEnv builds the course + hidden-tests fixtures, creates the teacher,

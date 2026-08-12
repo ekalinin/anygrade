@@ -47,7 +47,9 @@ func newIntakeFixture(t *testing.T) (s *Server, work string, courseSrc string, u
 	git(t, courseSrc, "init", "-b", "main")
 	files := map[string]string{
 		"course.yaml": "name: Intake course\nregistration:\n  mode: invite\n" +
-			"defaults:\n  runner:\n    type: local\n    timeout: 1m\n",
+			"defaults:\n  runner:\n    type: local\n    timeout: 1m\n" +
+			"  workspace:\n    include:\n      - go.mod\n",
+		"go.mod": "module course.example/intake\n",
 		"tasks/t1/task.yaml": "name: T1\nscore: 100\nsolution_files:\n  - main.go\n" +
 			"checks:\n  - name: run\n    weight: 1\n    run: \"true\"\n",
 		"tasks/t1/main.go": "package main\n",

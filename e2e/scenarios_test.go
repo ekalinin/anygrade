@@ -543,5 +543,35 @@ func testForcePushAfterSubmission(t *testing.T, e *env) {
 	}
 }
 
+// 15. tamper notes: a push that rewrites a workspace.include file and drops
+// the solution file is still graded against the authoritative course versions,
+// and the teacher sees both facts in the worker note (SPEC §6.1).
+func testTamperNotes(t *testing.T, e *env) {
+	// A syntactically broken include: were it not restored from the course
+	// repo, the task's `common` gate would fail and skip the rest.
+	writeFile(t, filepath.Join(e.aliceDir, "common.sh"), "if [\n")
+	if err := os.Remove(filepath.Join(e.aliceDir, "tasks", "sum", "sum.sh")); err != nil {
+		t.Fatalf("remove sum.sh: %v", err)
+	}
+	git(t, e.aliceDir, nil, "add", "-A")
+	git(t, e.aliceDir, nil, "commit", "-q", "-m", "tamper with common.sh, drop sum.sh")
+	out := git(t, e.aliceDir, nil, "push", "origin", "main")
+
+	body := pollSubmission(t, e.aliceClient, e, taskSubmissionID(t, out, "sum"))
+	for _, note := range []string{
+		"modified outside solution_files (restored): common.sh",
+		"solution file missing in the submitted commit (template used): tasks/sum/sum.sh",
+	} {
+		if !strings.Contains(body, note) {
+			t.Errorf("submission page missing worker note %q:\n%s", note, body)
+		}
+	}
+	// Nothing was skipped: both gates ran against the restored authoritative
+	// files, not against alice's versions.
+	if strings.Contains(body, "st-skipped") {
+		t.Errorf("a check was skipped: the authoritative files were not restored:\n%s", body)
+	}
+}
+
 // regexpRejected matches either push-rejection phrasing intake.go uses.
 var regexpRejected = regexp.MustCompile(`push rejected|validation failed`)

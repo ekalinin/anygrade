@@ -168,9 +168,11 @@ func (s GitSource) List(ctx context.Context, dir string) ([]string, error) {
 	return paths, nil
 }
 
-// lsTree maps repo-relative paths under dir to blob SHAs at the pinned commit.
-func (s GitSource) lsTree(ctx context.Context, dir string) (map[string]string, error) {
-	out, err := s.output(ctx, "ls-tree", "-r", s.Commit, "--", dir)
+// lsTree maps repo-relative paths under the given dirs (files are allowed too)
+// to blob SHAs at the pinned commit. Paths absent from the commit contribute
+// nothing, they are not an error.
+func (s GitSource) lsTree(ctx context.Context, dirs ...string) (map[string]string, error) {
+	out, err := s.output(ctx, append([]string{"ls-tree", "-r", s.Commit, "--"}, dirs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -190,16 +192,21 @@ func (s GitSource) lsTree(ctx context.Context, dir string) (map[string]string, e
 	return blobs, nil
 }
 
-// TamperNotes lists task-dir files the student changed outside solution_files
+// TamperNotes lists the files the student changed outside solution_files
 // (SPEC §6.1): workspace assembly silently restores the authoritative
-// versions, and the differences are surfaced to the teacher. Both sides are
-// read from their own repo, so no cross-repo git plumbing is needed.
-func TamperNotes(ctx context.Context, authoritative, student GitSource, taskRelDir string, solutionFiles []string) ([]string, error) {
-	course, err := authoritative.lsTree(ctx, taskRelDir)
+// versions, and the differences are surfaced to the teacher. The scan covers
+// the task dir and the workspace.include paths, which are restored the same
+// way even though they live outside the task dir. A solution file missing
+// from the submitted commit gets its own note: assembly keeps the
+// authoritative template, so the graded code is not the student's. Both sides
+// are read from their own repo, so no cross-repo git plumbing is needed.
+func TamperNotes(ctx context.Context, authoritative, student GitSource, taskRelDir string, solutionFiles, include []string) ([]string, error) {
+	scan := append([]string{taskRelDir}, include...)
+	course, err := authoritative.lsTree(ctx, scan...)
 	if err != nil {
 		return nil, err
 	}
-	mine, err := student.lsTree(ctx, taskRelDir)
+	mine, err := student.lsTree(ctx, scan...)
 	if err != nil {
 		return nil, err
 	}
@@ -222,9 +229,15 @@ func TamperNotes(ctx context.Context, authoritative, student GitSource, taskRelD
 		}
 	}
 	for p := range course {
-		if !solution[p] && mine[p] == "" {
-			notes = append(notes, fmt.Sprintf("deleted outside solution_files (restored): %s", p))
+		if mine[p] != "" {
+			continue
 		}
+		if solution[p] {
+			notes = append(notes, fmt.Sprintf(
+				"solution file missing in the submitted commit (template used): %s", p))
+			continue
+		}
+		notes = append(notes, fmt.Sprintf("deleted outside solution_files (restored): %s", p))
 	}
 	slices.Sort(notes)
 	return notes, nil

@@ -30,7 +30,14 @@ defaults:
     timeout: 60s
   deadline:
     penalty: {percent: 10, per: 24h, max_percent: 50}
+  workspace:
+    include:
+      - common.sh
 `
+
+// commonSh is the course-root shared file pulled into every workspace through
+// workspace.include (the shell course's analogue of a root go.mod).
+const commonSh = "# shared helpers\ncommon_ok() { return 0; }\n"
 
 const sumTaskYAML = `name: "Sum"
 score: 100
@@ -39,6 +46,10 @@ solution_files:
   - sum.sh
 
 checks:
+  - name: common
+    required: true
+    weight: 0
+    run: sh -n ../../common.sh
   - name: build
     required: true
     weight: 0
@@ -127,6 +138,7 @@ func writeCourseFixture(t *testing.T, root, hiddenDir string) string {
 	t.Helper()
 	dir := filepath.Join(root, "course")
 	writeFile(t, filepath.Join(dir, "course.yaml"), courseYAML)
+	writeFile(t, filepath.Join(dir, "common.sh"), commonSh)
 
 	writeFile(t, filepath.Join(dir, "tasks", "sum", "task.yaml"), sumTaskYAML)
 	writeFile(t, filepath.Join(dir, "tasks", "sum", "README.md"), sumReadme)
