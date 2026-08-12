@@ -19,7 +19,12 @@ type ctxKey int
 const userKey ctxKey = 0
 
 // currentUser reads the session cookie and resolves it to an active user.
+// In local mode (SPEC §8) there are no sessions: every request is the single
+// implicit user.
 func (h *Handler) currentUser(r *http.Request) (store.User, bool) {
+	if h.Local != nil {
+		return *h.Local, true
+	}
 	c, err := r.Cookie(sessionCookie)
 	if err != nil || c.Value == "" {
 		return store.User{}, false

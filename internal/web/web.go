@@ -44,6 +44,10 @@ type Handler struct {
 	// Limit, when non-nil, throttles failed logins (shared with git basic
 	// auth by the composition root).
 	Limit *ratelimit.Limiter
+	// Local, when non-nil, disables authentication and serves every request
+	// as this user (serve --local; the caller guarantees a loopback bind).
+	// The zero value is the secure one: only the composition root sets it.
+	Local *store.User
 }
 
 // New builds the site mux. Everything except /login, /invite, /register, and

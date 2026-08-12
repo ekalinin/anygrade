@@ -219,7 +219,7 @@ func (h *Handler) renderTokenOnce(w http.ResponseWriter, r *http.Request, login,
 	u, _ := h.currentUser(r)
 	h.renderPage(w, r, "token_once", tokenOnceData{
 		CourseName:   h.Course.Get().Resolved.Course.Name,
-		User:         userView{u.Login, u.DisplayName, u.Role},
+		User:         h.userViewOf(u),
 		Login:        login,
 		Token:        token,
 		WithGitSetup: withGit,

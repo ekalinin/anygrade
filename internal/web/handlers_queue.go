@@ -58,7 +58,7 @@ func (h *Handler) queuePage(w http.ResponseWriter, r *http.Request) {
 	}
 	h.renderPage(w, r, "queue", queueData{
 		CourseName: h.Course.Get().Resolved.Course.Name,
-		User:       userView{u.Login, u.DisplayName, u.Role},
+		User:       h.userViewOf(u),
 		Rows:       rows,
 	})
 }

@@ -75,7 +75,7 @@ func (h *Handler) submissionPage(w http.ResponseWriter, r *http.Request) {
 	u := user(r)
 	data := h.submissionData(sub, checks)
 	data.CourseName = h.Course.Get().Resolved.Course.Name
-	data.User = userView{u.Login, u.DisplayName, u.Role}
+	data.User = h.userViewOf(u)
 	h.renderPage(w, r, "submission", data)
 }
 

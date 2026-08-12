@@ -98,6 +98,7 @@ func TestE2E(t *testing.T) {
 	t.Run("teacher pushes course update", func(t *testing.T) { testTeacherCourseUpdate(t, e) })
 	t.Run("language switcher", func(t *testing.T) { testLanguageSwitcher(t, e) })
 	t.Run("auth and rate limit", func(t *testing.T) { testAuthAndRateLimit(t, e) })
+	t.Run("serve --local", func(t *testing.T) { testServeLocal(t, e) })
 	t.Run("local self-check", func(t *testing.T) { testLocalSelfCheck(t, e) })
 	t.Run("force push after submission", func(t *testing.T) { testForcePushAfterSubmission(t, e) })
 }

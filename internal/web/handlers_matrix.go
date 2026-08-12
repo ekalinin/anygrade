@@ -60,7 +60,7 @@ func (h *Handler) matrixPage(w http.ResponseWriter, r *http.Request) {
 	m.Rows = filterRows(m.Rows, m.Tasks, q, task, status)
 	h.renderPage(w, r, "matrix", matrixData{
 		CourseName: h.Course.Get().Resolved.Course.Name,
-		User:       userView{u.Login, u.DisplayName, u.Role},
+		User:       h.userViewOf(u),
 		Matrix:     m,
 		Q:          q,
 		Task:       task,
