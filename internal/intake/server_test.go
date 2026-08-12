@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ekalinin/anygrade/internal/gitserver"
 	"github.com/ekalinin/anygrade/internal/hookproto"
@@ -282,19 +283,58 @@ func (a *stallingAdmit) AdmitSubmission(ctx context.Context, ns store.NewSubmiss
 	return a.Store.AdmitSubmission(ctx, ns, decide)
 }
 
-// racePushes lands two pushes back to back and replays their hooks with one of
-// them finishing last: its handler is parked at the admission write until the
-// other push has been processed end to end. Both orders matter - the handlers
-// read the same baseline and can reach the swap in either order. Ordering is by
-// channel only, so the interleaving is the same on every run. Returns both
-// commits and the parked handler's push output.
-func racePushes(t *testing.T, s *Server, work string, stallNewer bool) (older, newer, stalledOut string) {
+// racePushes replays the hooks of two back-to-back pushes concurrently, with
+// the handler of the first parked at its admission write. It asserts on the way
+// that the second handler cannot get past the per-student lock while that
+// lasts, so the interleaving is the same on every run. Returns both outputs.
+func racePushes(t *testing.T, s *Server, firstOld, first, secondOld, second string) (firstOut, secondOut string) {
 	t.Helper()
-	stall := &stallingAdmit{Store: s.DB, entered: make(chan struct{}), release: make(chan struct{})}
+	stall := &stallingAdmit{Store: s.DB, commit: first,
+		entered: make(chan struct{}), release: make(chan struct{})}
 	// Both handles have to be swapped: gradePush reads through Server.DB and
 	// records through the queue's own store reference.
 	s.DB = stall
 	s.Queue.Store = stall
+
+	out1 := make(chan string, 1)
+	go func() { out1 <- joined(s.dispatch(t.Context(), postReceive(firstOld, first))) }()
+	select {
+	case <-stall.entered:
+	case <-time.After(60 * time.Second):
+		// The park never happened: the first push admits nothing, so it has no
+		// admission write to hold the lock at. This is a fuse against a
+		// mis-specified test, not a timing assertion, so it is set far above
+		// anything a loaded machine can need.
+		t.Fatal("the first push never reached its admission write")
+	}
+
+	out2 := make(chan string, 1)
+	go func() { out2 <- joined(s.dispatch(t.Context(), postReceive(secondOld, second))) }()
+
+	// The parked handler holds the student's lock, so the second one cannot
+	// read the baseline - let alone act on the range behind it - until the
+	// first is done. A handler that got through here would be reading a
+	// baseline that is about to change under it.
+	select {
+	case o := <-out2:
+		t.Fatalf("the second handler ran while the first was parked: %s", o)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	close(stall.release)
+	return <-out1, <-out2
+}
+
+// TestGradePushSerializesConcurrentPushes: hook connections are served
+// concurrently, but every handler of one student diffs from
+// refs/anygrade/baseline and then walks the range that starts there. Letting
+// two of them overlap means both read the same baseline, so both walk the same
+// range and both race to move the ref - and which commit it ends on depends on
+// who gets there first, which git topology cannot even settle after a force
+// push. Serialized, the second handler starts from the baseline the first one
+// left, and the ref ends on the last commit pushed.
+func TestGradePushSerializesConcurrentPushes(t *testing.T) {
+	s, work, _, _ := newIntakeFixture(t)
 
 	solve := func(body string) {
 		t.Helper()
@@ -308,98 +348,89 @@ func racePushes(t *testing.T, s *Server, work string, stallNewer bool) (older, n
 	solve("v3")
 	oldNewer, newer := push(t, work, "improve t1")
 
-	parkedOld, parked, freeOld, free := oldOlder, older, oldNewer, newer
-	if stallNewer {
-		parkedOld, parked, freeOld, free = oldNewer, newer, oldOlder, older
-	}
-	stall.commit = parked
-
-	// One handler is parked at its admission write, after it has read the
-	// baseline...
-	out := make(chan string, 1)
-	go func() { out <- joined(s.dispatch(t.Context(), postReceive(parkedOld, parked))) }()
-	<-stall.entered
-
-	// ...while the other runs to completion and takes the ref.
-	if o := joined(s.dispatch(t.Context(), postReceive(freeOld, free))); !strings.Contains(o, "queued") {
-		t.Fatalf("the unparked push must be graded: %s", o)
-	}
-	if base := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); base != free {
-		t.Fatalf("baseline = %s before the parked handler resumes, want %s", base, free)
-	}
-	close(stall.release)
-	return older, newer, <-out
-}
-
-// TestGradePushConcurrentPushesKeepNewestBaseline: hook connections are served
-// concurrently, so the handler of an older push can finish after the handler
-// of a newer one. It must not roll refs/anygrade/baseline back to its own
-// commit - the next push would diff from a rolled-back marker and re-walk a
-// range that was already processed.
-func TestGradePushConcurrentPushesKeepNewestBaseline(t *testing.T) {
-	s, work, _, _ := newIntakeFixture(t)
-
-	_, newer, out := racePushes(t, s, work, false)
+	olderOut, newerOut := racePushes(t, s, oldOlder, older, oldNewer, newer)
 
 	if base := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); base != newer {
-		t.Fatalf("baseline rolled back to %s, want the newer commit %s", base, newer)
+		t.Fatalf("baseline = %s, want the last pushed commit %s", base, newer)
 	}
-	if !strings.Contains(out, "queued") {
-		t.Errorf("the older push must still be graded: %s", out)
+	if !strings.Contains(olderOut, "queued") {
+		t.Errorf("the older push must still be graded: %s", olderOut)
 	}
-	// The changes are already processed: nothing for the student to act on.
-	if strings.Contains(out, "baseline") {
-		t.Errorf("a lost race must stay out of the push output: %s", out)
+	for _, out := range []string{olderOut, newerOut} {
+		if strings.Contains(out, "baseline") {
+			t.Errorf("baseline bookkeeping must stay out of the push output: %s", out)
+		}
 	}
 }
 
-// TestGradePushConcurrentPushesWithoutBaseline: a repo provisioned before the
-// baseline seed has no ref to compare against, and it is the one re-detecting
-// every task on every push - so the create must be guarded too, not written
-// blind.
-func TestGradePushConcurrentPushesWithoutBaseline(t *testing.T) {
-	s, work, _, _ := newIntakeFixture(t)
-	git(t, s.Repos.StudentDir("alice"), "update-ref", "-d", "refs/anygrade/baseline")
+// TestGradePushConcurrentPushesAdmitAMarkerOnce pins the same defect in the
+// unit the student pays it in. An explicit [recheck <id>] marker is picked up
+// from the commit range behind the baseline, and the re-detection filter lets
+// it through by design, so a range two handlers both walk charges two attempts
+// for one marker.
+func TestGradePushConcurrentPushesAdmitAMarkerOnce(t *testing.T) {
+	s, work, _, user := newIntakeFixture(t)
 
-	_, newer, out := racePushes(t, s, work, false)
-
-	if base := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); base != newer {
-		t.Fatalf("baseline = %s, want the newer commit %s", base, newer)
+	// Neither push touches a task file, so t1 can only come from the marker.
+	notes := filepath.Join(work, "NOTES.md")
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(notes, []byte(body+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if strings.Contains(out, "baseline") {
-		t.Errorf("a lost race must stay out of the push output: %s", out)
+	write("one")
+	oldOlder, older := push(t, work, "notes [recheck t1]")
+	write("two")
+	oldNewer, newer := push(t, work, "more notes")
+
+	racePushes(t, s, oldOlder, older, oldNewer, newer)
+
+	subs, err := s.DB.ListByUserTask(t.Context(), user.ID, "t1")
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-// TestGradePushConcurrentPushesAdvanceToNewest covers the other completion
-// order: the older handler reaches the swap first and puts its own commit on
-// the ref. Accepting that would strand the newer commit outside the baseline,
-// and the next push would re-walk its range - re-scanning it for
-// [recheck <id>] markers, which dropAlreadyRecorded deliberately lets through,
-// so every marker in that range charges a second attempt.
-func TestGradePushConcurrentPushesAdvanceToNewest(t *testing.T) {
-	s, work, _, _ := newIntakeFixture(t)
-
-	_, newer, out := racePushes(t, s, work, true)
-
-	if base := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); base != newer {
-		t.Fatalf("baseline = %s, want the newer commit %s", base, newer)
-	}
-	if strings.Contains(out, "baseline") {
-		t.Errorf("winning the retry must stay out of the push output: %s", out)
+	if len(subs) != 1 {
+		t.Fatalf("one marker admitted %d times, want once", len(subs))
 	}
 }
 
-// TestGradePushConcurrentPushesAdvanceWithoutBaseline: the same order on a repo
-// that had no baseline ref, where both handlers start from the zero SHA.
-func TestGradePushConcurrentPushesAdvanceWithoutBaseline(t *testing.T) {
-	s, work, _, _ := newIntakeFixture(t)
-	git(t, s.Repos.StudentDir("alice"), "update-ref", "-d", "refs/anygrade/baseline")
+// TestGradePushConcurrentForcePushAdmitsAMarkerOnce: the two heads of a force
+// push are siblings, so neither reachability nor any other property of the
+// commits says which one arrived later. Serialization never has to answer
+// that: the second handler starts from the baseline the first one left and
+// walks only the range beyond it.
+func TestGradePushConcurrentForcePushAdmitsAMarkerOnce(t *testing.T) {
+	s, work, _, user := newIntakeFixture(t)
 
-	_, newer, _ := racePushes(t, s, work, true)
+	// The first push touches t2 so that it has an admission write to be parked
+	// at; t2 is past its hard deadline, so it is recorded rejected and leaves
+	// t1 untouched.
+	if err := os.WriteFile(filepath.Join(work, "tasks", "t2", "main.go"),
+		[]byte("package main // v2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base, first := push(t, work, "solve t2")
 
-	if base := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); base != newer {
-		t.Fatalf("baseline = %s, want the newer commit %s", base, newer)
+	// A sibling of the first commit, carrying the marker, force-pushed over it.
+	git(t, work, "reset", "--hard", base)
+	if err := os.WriteFile(filepath.Join(work, "NOTES.md"), []byte("two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second := commitAll(t, work, "rewritten [recheck t1]")
+	git(t, work, "push", "--force", "origin", "main")
+
+	racePushes(t, s, base, first, first, second)
+
+	subs, err := s.DB.ListByUserTask(t.Context(), user.ID, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subs) != 1 {
+		t.Fatalf("one marker admitted %d times, want once", len(subs))
+	}
+	if b := git(t, s.Repos.StudentDir("alice"), "rev-parse", "refs/anygrade/baseline"); b != second {
+		t.Fatalf("baseline = %s, want the last pushed commit %s", b, second)
 	}
 }
 

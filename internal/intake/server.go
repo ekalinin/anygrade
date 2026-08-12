@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ekalinin/anygrade/internal/config"
@@ -44,6 +45,25 @@ type Server struct {
 	Course  *Holder
 	BaseURL string       // submission link prefix in push output; "" = no links
 	Log     *slog.Logger // server log for ref bookkeeping failures; nil = discard
+
+	mu        sync.Mutex             // guards pushLocks
+	pushLocks map[string]*sync.Mutex // per-student push serialization
+}
+
+// pushLock lazily creates (and reuses) the mutex that serializes the push
+// handlers of one student.
+func (s *Server) pushLock(login string) *sync.Mutex {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pushLocks == nil {
+		s.pushLocks = make(map[string]*sync.Mutex)
+	}
+	lock, ok := s.pushLocks[login]
+	if !ok {
+		lock = &sync.Mutex{}
+		s.pushLocks[login] = lock
+	}
+	return lock
 }
 
 // log returns the configured logger, or a discarding one so the zero value and
@@ -215,6 +235,21 @@ func (s *Server) processPush(ctx context.Context, req hookproto.Request) hookpro
 
 // gradePush handles one default-branch update.
 func (s *Server) gradePush(ctx context.Context, user store.User, dir, newSHA string, now time.Time) []string {
+	// Hook connections are served concurrently, but every handler of one
+	// student reads refs/anygrade/baseline and then walks the commit range
+	// that starts there. Overlapping handlers read the same baseline, so they
+	// walk overlapping ranges: an explicit [recheck <id>] marker inside the
+	// overlap is admitted by both of them, and each admission costs the
+	// student an attempt. They also race to move the ref, and which commit it
+	// ends on cannot be settled afterwards - git topology does not record the
+	// order pushes arrived in, and after a force push the two heads are not
+	// even related. Serializing the handlers of one student removes the whole
+	// question: each of them starts from the baseline its predecessor left.
+	// The wait is bounded by handleTimeout, which every exchange carries.
+	lock := s.pushLock(user.Login)
+	lock.Lock()
+	defer lock.Unlock()
+
 	c := s.Course.Get()
 
 	baseline := ""
@@ -333,50 +368,20 @@ func (s *Server) advanceBaseline(ctx context.Context, dir, oldSHA, newSHA string
 		return []string{"anygrade: baseline kept; the next push re-detects these changes"}
 	}
 	expected := cmp.Or(oldSHA, zeroSHA)
-	// A lost swap is retried rather than abandoned: the handlers finish in any
-	// order, so the push that took the ref may hold an older commit than ours.
-	// Leaving the newer commit outside the baseline is not harmless - the next
-	// push re-walks that range and re-scans it for [recheck <id>] markers,
-	// which the re-detection filter deliberately lets through, so every marker
-	// in it charges a second attempt. The loop is bounded: a ref that keeps
-	// moving under us is better left to its owner than spun on.
-	for range 3 {
-		_, err := gitserver.Git(ctx, dir, "update-ref", "refs/anygrade/baseline", newSHA, expected)
-		if err == nil {
+	if _, err := gitserver.Git(ctx, dir, "update-ref", "refs/anygrade/baseline", newSHA, expected); err != nil {
+		if staleBaseline(err) {
+			// Unreachable while the handlers of one student are serialized;
+			// kept as a backstop for a ref moved from outside this process,
+			// where the mutex does not reach. Whoever moved it walked these
+			// changes too, so the student has nothing to act on: log only.
+			s.log().Info("baseline left to a concurrent writer",
+				"repo", dir, "commit", newSHA, "expected", expected)
 			return nil
 		}
-		if !staleBaseline(err) {
-			s.log().Error("baseline update failed", "repo", dir, "commit", newSHA, "err", err)
-			return []string{"anygrade: baseline update failed; the next push re-detects these changes"}
-		}
-		cur, cerr := gitserver.Git(ctx, dir, "rev-parse", "--verify", "--quiet", "refs/anygrade/baseline")
-		if cerr != nil {
-			cur = "" // The ref went away under us: expect an absent one next.
-		}
-		if cur == newSHA {
-			return nil // Another handler already put our commit there.
-		}
-		if cur != "" && !isAncestor(ctx, dir, cur, newSHA) {
-			// The ref holds a commit ours does not descend from: a newer push,
-			// or a history the student rewrote. Either way its handler covers
-			// these changes too, and the student has nothing to act on.
-			s.log().Info("baseline left to a concurrent push",
-				"repo", dir, "commit", newSHA, "baseline", cur)
-			return nil
-		}
-		expected = cmp.Or(cur, zeroSHA)
+		s.log().Error("baseline update failed", "repo", dir, "commit", newSHA, "err", err)
+		return []string{"anygrade: baseline update failed; the next push re-detects these changes"}
 	}
-	s.log().Warn("baseline left after repeated concurrent updates",
-		"repo", dir, "commit", newSHA)
 	return nil
-}
-
-// isAncestor reports whether a is reachable from b, i.e. b is the later commit.
-// An object git cannot resolve is not an ancestor: the caller then leaves the
-// ref alone, which costs a re-detection and never a lost change.
-func isAncestor(ctx context.Context, dir, a, b string) bool {
-	_, err := gitserver.Git(ctx, dir, "merge-base", "--is-ancestor", a, b)
-	return err == nil
 }
 
 // staleBaselineReasons are the tails git appends to "cannot lock ref <ref>"
