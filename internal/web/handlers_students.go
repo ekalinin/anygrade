@@ -168,6 +168,11 @@ func (h *Handler) adminResetToken(w http.ResponseWriter, r *http.Request) {
 // adminDeleteKey removes one of the student's SSH keys (SPEC §10). The delete
 // is scoped to the target, not to the actor, so an id belonging to somebody
 // else 404s instead of touching another account's key.
+//
+// The form carries the fingerprint the teacher was shown, and the delete
+// matches on it: reading the key first and deleting it afterwards would leave
+// a window in which the student replaces that key, and a reused rowid would
+// then remove the new one while the audit named the old.
 func (h *Handler) adminDeleteKey(w http.ResponseWriter, r *http.Request) {
 	actor := user(r)
 	target, err := h.DB.GetUserByLogin(r.Context(), r.PathValue("login"))
@@ -180,23 +185,19 @@ func (h *Handler) adminDeleteKey(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	keys, err := h.DB.ListSSHKeys(r.Context(), target.ID)
+	fingerprint := r.FormValue("fingerprint")
+	ok, err := h.DB.DeleteSSHKey(r.Context(), target.ID, id, fingerprint)
 	if err != nil {
 		http.Error(w, "delete failed", http.StatusInternalServerError)
 		return
 	}
-	i := slices.IndexFunc(keys, func(k store.SSHKey) bool { return k.ID == id })
-	if i < 0 {
+	if !ok {
 		http.NotFound(w, r)
-		return
-	}
-	if err := h.DB.DeleteSSHKey(r.Context(), target.ID, id); err != nil {
-		http.Error(w, "delete failed", http.StatusInternalServerError)
 		return
 	}
 	_ = h.DB.Log(r.Context(), store.Event{
 		ActorID: &actor.ID, Kind: "key.delete", Target: target.Login,
-		Detail: keys[i].Fingerprint,
+		Detail: fingerprint,
 	})
 	http.Redirect(w, r, "/students/"+target.Login, http.StatusSeeOther)
 }

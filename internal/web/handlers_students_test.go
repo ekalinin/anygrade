@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -47,6 +48,16 @@ func newSession(t *testing.T, h *Handler, login, role string) (store.User, *http
 // do issues one request as the session owner.
 func do(h *Handler, method, target string, c *http.Cookie) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, target, nil)
+	req.AddCookie(c)
+	rec := httptest.NewRecorder()
+	New(h).ServeHTTP(rec, req)
+	return rec
+}
+
+// doForm is do with a urlencoded body, for the POSTs that carry form fields.
+func doForm(h *Handler, target string, c *http.Cookie, form url.Values) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(c)
 	rec := httptest.NewRecorder()
 	New(h).ServeHTTP(rec, req)
@@ -188,7 +199,23 @@ func TestAdminDeleteKey(t *testing.T) {
 		t.Fatalf("add bob key: %v", err)
 	}
 
-	rec := do(h, http.MethodPost, fmt.Sprintf("/students/alice/keys/%d/delete", aliceKey.ID), teacher)
+	aliceKeyURL := fmt.Sprintf("/students/alice/keys/%d/delete", aliceKey.ID)
+
+	// A stale fingerprint is a 404: the id may have been handed to a key the
+	// student added after the page was rendered (SQLite reuses freed rowids),
+	// and deleting that one would be the wrong key with a lying audit entry.
+	rec := doForm(h, aliceKeyURL, teacher, url.Values{"fingerprint": {"SHA256:stale"}})
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("stale-fingerprint delete: status %d, want 404", rec.Code)
+	}
+	if keys, _ := h.DB.ListSSHKeys(t.Context(), alice.ID); len(keys) != 1 {
+		t.Errorf("stale-fingerprint delete removed the key")
+	}
+	if events, _ := h.DB.ListEvents(t.Context(), "key.delete", "alice", 10, 0); len(events) != 0 {
+		t.Errorf("stale-fingerprint delete wrote %d audit events, want 0", len(events))
+	}
+
+	rec = doForm(h, aliceKeyURL, teacher, url.Values{"fingerprint": {aliceKey.Fingerprint}})
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/students/alice" {
 		t.Fatalf("delete: status %d, Location %q, want 303 to /students/alice",
 			rec.Code, rec.Header().Get("Location"))
@@ -212,7 +239,8 @@ func TestAdminDeleteKey(t *testing.T) {
 	}
 
 	// A key id belonging to somebody else is a 404, and bob keeps his key.
-	rec = do(h, http.MethodPost, fmt.Sprintf("/students/alice/keys/%d/delete", bobKey.ID), teacher)
+	rec = doForm(h, fmt.Sprintf("/students/alice/keys/%d/delete", bobKey.ID), teacher,
+		url.Values{"fingerprint": {bobKey.Fingerprint}})
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("cross-user delete: status %d, want 404", rec.Code)
 	}
@@ -236,5 +264,9 @@ func TestStudentPageRendersKeyDeleteForm(t *testing.T) {
 	body := do(h, http.MethodGet, "/students/alice", teacher).Body.String()
 	if want := fmt.Sprintf(`action="/students/alice/keys/%d/delete"`, key.ID); !strings.Contains(body, want) {
 		t.Errorf("student page has no key delete form (%s):\n%s", want, body)
+	}
+	// The form carries the fingerprint, which is what makes the delete safe.
+	if want := fmt.Sprintf(`name="fingerprint" value="%s"`, key.Fingerprint); !strings.Contains(body, want) {
+		t.Errorf("key delete form does not carry the fingerprint (%s):\n%s", want, body)
 	}
 }

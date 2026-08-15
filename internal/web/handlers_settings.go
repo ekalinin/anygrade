@@ -71,9 +71,16 @@ func (h *Handler) delOwnKey(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	// Scoped delete: a forged id cannot touch another user's key.
-	if err := h.DB.DeleteSSHKey(r.Context(), u.ID, id); err != nil {
+	// Scoped delete: a forged id cannot touch another user's key. The
+	// fingerprint pins it to the key the page actually showed, so a rowid
+	// reused by a key added meanwhile is not removed by a stale form.
+	ok, err := h.DB.DeleteSSHKey(r.Context(), u.ID, id, r.FormValue("fingerprint"))
+	if err != nil {
 		http.Error(w, "delete failed", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
 		return
 	}
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
