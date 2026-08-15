@@ -51,9 +51,39 @@
   </tbody>
 </table>
 
+<h2 id="submissions">{{t "task.submissions"}}</h2>
+<form method="get" action="/students/{{$login}}" class="filters">
+  <select name="task">
+    <option value="">{{t "matrix.any_task"}}</option>
+    {{range .Tasks}}<option value="{{.View.Task.ID}}" {{if eq $.TaskFilter .View.Task.ID}}selected{{end}}>{{.View.Task.ID}}</option>{{end}}
+  </select>
+  <button type="submit">{{t "common.filter"}}</button>
+  {{if .TaskFilter}}<a href="/students/{{$login}}">{{t "common.clear"}}</a>{{end}}
+</form>
+{{if .Subs}}
+<table class="history">
+  <thead><tr><th>#</th><th>{{t "common.task"}}</th><th>{{t "common.attempt"}}</th><th>{{t "common.status"}}</th><th>{{t "common.score"}}</th><th>{{t "common.received"}}</th><th></th></tr></thead>
+  <tbody>
+  {{range .Subs}}
+  <tr>
+    <td><a href="/submissions/{{.Sub.ID}}">#{{.Sub.ID}}</a></td>
+    <td>{{.TaskName}}</td>
+    <td>{{if .Sub.AttemptNo}}{{.Sub.AttemptNo}}{{else}}&mdash;{{end}}</td>
+    <td><span class="badge {{statusClass .Status}}">{{tStatus .Status}}</span></td>
+    <td>{{if .Sub.FinalScore}}{{score .Sub.FinalScore}}{{else}}&mdash;{{end}}</td>
+    <td>{{fmtTime .Sub.ReceivedAt}}</td>
+    <td><a href="/students/{{$login}}/submissions/{{.Sub.ID}}/code">{{t "student.code_link"}}</a></td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}<p class="hint">{{t "student.no_submissions"}}</p>{{end}}
+
 <h2>{{t "common.ssh_keys"}}</h2>
 {{if .Keys}}
-<ul>{{range .Keys}}<li><code>{{.Fingerprint}}</code> <span class="hint">{{t "common.added"}} {{fmtTime .CreatedAt}}</span></li>{{end}}</ul>
+<ul>{{range .Keys}}<li><code>{{.Fingerprint}}</code> <span class="hint">{{t "common.added"}} {{fmtTime .CreatedAt}}</span>
+  <form method="post" action="/students/{{$login}}/keys/{{.ID}}/delete" class="inline"><input type="hidden" name="fingerprint" value="{{.Fingerprint}}"><button type="submit" class="linklike">{{t "settings.remove"}}</button></form>
+</li>{{end}}</ul>
 {{else}}<p class="hint">{{t "common.no_keys"}}</p>{{end}}
 
 <h2>{{t "student.recent_activity"}}</h2>

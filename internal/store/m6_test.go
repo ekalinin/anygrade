@@ -223,8 +223,8 @@ func TestDeleteSSHKeyScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := db.DeleteSSHKey(t.Context(), b.ID, key.ID); err != nil {
-		t.Fatal(err)
+	if ok, err := db.DeleteSSHKey(t.Context(), b.ID, key.ID, key.Fingerprint); err != nil || ok {
+		t.Fatalf("cross-user delete = ok %v, err %v; want false/nil", ok, err)
 	}
 	keys, err := db.ListSSHKeys(t.Context(), a.ID)
 	if err != nil {
@@ -234,8 +234,17 @@ func TestDeleteSSHKeyScoped(t *testing.T) {
 		t.Fatalf("cross-user delete must not remove the key; got %d keys", len(keys))
 	}
 
-	if err := db.DeleteSSHKey(t.Context(), a.ID, key.ID); err != nil {
-		t.Fatal(err)
+	// A stale fingerprint must not delete whatever now holds that id: SQLite
+	// hands freed rowids to the next insert, so id alone is not an identity.
+	if ok, err := db.DeleteSSHKey(t.Context(), a.ID, key.ID, "SHA256:stale"); err != nil || ok {
+		t.Fatalf("stale-fingerprint delete = ok %v, err %v; want false/nil", ok, err)
+	}
+	if keys, err := db.ListSSHKeys(t.Context(), a.ID); err != nil || len(keys) != 1 {
+		t.Fatalf("stale-fingerprint delete removed the key; got %d keys, err %v", len(keys), err)
+	}
+
+	if ok, err := db.DeleteSSHKey(t.Context(), a.ID, key.ID, key.Fingerprint); err != nil || !ok {
+		t.Fatalf("owner delete = ok %v, err %v; want true/nil", ok, err)
 	}
 	keys, err = db.ListSSHKeys(t.Context(), a.ID)
 	if err != nil {

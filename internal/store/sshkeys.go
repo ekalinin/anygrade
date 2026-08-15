@@ -56,10 +56,21 @@ func (s *DB) UserByFingerprint(ctx context.Context, fingerprint string) (User, b
 
 // DeleteSSHKey implements UserStore; scoping to userID prevents cross-user
 // deletes from a forged form.
-func (s *DB) DeleteSSHKey(ctx context.Context, userID, keyID int64) error {
-	_, err := s.db.ExecContext(ctx,
-		`DELETE FROM ssh_keys WHERE id = ? AND user_id = ?`, keyID, userID)
-	return err
+//
+// The fingerprint is part of the predicate, not a courtesy check: id is a bare
+// INTEGER PRIMARY KEY, so SQLite hands a freed rowid to the next insert. A
+// delete that only matched (id, user_id) could therefore land on a key added
+// after the form was rendered. Matching the fingerprint the caller saw makes
+// the delete idempotent under that reuse - ok=false, nothing removed.
+func (s *DB) DeleteSSHKey(ctx context.Context, userID, keyID int64, fingerprint string) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM ssh_keys WHERE id = ? AND user_id = ? AND fingerprint = ?`,
+		keyID, userID, fingerprint)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 func scanSSHKey(row scanner) (SSHKey, error) {

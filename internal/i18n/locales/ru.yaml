@@ -154,6 +154,7 @@ student.score_placeholder: "балл"
 student.comment_placeholder: "комментарий"
 student.recent_activity: "Недавняя активность"
 student.action_col: "Действие"
+student.no_submissions: "Отправок нет."
 
 # code.html
 code.title: "Отправленный код"

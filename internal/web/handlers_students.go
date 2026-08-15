@@ -1,9 +1,12 @@
 package web
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
+	"strconv"
 
 	"github.com/ekalinin/anygrade/internal/intake"
 	"github.com/ekalinin/anygrade/internal/store"
@@ -34,6 +37,11 @@ type studentData struct {
 	User       userView
 	Student    store.User
 	Tasks      []studentTaskRow
+	// Subs is the submission list below the task table: every submission of
+	// the student, or - when TaskFilter is set - the (student, task) history
+	// the matrix drills down into. Newest first.
+	Subs       []studentSubRow
+	TaskFilter string
 	Keys       []store.SSHKey
 	Events     []store.EventRow
 	Flash      string
@@ -42,6 +50,12 @@ type studentData struct {
 type studentTaskRow struct {
 	View     TaskView
 	Override *store.ScoreOverride
+}
+
+type studentSubRow struct {
+	Sub      store.Submission
+	TaskName string
+	Status   string // display status incl. canceled/retrying/error
 }
 
 func (h *Handler) studentPage(w http.ResponseWriter, r *http.Request) {
@@ -66,6 +80,16 @@ func (h *Handler) studentPage(w http.ResponseWriter, r *http.Request) {
 			rows[i].Override = &ov
 		}
 	}
+	// ?task= narrows the list to one (student, task) pair; the URL is what a
+	// matrix cell links to, so it must stay stable.
+	taskFilter := r.URL.Query().Get("task")
+	listed := subs
+	if taskFilter != "" {
+		if listed, err = h.DB.ListByUserTask(r.Context(), target.ID, taskFilter); err != nil {
+			http.Error(w, "load failed", http.StatusInternalServerError)
+			return
+		}
+	}
 	keys, _ := h.DB.ListSSHKeys(r.Context(), target.ID)
 	events, _ := h.DB.ListEventsByTarget(r.Context(), target.Login, 20)
 
@@ -74,10 +98,33 @@ func (h *Handler) studentPage(w http.ResponseWriter, r *http.Request) {
 		User:       h.userViewOf(u),
 		Student:    target,
 		Tasks:      rows,
+		Subs:       studentSubRows(course, listed),
+		TaskFilter: taskFilter,
 		Keys:       keys,
 		Events:     events,
 		Flash:      r.URL.Query().Get("flash"),
 	})
+}
+
+// studentSubRows decorates submissions with the task name and the refined
+// display status, newest first (both store listings come out oldest first,
+// and ListByUser groups by task).
+func studentSubRows(course *intake.Course, subs []store.Submission) []studentSubRow {
+	rows := make([]studentSubRow, len(subs))
+	for i, s := range subs {
+		name := s.TaskID // task deleted: history stays visible (SPEC §13)
+		if t, _, ok := course.Task(s.TaskID); ok {
+			name = t.Name
+		}
+		rows[i] = studentSubRow{Sub: s, TaskName: name, Status: subDisplayStatus(s)}
+	}
+	slices.SortStableFunc(rows, func(a, b studentSubRow) int {
+		if c := b.Sub.ReceivedAt.Compare(a.Sub.ReceivedAt); c != 0 {
+			return c
+		}
+		return cmp.Compare(b.Sub.ID, a.Sub.ID)
+	})
+	return rows
 }
 
 func (h *Handler) teacherRecheck(w http.ResponseWriter, r *http.Request) {
@@ -116,6 +163,43 @@ func (h *Handler) adminResetToken(w http.ResponseWriter, r *http.Request) {
 		ActorID: &actor.ID, Kind: "token.reset", Target: target.Login, Detail: "by teacher",
 	})
 	h.renderTokenOnce(w, r, target.Login, token, false)
+}
+
+// adminDeleteKey removes one of the student's SSH keys (SPEC §10). The delete
+// is scoped to the target, not to the actor, so an id belonging to somebody
+// else 404s instead of touching another account's key.
+//
+// The form carries the fingerprint the teacher was shown, and the delete
+// matches on it: reading the key first and deleting it afterwards would leave
+// a window in which the student replaces that key, and a reused rowid would
+// then remove the new one while the audit named the old.
+func (h *Handler) adminDeleteKey(w http.ResponseWriter, r *http.Request) {
+	actor := user(r)
+	target, err := h.DB.GetUserByLogin(r.Context(), r.PathValue("login"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	fingerprint := r.FormValue("fingerprint")
+	ok, err := h.DB.DeleteSSHKey(r.Context(), target.ID, id, fingerprint)
+	if err != nil {
+		http.Error(w, "delete failed", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	_ = h.DB.Log(r.Context(), store.Event{
+		ActorID: &actor.ID, Kind: "key.delete", Target: target.Login,
+		Detail: fingerprint,
+	})
+	http.Redirect(w, r, "/students/"+target.Login, http.StatusSeeOther)
 }
 
 func (h *Handler) adminSetState(w http.ResponseWriter, r *http.Request) {
