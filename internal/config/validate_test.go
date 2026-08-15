@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateFixtureOK(t *testing.T) {
@@ -166,6 +167,40 @@ func TestValidateLanguage(t *testing.T) {
 	for _, ok := range []string{"", "en", "ru"} {
 		if hasFieldError(Validate(base(ok)), "language") {
 			t.Errorf("language %q should not raise a language error", ok)
+		}
+	}
+}
+
+// TestValidateTimezone covers the course-level timezone rule: a name
+// time.LoadLocation cannot resolve is an error; empty and IANA names are
+// accepted.
+func TestValidateTimezone(t *testing.T) {
+	base := func(tz string) *Resolved {
+		return &Resolved{
+			Course:    ResolvedCourse{Name: "C", TasksDir: "tasks", Registration: Registration{Mode: "invite"}, ScoringPolicy: "best"},
+			rawCourse: &Course{Name: "C", Registration: Registration{Mode: "invite"}, Timezone: tz},
+		}
+	}
+	if !hasFieldError(Validate(base("Mars/Olympus")), "timezone") {
+		t.Errorf("timezone: Mars/Olympus should raise a timezone error")
+	}
+	for _, ok := range []string{"", "UTC", "Europe/Berlin"} {
+		if hasFieldError(Validate(base(ok)), "timezone") {
+			t.Errorf("timezone %q should not raise a timezone error", ok)
+		}
+	}
+}
+
+// TestResolveCourseTimezone pins the resolution side: a valid name loads, and
+// both "unset" and "unloadable" fall back to UTC so Resolved is always usable
+// (the error surfaces through Validate, not here).
+func TestResolveCourseTimezone(t *testing.T) {
+	if got := resolveCourse(&Course{Timezone: "Europe/Berlin"}).Timezone; got.String() != "Europe/Berlin" {
+		t.Errorf("timezone Europe/Berlin resolved to %q", got)
+	}
+	for _, tz := range []string{"", "Mars/Olympus"} {
+		if got := resolveCourse(&Course{Timezone: tz}).Timezone; got != time.UTC {
+			t.Errorf("timezone %q resolved to %q, want UTC", tz, got)
 		}
 	}
 }

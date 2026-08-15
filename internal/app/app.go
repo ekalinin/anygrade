@@ -89,6 +89,9 @@ func Run(ctx context.Context, opts Options) error {
 
 	holder := &intake.Holder{}
 	holder.Set(course)
+	// Read through the holder, not off `course`: a teacher metadata push swaps
+	// the snapshot, and the UI must follow the new `timezone:` (SPEC §13).
+	web.SetTimezoneSource(func() *time.Location { return holder.Get().Resolved.Course.Timezone })
 
 	// Both are nil unless --local: the zero value keeps git auth and web
 	// sessions on. checkServeSafety above has already refused a non-loopback

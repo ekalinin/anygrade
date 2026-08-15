@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ekalinin/anygrade/internal/i18n"
@@ -26,6 +27,30 @@ func staticHandler() http.Handler {
 	return http.FileServerFS(sub)
 }
 
+// courseTZ holds the lookup for the course display timezone (SPEC §13: the UI
+// renders in the course timezone). It is package state rather than page data
+// for the same reason `version` is: timestamps live in partials shared by every
+// page, so each page struct would otherwise have to carry the location. Storing
+// the lookup instead of the location itself means a teacher metadata push that
+// changes `timezone:` is picked up without a restart.
+var courseTZ atomic.Pointer[func() *time.Location]
+
+// SetTimezoneSource installs the course display-timezone lookup; the
+// composition root is the only caller.
+func SetTimezoneSource(fn func() *time.Location) { courseTZ.Store(&fn) }
+
+// displayTZ is the location fmtTime renders in. Until a source is installed
+// (tests, non-server commands) it is UTC, so output never depends on the
+// machine's local zone.
+func displayTZ() *time.Location {
+	if fn := courseTZ.Load(); fn != nil {
+		if loc := (*fn)(); loc != nil {
+			return loc
+		}
+	}
+	return time.UTC
+}
+
 // localeFuncs builds the template FuncMap bound to one locale. The locale-free
 // helpers (fmtTime, score, statusClass, dict) are the same for every locale;
 // the translation helpers (t, tFlash, tStatus, countdown) close over the
@@ -34,7 +59,7 @@ func localeFuncs(lang string) template.FuncMap {
 	tr := i18n.For(lang)
 	return template.FuncMap{
 		"fmtTime": func(t any) string {
-			return withTime(t, func(v time.Time) string { return v.Local().Format("2006-01-02 15:04") })
+			return withTime(t, func(v time.Time) string { return v.In(displayTZ()).Format("2006-01-02 15:04") })
 		},
 		"countdown": func(t any) string {
 			return withTime(t, func(v time.Time) string { return countdown(v, time.Now(), tr) })
