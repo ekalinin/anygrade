@@ -1,5 +1,6 @@
 {{define "content"}}
 <p class="crumbs"><a href="/">{{t "common.tasks_crumb"}}</a> / <a href="/tasks/{{.Sub.TaskID}}">{{.TaskName}}</a> / {{t "submission.crumb"}} #{{.Sub.ID}}</p>
+{{if .Flash}}<p class="flash">{{tFlash .Flash}}</p>{{end}}
 <div {{if .Running}}hx-ext="sse" sse-connect="/submissions/{{.Sub.ID}}/stream"{{end}}>
   <h1>{{t "submission.title"}} #{{.Sub.ID}}
     <span id="sub-status" {{if .Running}}sse-swap="status" hx-swap="innerHTML"{{end}}>

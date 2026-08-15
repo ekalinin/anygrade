@@ -15,8 +15,8 @@ import (
 
 // Rechecker is the intake surface web needs (satisfied by *intake.Server).
 type Rechecker interface {
-	Recheck(ctx context.Context, userID int64, taskID string) (store.Submission, queue.Decision, error)
-	TeacherRecheck(ctx context.Context, actor store.User, targetUserID int64, taskID string) (store.Submission, error)
+	Recheck(ctx context.Context, userID int64, taskID string) (store.Submission, queue.Decision, intake.RecheckWarning, error)
+	TeacherRecheck(ctx context.Context, actor store.User, targetUserID int64, taskID string) (store.Submission, intake.RecheckWarning, error)
 }
 
 // Canceler aborts queued/running submissions (satisfied by *queue.Queue).
@@ -86,6 +86,7 @@ func New(h *Handler) http.Handler {
 	mux.Handle("GET /queue", h.requireTeacher(h.queuePage))
 	mux.Handle("GET /queue/stream", h.requireTeacher(h.queueStream))
 	mux.Handle("POST /queue/{id}/cancel", h.requireTeacher(h.cancelSubmission))
+	mux.Handle("POST /queue/{id}/recheck", h.requireTeacher(h.recheckSubmission))
 	mux.Handle("GET /students", h.requireTeacher(h.studentsPage))
 	mux.Handle("GET /students/{login}", h.requireTeacher(h.studentPage))
 	mux.Handle("POST /students/{login}/tasks/{id}/recheck", h.requireTeacher(h.teacherRecheck))

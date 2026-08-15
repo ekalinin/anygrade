@@ -9,5 +9,8 @@
     {{if or (eq .Sub.Status "queued") (eq .Sub.Status "running")}}
     <form method="post" action="/queue/{{.Sub.ID}}/cancel" class="inline"><button type="submit" class="linklike">{{t "common.cancel"}}</button></form>
     {{end}}
+    {{if .CanRecheck}}
+    <form method="post" action="/queue/{{.Sub.ID}}/recheck" class="inline"><button type="submit" class="linklike">{{t "common.recheck"}}</button></form>
+    {{end}}
   </td>
 </tr>{{end}}

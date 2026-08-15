@@ -94,6 +94,7 @@ flash.invalid_login: "invalid login: lowercase letters, digits, ._- only"
 flash.login_taken: "login already taken"
 flash.key_already_registered: "key already registered"
 flash.nothing_to_recheck: "nothing to recheck"
+flash.commit_not_pinned: "recheck queued, but the commit could not be pinned: a force push can still drop it"
 
 # login.html
 login.title: "Sign in"

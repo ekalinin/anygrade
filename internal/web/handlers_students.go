@@ -3,7 +3,6 @@ package web
 import (
 	"cmp"
 	"errors"
-	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -126,14 +125,14 @@ func (h *Handler) teacherRecheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	taskID := r.PathValue("id")
-	sub, err := h.Recheck.TeacherRecheck(r.Context(), actor, target.ID, taskID)
+	sub, warn, err := h.Recheck.TeacherRecheck(r.Context(), actor, target.ID, taskID)
 	switch {
 	case errors.Is(err, intake.ErrNothingToRecheck):
 		http.Redirect(w, r, "/students/"+target.Login+"?flash=nothing_to_recheck", http.StatusSeeOther)
 	case err != nil:
 		http.Error(w, "recheck failed", http.StatusInternalServerError)
 	default:
-		http.Redirect(w, r, fmt.Sprintf("/submissions/%d", sub.ID), http.StatusSeeOther)
+		http.Redirect(w, r, submissionURL(sub.ID, warn), http.StatusSeeOther)
 	}
 }
 

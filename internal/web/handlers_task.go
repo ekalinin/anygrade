@@ -3,7 +3,6 @@ package web
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"html/template"
 	"net/http"
 	"time"
@@ -103,7 +102,7 @@ func (h *Handler) taskPage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) taskRecheck(w http.ResponseWriter, r *http.Request) {
 	u := user(r)
 	taskID := r.PathValue("id")
-	sub, d, err := h.Recheck.Recheck(r.Context(), u.ID, taskID)
+	sub, d, warn, err := h.Recheck.Recheck(r.Context(), u.ID, taskID)
 	switch {
 	case errors.Is(err, intake.ErrNothingToRecheck):
 		http.Redirect(w, r, "/tasks/"+taskID+"?flash=nothing_to_recheck", http.StatusSeeOther)
@@ -112,6 +111,6 @@ func (h *Handler) taskRecheck(w http.ResponseWriter, r *http.Request) {
 	case !d.Admit:
 		http.Redirect(w, r, "/tasks/"+taskID+"?flash="+template.URLQueryEscaper(d.RejectReason), http.StatusSeeOther)
 	default:
-		http.Redirect(w, r, fmt.Sprintf("/submissions/%d", sub.ID), http.StatusSeeOther)
+		http.Redirect(w, r, submissionURL(sub.ID, warn), http.StatusSeeOther)
 	}
 }
