@@ -111,6 +111,7 @@ task.submissions: "Отправки"
 task.recheck_latest: "перепроверить последнюю"
 task.recheck_disabled_title: "нечего перепроверять или достигнут лимит"
 task.no_submissions: "Пока нет отправок: запушьте решение в свой персональный репозиторий."
+task.override_note: "выставлено преподавателем"
 
 # submission.html
 submission.title: "Отправка"
@@ -134,6 +135,7 @@ matrix.filter_placeholder: "логин или имя"
 matrix.any_task: "любая задача"
 matrix.any_status: "любой статус"
 matrix.override_title: "оценка преподавателя"
+matrix.latest_title: "последняя отправка"
 
 # queue.html
 queue.title: "Очередь"
@@ -152,6 +154,7 @@ student.code_link: "код"
 student.set: "задать"
 student.score_placeholder: "балл"
 student.comment_placeholder: "комментарий"
+student.comment_required: "для оценки вручную нужен комментарий"
 student.recent_activity: "Недавняя активность"
 student.action_col: "Действие"
 student.no_submissions: "Отправок нет."

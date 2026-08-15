@@ -36,7 +36,7 @@ type studentData struct {
 	CourseName string
 	User       userView
 	Student    store.User
-	Tasks      []studentTaskRow
+	Tasks      []TaskView
 	// Subs is the submission list below the task table: every submission of
 	// the student, or - when TaskFilter is set - the (student, task) history
 	// the matrix drills down into. Newest first.
@@ -45,11 +45,6 @@ type studentData struct {
 	Keys       []store.SSHKey
 	Events     []store.EventRow
 	Flash      string
-}
-
-type studentTaskRow struct {
-	View     TaskView
-	Override *store.ScoreOverride
 }
 
 type studentSubRow struct {
@@ -70,15 +65,10 @@ func (h *Handler) studentPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "load failed", http.StatusInternalServerError)
 		return
 	}
-	course := h.Course.Get()
-	views := buildDashboard(course, subs)
-	rows := make([]studentTaskRow, len(views))
-	for i, v := range views {
-		rows[i] = studentTaskRow{View: v}
-		if o, ok, err := h.DB.GetScoreOverride(r.Context(), target.ID, v.Task.ID); err == nil && ok {
-			ov := o
-			rows[i].Override = &ov
-		}
+	overrides, err := h.userOverrides(r.Context(), target.ID)
+	if err != nil {
+		http.Error(w, "load failed", http.StatusInternalServerError)
+		return
 	}
 	// ?task= narrows the list to one (student, task) pair; the URL is what a
 	// matrix cell links to, so it must stay stable.
@@ -90,6 +80,7 @@ func (h *Handler) studentPage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	course := h.Course.Get()
 	keys, _ := h.DB.ListSSHKeys(r.Context(), target.ID)
 	events, _ := h.DB.ListEventsByTarget(r.Context(), target.Login, 20)
 
@@ -97,7 +88,7 @@ func (h *Handler) studentPage(w http.ResponseWriter, r *http.Request) {
 		CourseName: course.Resolved.Course.Name,
 		User:       h.userViewOf(u),
 		Student:    target,
-		Tasks:      rows,
+		Tasks:      buildDashboard(course, subs, overrides),
 		Subs:       studentSubRows(course, listed),
 		TaskFilter: taskFilter,
 		Keys:       keys,

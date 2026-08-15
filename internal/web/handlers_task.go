@@ -58,6 +58,11 @@ func (h *Handler) taskPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "load failed", http.StatusInternalServerError)
 		return
 	}
+	override, err := h.taskOverride(r.Context(), u.ID, task.ID)
+	if err != nil {
+		http.Error(w, "load failed", http.StatusInternalServerError)
+		return
+	}
 
 	statement := template.HTML("<p>(no README.md in the task directory)</p>")
 	if raw, ok, err := h.ReadCourseFile(r.Context(), course.Head, relDir+"/README.md"); err == nil && ok {
@@ -82,7 +87,7 @@ func (h *Handler) taskPage(w http.ResponseWriter, r *http.Request) {
 	h.renderPage(w, r, "task", taskData{
 		CourseName: course.Resolved.Course.Name,
 		User:       h.userViewOf(u),
-		View:       buildTaskView(task, history, course.Resolved.Course.ScoringPolicy),
+		View:       buildTaskView(task, history, course.Resolved.Course.ScoringPolicy, override),
 		Statement:  statement,
 		History:    rows,
 		Quota: quotaView{

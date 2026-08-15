@@ -1,11 +1,83 @@
 package web
 
 import (
+	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/ekalinin/anygrade/internal/gradebook"
 	"github.com/ekalinin/anygrade/internal/store"
 )
+
+// historyHref is the (student, task) drill-down a matrix cell points at.
+const historyHref = `href="/students/alice?task=t1#submissions"`
+
+// TestMatrixRowCellDrillDown: the cell score links to the whole history of the
+// pair, and the arrow still links straight to the latest submission. This is
+// the partial matrixStream re-renders, so it covers the SSE path as well.
+func TestMatrixRowCellDrillDown(t *testing.T) {
+	data := matrixRowData{
+		Row: gradebook.Row{
+			User: store.User{Login: "alice", State: "active"},
+			Cells: map[string]gradebook.Cell{
+				"t1": {Status: gradebook.StatusPassed, Display: 10, LatestSubID: 7},
+			},
+		},
+		Tasks: []gradebook.TaskCol{{ID: "t1", Name: "Task one", MaxScore: 10}},
+	}
+	html, err := renderPartial("en", "matrix-row", data)
+	if err != nil {
+		t.Fatalf("render matrix-row: %v", err)
+	}
+	if !strings.Contains(html, historyHref) {
+		t.Errorf("cell does not link to the history page (%s):\n%s", historyHref, html)
+	}
+	if want := `href="/submissions/7"`; !strings.Contains(html, want) {
+		t.Errorf("the arrow no longer links to the latest submission (%s):\n%s", want, html)
+	}
+}
+
+// TestMatrixRowUntouchedCellHasNoLinks: a task the student never touched has
+// nothing to drill into.
+func TestMatrixRowUntouchedCellHasNoLinks(t *testing.T) {
+	data := matrixRowData{
+		Row: gradebook.Row{
+			User:  store.User{Login: "alice", State: "active"},
+			Cells: map[string]gradebook.Cell{"t1": {}},
+		},
+		Tasks: []gradebook.TaskCol{{ID: "t1", Name: "Task one", MaxScore: 10}},
+	}
+	html, err := renderPartial("en", "matrix-row", data)
+	if err != nil {
+		t.Fatalf("render matrix-row: %v", err)
+	}
+	if strings.Contains(html, historyHref) || strings.Contains(html, `href="/submissions/`) {
+		t.Errorf("an untouched cell should have no drill-down links:\n%s", html)
+	}
+}
+
+// TestMatrixPageCellDrillDown: the same links reach the teacher through the
+// full page render, not just the partial.
+func TestMatrixPageCellDrillDown(t *testing.T) {
+	h, _ := newTestSite(t)
+	setCourse(h)
+	_, teacher := newSession(t, h, "teacher", "teacher")
+	alice, _ := newSession(t, h, "alice", "student")
+	id := enqueue(t, h, alice.ID, "t1", time.Now())
+
+	rec := do(h, http.MethodGet, "/matrix", teacher)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /matrix: status %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, historyHref) {
+		t.Errorf("matrix page cell does not link to the history page (%s):\n%s", historyHref, body)
+	}
+	if want := `href="/submissions/1"`; !strings.Contains(body, want) || id != 1 {
+		t.Errorf("matrix page lost the latest-submission arrow (%s, id %d):\n%s", want, id, body)
+	}
+}
 
 func TestFilterRows(t *testing.T) {
 	tasks := []gradebook.TaskCol{{ID: "t1", MaxScore: 10}, {ID: "t2", MaxScore: 10}}
