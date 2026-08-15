@@ -138,6 +138,7 @@ matrix.filter_placeholder: "login or name"
 matrix.any_task: "any task"
 matrix.any_status: "any status"
 matrix.override_title: "teacher override"
+matrix.latest_title: "latest submission"
 
 # queue.html
 queue.title: "Queue"
