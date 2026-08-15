@@ -193,6 +193,59 @@ func TestSubmitCooldownUnderRace(t *testing.T) {
 	}
 }
 
+// TestSubmitStoresRejectReason: the reason the policy computed reaches the row,
+// not only the push output - the submission page has nothing else to show for a
+// rejection. English by SPEC §10.1: it is written at submission time.
+func TestSubmitStoresRejectReason(t *testing.T) {
+	q, db, u, _ := newTestQueue(t)
+	now := time.Now()
+	hard := now.Add(-time.Hour)
+
+	cases := []struct {
+		taskID string
+		task   config.ResolvedTask
+		before int // counting submissions already recorded for the task
+		status string
+		want   string
+	}{
+		{"deadline", policyTask(0, 0, &hard), 0, store.StatusRejectedDeadline,
+			"hard deadline passed (" + hard.Format("2006-01-02 15:04 -07") + ")"},
+		{"limit", policyTask(1, 0, nil), 1, store.StatusRejectedLimit,
+			"attempt limit reached (1 of 1)"},
+	}
+	for _, c := range cases {
+		t.Run(c.taskID, func(t *testing.T) {
+			for i := range c.before {
+				if _, err := db.Enqueue(t.Context(), store.NewSubmission{
+					UserID: u.ID, TaskID: c.taskID, CommitSHA: fmt.Sprintf("old%d", i),
+					ReceivedAt: now.Add(-time.Hour), Counts: true,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sub, d, err := q.Submit(t.Context(), c.task, store.NewSubmission{
+				UserID: u.ID, TaskID: c.taskID, CommitSHA: "new", ReceivedAt: now,
+			}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sub.Status != c.status || d.RejectStatus != c.status {
+				t.Fatalf("status %q (decision %q), want %q", sub.Status, d.RejectStatus, c.status)
+			}
+			if d.RejectReason != c.want {
+				t.Fatalf("decision reason = %q, want %q", d.RejectReason, c.want)
+			}
+			got, _, err := db.GetSubmission(t.Context(), sub.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.WorkerNote != c.want {
+				t.Errorf("stored note = %q, want %q", got.WorkerNote, c.want)
+			}
+		})
+	}
+}
+
 // TestPipelineScoresAndPersists: full pipeline over the local runner, with the
 // penalty computed at received_at (2 intervals late at enqueue time).
 func TestPipelineScoresAndPersists(t *testing.T) {

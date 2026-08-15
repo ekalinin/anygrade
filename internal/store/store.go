@@ -191,6 +191,7 @@ type SubmissionResult struct {
 type Admission struct {
 	Admit        bool
 	RejectStatus string // StatusRejectedDeadline | StatusRejectedLimit when !Admit
+	RejectReason string // stored as the rejected row's note, English (SPEC §10.1)
 	Counts       bool   // false = does not consume an attempt or start a cooldown
 }
 

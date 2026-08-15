@@ -166,11 +166,32 @@ func testHardDeadline(t *testing.T, e *env) {
 		t.Fatalf("push output should not queue the late task:\n%s", out)
 	}
 
+	// The rejection is durable: the submission page explains it, not just the
+	// push output the student has already scrolled past.
+	status, page := get(t, e.aliceClient, e.baseURL+"/tasks/late")
+	if status != http.StatusOK {
+		t.Fatalf("GET /tasks/late: status %d", status)
+	}
+	m := reSubmissionLink.FindStringSubmatch(page)
+	if m == nil {
+		t.Fatalf("late task page lists no submission:\n%s", page)
+	}
+	status, body := get(t, e.aliceClient, e.baseURL+"/submissions/"+m[1])
+	if status != http.StatusOK {
+		t.Fatalf("GET /submissions/%s: status %d", m[1], status)
+	}
+	if !strings.Contains(body, "hard deadline passed") {
+		t.Fatalf("submission #%s page missing the stored reject reason:\n%s", m[1], body)
+	}
+
 	scores := fetchScores(t, e)
 	if got := scores["alice"]["late"]; got != "0" && got != "" {
 		t.Fatalf("alice/late after hard-deadline push: got %q, want 0 or empty (not graded)", got)
 	}
 }
+
+// reSubmissionLink matches a submission link on a task page.
+var reSubmissionLink = regexp.MustCompile(`/submissions/(\d+)"`)
 
 // 8. recheck marker: an empty commit with a `[recheck <task>]` marker
 // re-queues the task without new file changes.

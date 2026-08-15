@@ -52,7 +52,7 @@ func (s *DB) AdmitSubmission(ctx context.Context, ns NewSubmission,
 	if a.Admit {
 		sub, err = enqueueRow(ctx, tx, ns)
 	} else {
-		sub, err = rejectedRow(ctx, tx, ns, a.RejectStatus)
+		sub, err = rejectedRow(ctx, tx, ns, a.RejectStatus, a.RejectReason)
 	}
 	if err != nil {
 		return Submission{}, err
@@ -86,17 +86,19 @@ func enqueueRow(ctx context.Context, q dbtx, ns NewSubmission) (Submission, erro
 }
 
 // rejectedRow persists a submission the policy refused: recorded for the
-// student's history, never queued (SPEC §6 step 4).
-func rejectedRow(ctx context.Context, q dbtx, ns NewSubmission, status string) (Submission, error) {
+// student's history, never queued (SPEC §6 step 4). The reason goes into
+// worker_note - the row never reaches a worker, so nothing overwrites it, and
+// the student sees why the submission was refused instead of a bare status.
+func rejectedRow(ctx context.Context, q dbtx, ns NewSubmission, status, reason string) (Submission, error) {
 	if status != StatusRejectedDeadline && status != StatusRejectedLimit {
 		return Submission{}, fmt.Errorf("rejected submission: invalid status %q", status)
 	}
 	row := q.QueryRowContext(ctx, `
 		INSERT INTO submissions
-		  (user_id, task_id, commit_sha, received_at, counts, attempt_no, status)
-		VALUES (?, ?, ?, ?, ?, NULL, ?)
+		  (user_id, task_id, commit_sha, received_at, counts, attempt_no, status, worker_note)
+		VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
 		RETURNING `+submissionCols,
-		ns.UserID, ns.TaskID, ns.CommitSHA, fmtTime(ns.ReceivedAt), ns.Counts, status)
+		ns.UserID, ns.TaskID, ns.CommitSHA, fmtTime(ns.ReceivedAt), ns.Counts, status, reason)
 	return scanSubmission(row)
 }
 
