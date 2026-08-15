@@ -93,6 +93,7 @@ func New(h *Handler) http.Handler {
 	mux.Handle("POST /students/{login}/tasks/{id}/override/delete", h.requireTeacher(h.clearOverride))
 	mux.Handle("POST /students/{login}/token/reset", h.requireTeacher(h.adminResetToken))
 	mux.Handle("POST /students/{login}/state", h.requireTeacher(h.adminSetState))
+	mux.Handle("POST /students/{login}/keys/{id}/delete", h.requireTeacher(h.adminDeleteKey))
 	mux.Handle("GET /students/{login}/submissions/{id}/code", h.requireTeacher(h.codeList))
 	mux.Handle("GET /students/{login}/submissions/{id}/code/{path...}", h.requireTeacher(h.codeFile))
 	mux.Handle("GET /audit", h.requireTeacher(h.auditPage))

@@ -135,6 +135,7 @@ matrix.filter_placeholder: "логин или имя"
 matrix.any_task: "любая задача"
 matrix.any_status: "любой статус"
 matrix.override_title: "оценка преподавателя"
+matrix.latest_title: "последняя отправка"
 
 # queue.html
 queue.title: "Очередь"
@@ -156,6 +157,7 @@ student.comment_placeholder: "комментарий"
 student.comment_required: "для оценки вручную нужен комментарий"
 student.recent_activity: "Недавняя активность"
 student.action_col: "Действие"
+student.no_submissions: "Отправок нет."
 
 # code.html
 code.title: "Отправленный код"
