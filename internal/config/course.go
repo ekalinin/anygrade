@@ -62,6 +62,9 @@ type RunnerSpec struct {
 	Memory  *ByteSize `yaml:"memory"`  //
 	CPUs    *float64  `yaml:"cpus"`    //
 	Network *string   `yaml:"network"` // none | bridge | host
+	// LogExcerpt is the per-check log tail kept in the DB and shown in the UI
+	// (SPEC §13); the full log always stays on disk.
+	LogExcerpt *ByteSize `yaml:"log_excerpt"`
 }
 
 // Limits is a mergeable attempt/cooldown configuration. MaxAttempts is a

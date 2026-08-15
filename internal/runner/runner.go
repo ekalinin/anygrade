@@ -45,7 +45,7 @@ type Outcome struct {
 	TimedOut   bool
 	Skipped    bool // an earlier gate failed; this check did not run
 	LogPath    string
-	LogExcerpt string // tail of the log, at most DefaultExcerptSize bytes
+	LogExcerpt string // tail of the log, at most Job.Spec.LogExcerpt bytes
 }
 
 // Runner executes all checks of one submission in order. A non-nil error is

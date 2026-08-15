@@ -205,6 +205,47 @@ func TestResolveCourseTimezone(t *testing.T) {
 	}
 }
 
+// TestValidateLogExcerpt covers the runner.log_excerpt rule: 0 (explicitly
+// disabling the excerpt) is an error, an oversized value is only a warning,
+// and the inherited default passes clean.
+func TestValidateLogExcerpt(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	build := func(excerpt *ByteSize) []Diagnostic {
+		task := &Task{
+			Dir: dir, ID: "w", Name: "W", Score: 100,
+			SolutionFiles: []string{"main.go"},
+			Runner:        RunnerSpec{Type: new("local"), LogExcerpt: excerpt},
+			Checks:        []Check{{Name: "test", Weight: 100, Run: "go test ./..."}},
+		}
+		rt := Resolve(&Course{}, task)
+		rt.file = "task.yaml"
+		return Validate(&Resolved{
+			Course:    ResolvedCourse{Name: "C", TasksDir: "tasks", Registration: Registration{Mode: "invite"}, ScoringPolicy: "best"},
+			rawCourse: &Course{Registration: Registration{Mode: "invite"}, Scoring: Scoring{Policy: "best"}},
+			Tasks:     []ResolvedTask{rt},
+		})
+	}
+
+	if !hasFieldError(build(new(ByteSize(0))), "runner.log_excerpt") {
+		t.Error("log_excerpt 0 should be an error")
+	}
+	big := build(new(ByteSize(8 << 20)))
+	if hasFieldError(big, "runner.log_excerpt") {
+		t.Error("an oversized log_excerpt should warn, not fail")
+	}
+	if !strings.Contains(strings.Join(diagStrings(big), "\n"), "kept in memory per check") {
+		t.Errorf("expected an oversized-excerpt warning, got:\n%s", strings.Join(diagStrings(big), "\n"))
+	}
+	for _, d := range build(nil) {
+		if d.Field == "runner.log_excerpt" {
+			t.Errorf("inherited default should be clean, got: %s", d)
+		}
+	}
+}
+
 // hasFieldError reports whether diags carries a SevError for the given field.
 func hasFieldError(diags []Diagnostic, field string) bool {
 	for _, d := range diags {
