@@ -32,12 +32,12 @@ func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) {
 	u := user(r)
 	subs, err := h.DB.ListByUser(r.Context(), u.ID)
 	if err != nil {
-		http.Error(w, "load failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
 		return
 	}
 	overrides, err := h.userOverrides(r.Context(), u.ID)
 	if err != nil {
-		http.Error(w, "load failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
 		return
 	}
 	course := h.Course.Get()
@@ -56,7 +56,7 @@ func (h *Handler) dashboardStream(w http.ResponseWriter, r *http.Request) {
 	u := user(r)
 	sse, ok := newSSEWriter(w)
 	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		h.httpError(w, r, "error.streaming_unsupported", http.StatusInternalServerError)
 		return
 	}
 	events, cancel := h.Hub.SubscribeUser(u.ID)

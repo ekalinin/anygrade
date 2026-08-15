@@ -47,11 +47,11 @@ func (h *Handler) requireAuth(next http.HandlerFunc) http.Handler {
 				http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
 				return
 			}
-			http.Error(w, "authentication required", http.StatusUnauthorized)
+			h.httpError(w, r, "error.auth_required", http.StatusUnauthorized)
 			return
 		}
 		if r.Method == http.MethodPost && !sameOrigin(r) {
-			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			h.httpError(w, r, "error.cross_origin", http.StatusForbidden)
 			return
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), userKey, u)))

@@ -92,7 +92,7 @@ func (h *Handler) submissionFragment(w http.ResponseWriter, r *http.Request) {
 	}
 	html, err := renderPartial(h.lang(r), "sub-results", h.submissionData(sub, checks))
 	if err != nil {
-		http.Error(w, "render failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.render_failed", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

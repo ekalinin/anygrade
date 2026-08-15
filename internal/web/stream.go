@@ -39,7 +39,7 @@ func (h *Handler) submissionStream(w http.ResponseWriter, r *http.Request) {
 	}
 	sse, ok := newSSEWriter(w)
 	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		h.httpError(w, r, "error.streaming_unsupported", http.StatusInternalServerError)
 		return
 	}
 	if terminalStatus(sub.Status) {

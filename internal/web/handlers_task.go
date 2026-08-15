@@ -10,6 +10,7 @@ import (
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 
+	"github.com/ekalinin/anygrade/internal/i18n"
 	"github.com/ekalinin/anygrade/internal/intake"
 	"github.com/ekalinin/anygrade/internal/queue"
 )
@@ -54,16 +55,18 @@ func (h *Handler) taskPage(w http.ResponseWriter, r *http.Request) {
 	}
 	history, err := h.DB.ListByUserTask(r.Context(), u.ID, task.ID)
 	if err != nil {
-		http.Error(w, "load failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
 		return
 	}
 	override, err := h.taskOverride(r.Context(), u.ID, task.ID)
 	if err != nil {
-		http.Error(w, "load failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
 		return
 	}
 
-	statement := template.HTML("<p>(no README.md in the task directory)</p>")
+	// Escaped, not trusted: it is a catalog string, but it lands in the same
+	// template.HTML the rendered markdown does.
+	statement := template.HTML("<p>" + template.HTMLEscapeString(i18n.For(h.lang(r)).T("task.no_readme")) + "</p>")
 	if raw, ok, err := h.ReadCourseFile(r.Context(), course.Head, relDir+"/README.md"); err == nil && ok {
 		var buf bytes.Buffer
 		if err := markdown.Convert(raw, &buf); err == nil {
@@ -107,7 +110,7 @@ func (h *Handler) taskRecheck(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, intake.ErrNothingToRecheck):
 		http.Redirect(w, r, "/tasks/"+taskID+"?flash=nothing_to_recheck", http.StatusSeeOther)
 	case err != nil:
-		http.Error(w, "recheck failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.recheck_failed", http.StatusInternalServerError)
 	case !d.Admit:
 		http.Redirect(w, r, "/tasks/"+taskID+"?flash="+template.URLQueryEscaper(d.RejectReason), http.StatusSeeOther)
 	default:

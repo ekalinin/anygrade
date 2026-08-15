@@ -130,6 +130,14 @@ var pages = func() map[string]map[string]*template.Template {
 	return m
 }()
 
+// httpError is http.Error with a localized body. SPEC §10.1 keeps push output,
+// the CLI and server logs English, but everything the browser renders belongs
+// to the UI - including the failure paths, which is exactly when a reader is
+// least able to work around a language they do not read.
+func (h *Handler) httpError(w http.ResponseWriter, r *http.Request, key string, code int) {
+	http.Error(w, i18n.For(h.lang(r)).T(key), code)
+}
+
 // renderPage executes a full page in the request's locale; render errors after
 // headers are logged in-band (template output is already partially written -
 // keep it simple).

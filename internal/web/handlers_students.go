@@ -21,7 +21,7 @@ func (h *Handler) studentsPage(w http.ResponseWriter, r *http.Request) {
 	u := user(r)
 	users, err := h.DB.ListUsers(r.Context())
 	if err != nil {
-		http.Error(w, "load failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
 		return
 	}
 	h.renderPage(w, r, "students", studentsData{
@@ -61,12 +61,12 @@ func (h *Handler) studentPage(w http.ResponseWriter, r *http.Request) {
 	}
 	subs, err := h.DB.ListByUser(r.Context(), target.ID)
 	if err != nil {
-		http.Error(w, "load failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
 		return
 	}
 	overrides, err := h.userOverrides(r.Context(), target.ID)
 	if err != nil {
-		http.Error(w, "load failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
 		return
 	}
 	// ?task= narrows the list to one (student, task) pair; the URL is what a
@@ -75,7 +75,7 @@ func (h *Handler) studentPage(w http.ResponseWriter, r *http.Request) {
 	listed := subs
 	if taskFilter != "" {
 		if listed, err = h.DB.ListByUserTask(r.Context(), target.ID, taskFilter); err != nil {
-			http.Error(w, "load failed", http.StatusInternalServerError)
+			h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
 			return
 		}
 	}
@@ -130,7 +130,7 @@ func (h *Handler) teacherRecheck(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, intake.ErrNothingToRecheck):
 		http.Redirect(w, r, "/students/"+target.Login+"?flash=nothing_to_recheck", http.StatusSeeOther)
 	case err != nil:
-		http.Error(w, "recheck failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.recheck_failed", http.StatusInternalServerError)
 	default:
 		http.Redirect(w, r, submissionURL(sub.ID, warn), http.StatusSeeOther)
 	}
@@ -146,7 +146,7 @@ func (h *Handler) adminResetToken(w http.ResponseWriter, r *http.Request) {
 	}
 	token, err := h.DB.IssueToken(r.Context(), target.ID)
 	if err != nil {
-		http.Error(w, "reset failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.reset_failed", http.StatusInternalServerError)
 		return
 	}
 	_ = h.DB.Log(r.Context(), store.Event{
@@ -178,7 +178,7 @@ func (h *Handler) adminDeleteKey(w http.ResponseWriter, r *http.Request) {
 	fingerprint := r.FormValue("fingerprint")
 	ok, err := h.DB.DeleteSSHKey(r.Context(), target.ID, id, fingerprint)
 	if err != nil {
-		http.Error(w, "delete failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.delete_failed", http.StatusInternalServerError)
 		return
 	}
 	if !ok {
@@ -197,11 +197,11 @@ func (h *Handler) adminSetState(w http.ResponseWriter, r *http.Request) {
 	login := r.PathValue("login")
 	state := r.FormValue("state")
 	if state != "active" && state != "disabled" {
-		http.Error(w, "state must be active or disabled", http.StatusBadRequest)
+		h.httpError(w, r, "error.invalid_state", http.StatusBadRequest)
 		return
 	}
 	if login == actor.Login {
-		http.Error(w, "refusing to change your own state", http.StatusBadRequest)
+		h.httpError(w, r, "error.own_state", http.StatusBadRequest)
 		return
 	}
 	if err := h.DB.SetUserState(r.Context(), login, state); err != nil {
