@@ -188,6 +188,17 @@ func testHardDeadline(t *testing.T, e *env) {
 	if got := scores["alice"]["late"]; got != "0" && got != "" {
 		t.Fatalf("alice/late after hard-deadline push: got %q, want 0 or empty (not graded)", got)
 	}
+
+	// The rejected row is pinned like any other submission: its page links to
+	// the submitted code, and this ref is what keeps that tree readable after
+	// a later force push (SPEC §6 step 7). The push touched only `late`, so
+	// nothing else could have pinned this commit.
+	head := strings.TrimSpace(git(t, e.aliceDir, nil, "rev-parse", "HEAD"))
+	bare := filepath.Join(e.dataDir, "repos", "students", "alice.git")
+	pinned := git(t, bare, nil, "for-each-ref", "--format=%(objectname)", "refs/anygrade/submissions/")
+	if !strings.Contains(pinned, head) {
+		t.Fatalf("rejected commit %s is not pinned; submission refs point at:\n%s", head, pinned)
+	}
 }
 
 // reSubmissionLink matches a submission link on a task page.
