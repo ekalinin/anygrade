@@ -38,9 +38,14 @@ type Handler struct {
 	// for the teacher code view (GitSource-backed, injected by app).
 	ListStudentFiles func(ctx context.Context, login, commit, relDir string) ([]string, error)
 	ReadStudentFile  func(ctx context.Context, login, commit, relPath string) ([]byte, bool, error)
-	DataDir          string
-	BaseURL          string // git clone/upstream links on activation pages
-	SSHAddr          string // git SSH listen address; "" hides SSH clone hints
+	// EnsureRepo provisions the student's personal repo at account activation
+	// (SPEC §7; RepoManager-backed, injected by app). Nil is safe and so is a
+	// returned error: the git transports still create the repo on first
+	// access, so this only decides whether the clone URL works right away.
+	EnsureRepo func(ctx context.Context, login string) error
+	DataDir    string
+	BaseURL    string // git clone/upstream links on activation pages
+	SSHAddr    string // git SSH listen address; "" hides SSH clone hints
 	// Limit, when non-nil, throttles failed logins (shared with git basic
 	// auth by the composition root).
 	Limit *ratelimit.Limiter
