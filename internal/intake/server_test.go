@@ -3,6 +3,7 @@ package intake
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -163,6 +164,11 @@ func TestProcessPushFullFlow(t *testing.T) {
 	}
 	if ref := git(t, studentDir, "rev-parse", "refs/anygrade/submissions/1"); ref != new1 {
 		t.Errorf("submission ref = %s, want %s", ref, new1)
+	}
+	// The rejected row is pinned too: the teacher can open its code, and only
+	// this ref survives a force push past it.
+	if ref := git(t, studentDir, "rev-parse", fmt.Sprintf("refs/anygrade/submissions/%d", rejected[0].ID)); ref != new1 {
+		t.Errorf("rejected submission ref = %s, want %s", ref, new1)
 	}
 	if base := git(t, studentDir, "rev-parse", "refs/anygrade/baseline"); base != new1 {
 		t.Errorf("baseline = %s, want %s", base, new1)

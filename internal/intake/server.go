@@ -353,16 +353,21 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, ref, newSH
 			processed = false
 			continue
 		}
-		if !d.Admit {
+		// Pinning happens before the admission branch: a rejected submission
+		// is a recorded row like any other, its page links to the submitted
+		// code, and this ref is the only thing that keeps that tree alive once
+		// a force push moves the branch and gc runs (SPEC §6 step 7).
+		pinErr := s.pinSubmission(ctx, dir, sub.ID, newSHA)
+		if d.Admit {
+			line := fmt.Sprintf("  %-*s submission #%d queued", width, id, sub.ID)
+			if s.BaseURL != "" {
+				line += fmt.Sprintf("   %s/submissions/%d", strings.TrimSuffix(s.BaseURL, "/"), sub.ID)
+			}
+			lines = append(lines, line)
+		} else {
 			lines = append(lines, fmt.Sprintf("  %-*s rejected: %s", width, id, d.RejectReason))
-			continue
 		}
-		line := fmt.Sprintf("  %-*s submission #%d queued", width, id, sub.ID)
-		if s.BaseURL != "" {
-			line += fmt.Sprintf("   %s/submissions/%d", strings.TrimSuffix(s.BaseURL, "/"), sub.ID)
-		}
-		lines = append(lines, line)
-		if err := s.pinSubmission(ctx, dir, sub.ID, newSHA); err != nil {
+		if pinErr != nil {
 			lines = append(lines, fmt.Sprintf("  %-*s warning: commit not pinned, a force push can drop it",
 				width, id))
 		}
