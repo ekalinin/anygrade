@@ -1,11 +1,13 @@
 package web
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/ekalinin/anygrade/internal/gradebook"
+	"github.com/ekalinin/anygrade/internal/intake"
 	"github.com/ekalinin/anygrade/internal/store"
 )
 
@@ -13,6 +15,7 @@ type queueData struct {
 	CourseName string
 	User       userView
 	Rows       []queueRow
+	Flash      string
 }
 
 type queueRow struct {
@@ -34,6 +37,20 @@ func subDisplayStatus(s store.Submission) string {
 		}
 	}
 	return s.Status
+}
+
+// CanRecheck reports whether the row should offer the recheck button
+// (SPEC §10: the queue view carries both cancel and recheck).
+//
+// Only the terminal `error` display status qualifies. `queued` and `running`
+// have nothing to recheck yet and offer cancel instead; `retrying` re-runs by
+// itself, so a manual recheck would only queue a competitor for it; `canceled`
+// rows were cleared of `counts` by CancelSubmission, and TeacherRecheck picks
+// the latest *counting* commit, so the button there would silently grade some
+// other commit than the row shows - or fail outright when the canceled row was
+// the student's only submission.
+func (r queueRow) CanRecheck() bool {
+	return r.Status == gradebook.StatusError
 }
 
 func (h *Handler) queuePage(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +77,7 @@ func (h *Handler) queuePage(w http.ResponseWriter, r *http.Request) {
 		CourseName: h.Course.Get().Resolved.Course.Name,
 		User:       h.userViewOf(u),
 		Rows:       rows,
+		Flash:      r.URL.Query().Get("flash"),
 	})
 }
 
@@ -125,4 +143,48 @@ func (h *Handler) cancelSubmission(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.Redirect(w, r, "/queue", http.StatusSeeOther)
+}
+
+// recheckSubmission re-grades the (student, task) pair of one queue row on the
+// teacher's behalf, the same action the student page exposes - so the audit
+// event is the one TeacherRecheck itself writes, not a second one here.
+//
+// The route is deliberately not gated on the row's status: CanRecheck only
+// decides where the button is drawn, and the very same recheck is reachable for
+// any pair from /students/{login}. TeacherRecheck re-grades the latest counting
+// commit, which for an `error` row is normally that row's own commit but is a
+// newer one when the student has pushed since - the redirect lands on the new
+// submission, where the commit is spelled out.
+func (h *Handler) recheckSubmission(w http.ResponseWriter, r *http.Request) {
+	actor := user(r)
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	sub, _, err := h.DB.GetSubmission(r.Context(), id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	fresh, warn, err := h.Recheck.TeacherRecheck(r.Context(), actor, sub.UserID, sub.TaskID)
+	switch {
+	case errors.Is(err, intake.ErrNothingToRecheck):
+		http.Redirect(w, r, "/queue?flash=nothing_to_recheck", http.StatusSeeOther)
+	case err != nil:
+		http.Error(w, "recheck failed", http.StatusInternalServerError)
+	default:
+		http.Redirect(w, r, submissionURL(fresh.ID, warn), http.StatusSeeOther)
+	}
+}
+
+// submissionURL points at a freshly queued submission, carrying a recheck
+// warning along as a flash code. RecheckWarning values are package constants
+// of intake, so they need no query escaping.
+func submissionURL(id int64, warn intake.RecheckWarning) string {
+	u := fmt.Sprintf("/submissions/%d", id)
+	if warn != "" {
+		u += "?flash=" + string(warn)
+	}
+	return u
 }

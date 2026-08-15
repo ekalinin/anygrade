@@ -1,5 +1,6 @@
 {{define "content"}}
 <h1>{{t "queue.title"}}</h1>
+{{if .Flash}}<p class="flash">{{tFlash .Flash}}</p>{{end}}
 <div hx-ext="sse" sse-connect="/queue/stream">
 {{if .Rows}}
 <table class="queue">

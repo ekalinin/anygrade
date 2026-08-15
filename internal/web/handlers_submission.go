@@ -25,6 +25,9 @@ type submissionData struct {
 	Panes    []logPane
 	Running  bool
 	Rejected bool
+	// Flash carries a recheck warning from the redirect that landed here
+	// (submissionURL); the fragment renderer leaves it empty.
+	Flash string
 }
 
 type logPane struct {
@@ -76,6 +79,7 @@ func (h *Handler) submissionPage(w http.ResponseWriter, r *http.Request) {
 	data := h.submissionData(sub, checks)
 	data.CourseName = h.Course.Get().Resolved.Course.Name
 	data.User = h.userViewOf(u)
+	data.Flash = r.URL.Query().Get("flash")
 	h.renderPage(w, r, "submission", data)
 }
 
