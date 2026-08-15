@@ -214,27 +214,27 @@ func (q *Queue) process(ctx context.Context, sub store.Submission) {
 	p, err := q.Prep.Prepare(ctx, sub)
 	if err != nil {
 		if errors.Is(err, ErrTaskGone) {
-			q.terminal(ctx, sub, err.Error())
+			q.terminal(sub, err.Error())
 			return
 		}
 		if te, ok := errors.AsType[*terminalError](err); ok {
-			q.terminal(ctx, sub, te.msg)
+			q.terminal(sub, te.msg)
 			return
 		}
-		q.retry(ctx, sub, err)
+		q.fail(ctx, sub, err)
 		return
 	}
 
 	ws, err := runner.Assemble(ctx, p.Assembly)
 	if err != nil {
-		q.retry(ctx, sub, err)
+		q.fail(ctx, sub, err)
 		return
 	}
 	defer ws.Close()
 
 	r, err := q.NewRunner(p.Task.Runner)
 	if err != nil {
-		q.terminal(ctx, sub, err.Error()) // misconfigured runner: retrying won't help
+		q.terminal(sub, err.Error()) // misconfigured runner: retrying won't help
 		return
 	}
 	outcomes, err := r.Run(ctx, runner.Job{
@@ -245,15 +245,7 @@ func (q *Queue) process(ctx context.Context, sub store.Submission) {
 		LogDir:       p.LogDir,
 	})
 	if err != nil {
-		if infra, ok := errors.AsType[*runner.InfraError](err); ok && infra.Op == "canceled" {
-			if q.wasCanceled(sub.ID) {
-				return // teacher cancel: the row is already terminal
-			}
-			// Graceful shutdown: back to the queue, no retry counting.
-			q.requeue(sub)
-			return
-		}
-		q.retry(ctx, sub, err)
+		q.fail(ctx, sub, err)
 		return
 	}
 
@@ -290,10 +282,27 @@ func (q *Queue) process(ctx context.Context, sub store.Submission) {
 		Note: p.Note, LogDir: p.LogDir, Checks: checks,
 	})
 	if err != nil {
-		q.retry(ctx, sub, err)
+		q.fail(ctx, sub, err)
 		return
 	}
 	q.publish(sub, store.StatusDone)
+}
+
+// fail records a failed submission. A canceled execution context is not an
+// infra fault: either the teacher canceled this submission - the row is
+// already terminal - or the process is shutting down, and then the submission
+// goes back to the queue without counting a retry (SPEC §13). Every cancel
+// point lands here, so a shutdown during preparation or workspace assembly is
+// classified exactly like one during the check run: the runner's own
+// InfraError{Op: "canceled"} is only ever returned with ctx already canceled.
+func (q *Queue) fail(ctx context.Context, sub store.Submission, cause error) {
+	if ctx.Err() != nil {
+		if !q.wasCanceled(sub.ID) {
+			q.requeue(sub)
+		}
+		return
+	}
+	q.retry(sub, cause)
 }
 
 // Cancel aborts one submission on a teacher's behalf: a queued row just
@@ -346,34 +355,46 @@ func (q *Queue) wasCanceled(id int64) bool {
 
 // retry schedules an infra_error retry with exponential backoff and jitter;
 // after MaxRetries the submission becomes terminal (retry_at NULL).
-func (q *Queue) retry(ctx context.Context, sub store.Submission, cause error) {
+func (q *Queue) retry(sub store.Submission, cause error) {
 	if q.wasCanceled(sub.ID) {
 		return // never resurrect a teacher-canceled row into the queue
 	}
 	note := cause.Error()
 	if sub.Retries >= q.MaxRetries {
-		q.terminal(ctx, sub, note+" (retries exhausted)")
+		q.terminal(sub, note+" (retries exhausted)")
 		return
 	}
 	delay := min(q.BackoffBase<<sub.Retries, q.BackoffCap)
 	// ±10% jitter avoids a thundering herd on a shared cause (docker down).
 	delay += time.Duration((rand.Float64() - 0.5) * 0.2 * float64(delay))
 	at := time.Now().Add(delay)
-	_ = q.Store.ScheduleRetry(ctx, sub.ID, &at, note)
+	wctx, cancel := writeCtx()
+	defer cancel()
+	_ = q.Store.ScheduleRetry(wctx, sub.ID, &at, note)
 	q.publish(sub, store.StatusInfraError)
 }
 
-func (q *Queue) terminal(ctx context.Context, sub store.Submission, note string) {
-	_ = q.Store.ScheduleRetry(ctx, sub.ID, nil, note)
+func (q *Queue) terminal(sub store.Submission, note string) {
+	wctx, cancel := writeCtx()
+	defer cancel()
+	_ = q.Store.ScheduleRetry(wctx, sub.ID, nil, note)
 	q.publish(sub, store.StatusInfraError)
 }
 
 // requeue survives ctx cancellation: it must run even during shutdown.
 func (q *Queue) requeue(sub store.Submission) {
-	rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	wctx, cancel := writeCtx()
 	defer cancel()
-	_ = q.Store.Requeue(rctx, sub.ID)
+	_ = q.Store.Requeue(wctx, sub.ID)
 	q.publish(sub, store.StatusQueued)
+}
+
+// writeCtx detaches a submission's final status write from its execution
+// context: that context is already canceled whenever the write is caused by a
+// shutdown or a teacher cancel, and a write made with it would silently do
+// nothing, leaving the row stuck in running until the next restart.
+func writeCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 5*time.Second)
 }
 
 func deadlineOf(t config.ResolvedTask) scoring.Deadline {

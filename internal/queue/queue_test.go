@@ -22,6 +22,9 @@ type testPrep struct {
 	repo    string
 	baseDir string
 	failErr error
+	// auth replaces the authoritative source when set: tests use it to pin the
+	// cancellation window inside runner.Assemble.
+	auth runner.Source
 }
 
 func (p *testPrep) Prepare(_ context.Context, sub store.Submission) (Prepared, error) {
@@ -29,12 +32,16 @@ func (p *testPrep) Prepare(_ context.Context, sub store.Submission) (Prepared, e
 		return Prepared{}, p.failErr
 	}
 	runDir := filepath.Join(p.baseDir, fmt.Sprintf("run-%d-%d", sub.ID, time.Now().UnixNano()))
+	var authoritative runner.Source = runner.WorkingCopySource{Root: p.repo}
+	if p.auth != nil {
+		authoritative = p.auth
+	}
 	return Prepared{
 		Assembly: runner.Assembly{
 			Dest:          filepath.Join(runDir, "ws"),
 			Task:          p.task,
 			TaskRelDir:    "tasks/t1",
-			Authoritative: runner.WorkingCopySource{Root: p.repo},
+			Authoritative: authoritative,
 			RunAsUID:      -1,
 			RunAsGID:      -1,
 		},
@@ -436,4 +443,101 @@ func TestGracefulShutdownRequeues(t *testing.T) {
 	if got.Retries != 0 {
 		t.Fatalf("cancellation must not count as a retry: %+v", got)
 	}
+}
+
+// blockingSource enters Export and stays there until the context is canceled,
+// which pins the cancellation window inside runner.Assemble instead of the
+// check run.
+type blockingSource struct{ entered chan struct{} }
+
+func (s *blockingSource) Export(ctx context.Context, _, _ string) error {
+	select {
+	case s.entered <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (s *blockingSource) File(context.Context, string) ([]byte, bool, error) {
+	return nil, false, nil
+}
+
+// TestShutdownDuringAssembleRequeues: the shutdown window is not only the
+// check run. A cancel landing while the workspace is still being assembled
+// must requeue the submission too - Assemble reports it as a plain workspace
+// error, and treating that as an infra failure both counted a retry and wrote
+// with the already-canceled context, leaving the row stuck in running.
+func TestShutdownDuringAssembleRequeues(t *testing.T) {
+	q, db, u, prep := newTestQueue(t)
+	src := &blockingSource{entered: make(chan struct{}, 1)}
+	prep.auth = src
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = q.Start(ctx) }()
+
+	sub, err := q.Enqueue(ctx, store.NewSubmission{
+		UserID: u.ID, TaskID: "t1", CommitSHA: "abc", ReceivedAt: time.Now(), Counts: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-src.entered // the worker is inside Assemble
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("workers did not drain after cancel")
+	}
+	got, _, err := db.GetSubmission(context.Background(), sub.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusQueued {
+		t.Fatalf("status %q, want queued (note: %s)", got.Status, got.WorkerNote)
+	}
+	if got.Retries != 0 {
+		t.Fatalf("cancellation must not count as a retry: %+v", got)
+	}
+}
+
+// TestTeacherCancelDuringAssemble: the same window, but the context dies
+// because the teacher canceled the submission - the row must stay terminal
+// instead of going back to the queue.
+func TestTeacherCancelDuringAssemble(t *testing.T) {
+	q, db, u, prep := newTestQueue(t)
+	src := &blockingSource{entered: make(chan struct{}, 1)}
+	prep.auth = src
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = q.Start(ctx) }()
+
+	sub, err := q.Enqueue(ctx, store.NewSubmission{
+		UserID: u.ID, TaskID: "t1", CommitSHA: "abc", ReceivedAt: time.Now(), Counts: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-src.entered // the worker is inside Assemble
+	if ok, err := q.Cancel(ctx, sub.ID); err != nil || !ok {
+		t.Fatalf("Cancel: ok=%v err=%v", ok, err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		got, _, err := db.GetSubmission(ctx, sub.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != store.StatusInfraError || got.CanceledAt == nil ||
+			got.RetryAt != nil || got.Counts {
+			t.Fatalf("canceled row mutated: %+v", got)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	cancel()
+	<-done
 }
