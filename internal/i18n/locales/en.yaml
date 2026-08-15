@@ -158,6 +158,7 @@ student.score_placeholder: "score"
 student.comment_placeholder: "comment"
 student.recent_activity: "Recent activity"
 student.action_col: "Action"
+student.no_submissions: "No submissions recorded."
 
 # code.html
 code.title: "Submitted code"
