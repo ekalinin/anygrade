@@ -115,6 +115,7 @@ task.submissions: "Submissions"
 task.recheck_latest: "recheck latest"
 task.recheck_disabled_title: "nothing to recheck, or limits reached"
 task.no_submissions: "No submissions yet: push your solution to your personal repo."
+task.override_note: "set by teacher"
 
 # submission.html
 submission.title: "Submission"
@@ -156,6 +157,7 @@ student.code_link: "code"
 student.set: "set"
 student.score_placeholder: "score"
 student.comment_placeholder: "comment"
+student.comment_required: "a comment is required for a manual score"
 student.recent_activity: "Recent activity"
 student.action_col: "Action"
 

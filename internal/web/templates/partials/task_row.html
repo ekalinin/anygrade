@@ -1,7 +1,8 @@
 {{define "task-row"}}<tr sse-swap="task-{{.Task.ID}}" hx-swap="outerHTML">
   <td><a href="/tasks/{{.Task.ID}}">{{.Task.Name}}</a></td>
   <td><span class="badge {{statusClass .Status}}">{{tStatus .Status}}</span></td>
-  <td>{{if .Score}}{{score .Score}} / {{.Task.Score}}{{else}}&mdash;{{end}}</td>
+  <td>{{$shown := .Display}}{{if $shown}}{{score $shown}} / {{.Task.Score}}{{else}}&mdash;{{end}}{{with .Override}}
+    <span class="hint" title="{{t "task.override_note"}}{{with .Comment}}: {{.}}{{end}}">({{t "task.override_note"}})</span>{{end}}</td>
   <td>{{.Attempts}}</td>
   <td>
     {{if .Task.Deadline.Soft}}<span title="{{t "task.soft_deadline"}}">{{fmtTime .Task.Deadline.Soft}} ({{countdown .Task.Deadline.Soft}})</span>

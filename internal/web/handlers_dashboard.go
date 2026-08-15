@@ -35,11 +35,16 @@ func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "load failed", http.StatusInternalServerError)
 		return
 	}
+	overrides, err := h.userOverrides(r.Context(), u.ID)
+	if err != nil {
+		http.Error(w, "load failed", http.StatusInternalServerError)
+		return
+	}
 	course := h.Course.Get()
 	h.renderPage(w, r, "dashboard", dashboardData{
 		CourseName: course.Resolved.Course.Name,
 		User:       h.userViewOf(u),
-		Tasks:      buildDashboard(course, subs),
+		Tasks:      buildDashboard(course, subs, overrides),
 		Now:        time.Now(),
 	})
 }
@@ -72,7 +77,11 @@ func (h *Handler) dashboardStream(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
-			view := buildTaskView(task, history, course.Resolved.Course.ScoringPolicy)
+			override, err := h.taskOverride(r.Context(), u.ID, ev.TaskID)
+			if err != nil {
+				continue
+			}
+			view := buildTaskView(task, history, course.Resolved.Course.ScoringPolicy, override)
 			html, err := renderPartial(lang, "task-row", view)
 			if err != nil {
 				continue

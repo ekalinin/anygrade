@@ -25,24 +25,24 @@
   {{$login := .Student.Login}}
   {{range .Tasks}}
   <tr>
-    <td>{{.View.Task.Name}}{{if .View.Latest}} <a href="/students/{{$login}}/submissions/{{.View.Latest.ID}}/code">{{t "student.code_link"}}</a>{{end}}</td>
-    <td><span class="badge {{statusClass .View.Status}}">{{tStatus .View.Status}}</span></td>
-    <td>{{if .View.Score}}{{score .View.Score}}{{else}}&mdash;{{end}} / {{.View.Task.Score}}</td>
+    <td>{{.Task.Name}}{{if .Latest}} <a href="/students/{{$login}}/submissions/{{.Latest.ID}}/code">{{t "student.code_link"}}</a>{{end}}</td>
+    <td><span class="badge {{statusClass .Status}}">{{tStatus .Status}}</span></td>
+    <td>{{if .Score}}{{score .Score}}{{else}}&mdash;{{end}} / {{.Task.Score}}</td>
     <td>
       {{if .Override}}<strong>{{score .Override.Score}}</strong> <span class="hint" title="{{.Override.Comment}}">{{.Override.Comment}}</span>{{else}}&mdash;{{end}}
     </td>
     <td class="admin-cell">
-      <form method="post" action="/students/{{$login}}/tasks/{{.View.Task.ID}}/override" class="inline override-form">
+      <form method="post" action="/students/{{$login}}/tasks/{{.Task.ID}}/override" class="inline override-form">
         <input name="score" type="number" step="0.1" min="0" placeholder="{{t "student.score_placeholder"}}" required>
-        <input name="comment" placeholder="{{t "student.comment_placeholder"}}">
+        <input name="comment" placeholder="{{t "student.comment_placeholder"}}" required>
         <button type="submit">{{t "student.set"}}</button>
       </form>
       {{if .Override}}
-      <form method="post" action="/students/{{$login}}/tasks/{{.View.Task.ID}}/override/delete" class="inline">
+      <form method="post" action="/students/{{$login}}/tasks/{{.Task.ID}}/override/delete" class="inline">
         <button type="submit" class="linklike">{{t "common.clear"}}</button>
       </form>
       {{end}}
-      <form method="post" action="/students/{{$login}}/tasks/{{.View.Task.ID}}/recheck" class="inline">
+      <form method="post" action="/students/{{$login}}/tasks/{{.Task.ID}}/recheck" class="inline">
         <button type="submit" class="linklike">{{t "common.recheck"}}</button>
       </form>
     </td>

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/ekalinin/anygrade/internal/gradebook"
+	"github.com/ekalinin/anygrade/internal/i18n"
 	"github.com/ekalinin/anygrade/internal/store"
 )
 
@@ -216,7 +217,12 @@ func (h *Handler) setOverride(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "score must be a non-negative number", http.StatusBadRequest)
 		return
 	}
-	comment := r.FormValue("comment")
+	// SPEC §9: an override is "with a comment" - no silent regrades.
+	comment := strings.TrimSpace(r.FormValue("comment"))
+	if comment == "" {
+		http.Error(w, i18n.For(h.lang(r)).T("student.comment_required"), http.StatusBadRequest)
+		return
+	}
 	err = h.DB.SetScoreOverride(r.Context(), store.ScoreOverride{
 		UserID: target.ID, TaskID: taskID, Score: score,
 		Comment: comment, TeacherID: actor.ID,

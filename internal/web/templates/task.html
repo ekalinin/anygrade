@@ -4,7 +4,8 @@
 {{if .Flash}}<p class="flash">{{tFlash .Flash}}</p>{{end}}
 
 <section class="meta">
-  <span>{{t "task.score_label"}} {{if .View.Score}}{{score .View.Score}}{{else}}&mdash;{{end}} / {{.View.Task.Score}}</span>
+  <span>{{t "task.score_label"}} {{$shown := .View.Display}}{{if $shown}}{{score $shown}}{{else}}&mdash;{{end}} / {{.View.Task.Score}}</span>
+  {{with .View.Override}}<span class="hint">({{t "task.override_note"}}{{with .Comment}}: {{.}}{{end}})</span>{{end}}
   {{if .View.Task.Deadline.Soft}}<span>{{t "task.soft_deadline"}} {{fmtTime .View.Task.Deadline.Soft}} ({{countdown .View.Task.Deadline.Soft}})</span>{{end}}
   {{if .View.Task.Deadline.Hard}}<span>{{t "task.hard_deadline"}} {{fmtTime .View.Task.Deadline.Hard}} ({{countdown .View.Task.Deadline.Hard}})</span>{{end}}
   <span>{{t "task.attempts_label"}} {{.View.Attempts}}{{if not .Quota.Unlimited}} {{t "task.of"}} {{.View.Task.Limits.MaxAttempts}}{{end}}</span>
