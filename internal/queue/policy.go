@@ -14,7 +14,7 @@ import (
 type Decision struct {
 	Admit        bool
 	RejectStatus string // StatusRejectedDeadline | StatusRejectedLimit when !Admit
-	RejectReason string // human-readable, for push feedback (SPEC §6)
+	RejectReason string // human-readable, for push feedback and the stored note (SPEC §6)
 	Counts       bool   // false = does not consume an attempt or start a cooldown
 }
 

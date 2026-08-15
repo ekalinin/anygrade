@@ -121,7 +121,8 @@ func (q *Queue) Submit(ctx context.Context, t config.ResolvedTask,
 	var d Decision
 	sub, err := q.Store.AdmitSubmission(ctx, ns, func(history []store.Submission) store.Admission {
 		d = Admit(t, history, ns.ReceivedAt, teacherRecheck)
-		return store.Admission{Admit: d.Admit, RejectStatus: d.RejectStatus, Counts: d.Counts}
+		return store.Admission{Admit: d.Admit, RejectStatus: d.RejectStatus,
+			RejectReason: d.RejectReason, Counts: d.Counts}
 	})
 	if err != nil {
 		return store.Submission{}, Decision{}, err

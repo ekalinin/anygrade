@@ -253,14 +253,23 @@ func TestAdmitSubmission(t *testing.T) {
 		t.Errorf("recheck = counts %v attempt %v, want false/nil", recheck.Counts, recheck.AttemptNo)
 	}
 
+	// The reject reason is persisted: it is all the student has to explain a
+	// row that never ran, and nothing else ever writes this row's note.
+	const reason = "attempt limit reached (2 of 2)"
 	rejected, err := db.AdmitSubmission(t.Context(), ns("c"), func(h []Submission) Admission {
-		return Admission{RejectStatus: StatusRejectedLimit}
+		return Admission{RejectStatus: StatusRejectedLimit, RejectReason: reason}
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rejected.Status != StatusRejectedLimit || rejected.Counts {
 		t.Errorf("rejected = %q counts=%v, want rejected_limit/false", rejected.Status, rejected.Counts)
+	}
+	if rejected.WorkerNote != reason {
+		t.Errorf("rejected note = %q, want %q", rejected.WorkerNote, reason)
+	}
+	if reread, _, err := db.GetSubmission(t.Context(), rejected.ID); err != nil || reread.WorkerNote != reason {
+		t.Errorf("reread note = %q (err %v), want %q", reread.WorkerNote, err, reason)
 	}
 
 	// An invalid verdict must not leave a row behind.
