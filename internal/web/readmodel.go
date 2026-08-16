@@ -40,7 +40,7 @@ func buildTaskView(t config.ResolvedTask, history []store.Submission, policy str
 
 	v := TaskView{
 		Task:     t,
-		Status:   gradebook.DeriveStatus(history, t.Score),
+		Status:   gradebook.DeriveStatus(history, t.Score, override != nil),
 		Score:    gradebook.DisplayScore(history, policy),
 		Override: override,
 		Attempts: queue.CountAttempts(history),

@@ -235,3 +235,50 @@ func TestStudentPageShowsOverride(t *testing.T) {
 		t.Errorf("GET /students/stud: override column lost:\n%s", body)
 	}
 }
+
+// TestMatrixOverrideWithoutSubmissions: a task a teacher scored by hand and
+// the student never submitted to. The score enters the row total, so the cell
+// has to show it. It used to be drawn as a dash - the status was blanked as
+// "not started" while the total counted the score anyway, and the row did not
+// add up to what was in it.
+func TestMatrixOverrideWithoutSubmissions(t *testing.T) {
+	h, teacher, student := newOverrideSite(t)
+	h.Course.Set(&intake.Course{Resolved: &config.Resolved{
+		Course: config.ResolvedCourse{Name: "Test course", ScoringPolicy: "best"},
+		Tasks: []config.ResolvedTask{
+			{ID: "t1", Name: "Task one", Score: 10},
+			{ID: "t2", Name: "Task two", Score: 5},
+		},
+	}})
+	if err := h.DB.SetScoreOverride(t.Context(), store.ScoreOverride{
+		UserID: student.ID, TaskID: "t2", Score: 5,
+		Comment: "credited from the seminar", TeacherID: teacher.ID,
+	}); err != nil {
+		t.Fatalf("set override: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	New(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/matrix", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /matrix: status %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `title="overridden"`) {
+		t.Errorf("GET /matrix: the hand-scored cell is not rendered as a score:\n%s", body)
+	}
+	// 4 computed on t1 plus 5 overridden on t2, and both are visible.
+	if !strings.Contains(body, "<strong>9</strong>") {
+		t.Errorf("GET /matrix: row total missing or wrong:\n%s", body)
+	}
+
+	// The student's own dashboard says the same thing.
+	h.Local = &student
+	rec = httptest.NewRecorder()
+	New(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /: status %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "overridden") {
+		t.Errorf("GET /: the hand-scored task still reads as untouched:\n%s", body)
+	}
+}
