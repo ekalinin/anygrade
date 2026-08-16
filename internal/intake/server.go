@@ -47,11 +47,11 @@ type Server struct {
 	Log     *slog.Logger // server log for ref bookkeeping failures; nil = discard
 
 	mu        sync.Mutex             // guards pushLocks
-	pushLocks map[string]*sync.Mutex // per-student push serialization
+	pushLocks map[string]*sync.Mutex // per-student drain serialization
 }
 
 // pushLock lazily creates (and reuses) the mutex that serializes the push
-// handlers of one student.
+// drains of one student.
 func (s *Server) pushLock(login string) *sync.Mutex {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -198,9 +198,10 @@ func (s *Server) courseUpdated(ctx context.Context) hookproto.Response {
 	}}
 }
 
-// processPush is Intake.ProcessPush (SPEC §6): diff against the baseline,
-// map changed paths to tasks, admit, enqueue, answer with `remote:` lines.
-// Always exit 0: a student push is never failed by grading bookkeeping.
+// processPush is Intake.ProcessPush (SPEC §6): record each accepted update on
+// the graded branch in the push log, then drain the student's pending pushes -
+// diff, map changed paths to tasks, admit, enqueue - and answer with `remote:`
+// lines. Always exit 0: a student push is never failed by grading bookkeeping.
 func (s *Server) processPush(ctx context.Context, req hookproto.Request) hookproto.Response {
 	now := time.Now()
 	user, err := s.DB.GetUserByLogin(ctx, req.Repo)
@@ -214,6 +215,7 @@ func (s *Server) processPush(ctx context.Context, req hookproto.Request) hookpro
 	}
 
 	var lines []string
+	recorded := false
 	for _, u := range req.Updates {
 		switch {
 		case u.Ref != "refs/heads/"+def:
@@ -224,8 +226,22 @@ func (s *Server) processPush(ctx context.Context, req hookproto.Request) hookpro
 		case u.New == zeroSHA:
 			lines = append(lines, "anygrade: default branch deleted; nothing to grade")
 		default:
-			lines = append(lines, s.gradePush(ctx, user, dir, u.Ref, u.New, now)...)
+			// Recorded before anything is graded, and with the arrival time of
+			// this exchange: everything downstream - deadlines, cooldown,
+			// penalties - is evaluated at the moment the server accepted the
+			// push, not whenever a handler got around to it.
+			if _, err := s.DB.RecordPush(ctx, store.NewPush{UserID: user.ID, Ref: u.Ref,
+				OldSHA: u.Old, NewSHA: u.New, ReceivedAt: now}); err != nil {
+				s.log().Error("push not recorded", "repo", dir, "commit", u.New, "err", err)
+				lines = append(lines, "anygrade: push not recorded: "+err.Error()+
+					"; the next push re-detects these changes")
+				continue
+			}
+			recorded = true
 		}
+	}
+	if recorded {
+		lines = append(lines, s.drainPushes(ctx, user, dir)...)
 	}
 	if len(lines) == 0 {
 		lines = []string{"anygrade: no tasks changed"}
@@ -233,82 +249,150 @@ func (s *Server) processPush(ctx context.Context, req hookproto.Request) hookpro
 	return hookproto.Response{Lines: lines}
 }
 
-// gradePush handles one default-branch update. ref is the branch the update
-// landed on, newSHA the commit the hook was told about.
-func (s *Server) gradePush(ctx context.Context, user store.User, dir, ref, newSHA string, now time.Time) []string {
-	// Hook connections are served concurrently, but every handler of one
-	// student reads refs/anygrade/baseline and then walks the commit range
-	// that starts there. Overlapping handlers read the same baseline, so they
-	// walk overlapping ranges: an explicit [recheck <id>] marker inside the
-	// overlap is admitted by both of them, and each admission costs the
-	// student an attempt. Serializing the handlers of one student removes
-	// that: each of them starts from the baseline its predecessor left. The
-	// wait is bounded by handleTimeout, which every exchange carries.
+// drainPushes grades every pending push of one student, oldest first.
+//
+// Hook connections are served concurrently and a handler can die between
+// recording a push and grading it, so the handler that gets here is not
+// necessarily grading its own push - it grades whatever is still pending,
+// which is what keeps a lost handler from stalling the student's queue.
+//
+// Serializing the drains of one student is what makes "oldest first" mean
+// anything: two overlapping drains would read the same pending set and grade
+// every row in it twice. The wait is bounded by handleTimeout, which every
+// exchange carries.
+func (s *Server) drainPushes(ctx context.Context, user store.User, dir string) []string {
 	lock := s.pushLock(user.Login)
 	lock.Lock()
 	defer lock.Unlock()
 
-	// The lock orders the handlers, but not by the order their pushes arrived:
-	// each of them does its own work before reaching it, and a mutex hands out
-	// ownership to whoever asks, not to whoever pushed first. Nothing about
-	// the commits settles that order either - git records no arrival time, and
-	// after a force push the two heads are not even related.
-	//
-	// The branch ref is the one authority there is: receive-pack moves it
-	// under its own lock and runs this hook only afterwards, so a handler
-	// whose commit is no longer the head has been superseded. Grading it
-	// anyway would diff backwards, score content the student has already
-	// replaced, and leave the baseline on the abandoned history. The handler
-	// of the current head covers this range instead - it either has not run
-	// yet, or has already run and walked past this commit. If it never runs at
-	// all, the baseline stays behind and the next push re-detects everything
-	// from here, which is the guarantee it exists for.
-	head, err := gitserver.Git(ctx, dir, "rev-parse", "--verify", "--quiet", ref)
-	if err != nil || head == "" {
-		return []string{"anygrade: nothing to grade; the branch is gone"}
+	pending, err := s.DB.PendingPushes(ctx, user.ID)
+	if err != nil {
+		s.log().Error("push log unavailable", "repo", dir, "err", err)
+		return []string{"anygrade: push log unavailable: " + err.Error()}
 	}
-	if head != newSHA {
-		s.log().Info("push superseded before it was graded",
-			"repo", dir, "commit", newSHA, "head", head)
-		return []string{"anygrade: superseded by a later push, which is graded instead"}
+	if len(pending) == 0 {
+		// Another handler drained this student while we waited for the lock;
+		// it printed the outcome to its own push.
+		return nil
 	}
+
+	// refs/anygrade/baseline is no longer where a push's range comes from - the
+	// row carries its own ends. What it still is, is the high-water mark of
+	// graded content, and that covers the one gap the log cannot: a push whose
+	// hook never reached the server has no row at all. The oldest pending push
+	// gets it as its recovery scan (gradePush).
+	baseline := ""
+	if out, err := gitserver.Git(ctx, dir, "rev-parse", "--verify", "--quiet",
+		"refs/anygrade/baseline"); err == nil {
+		baseline = out
+	}
+
+	var lines []string
+	if len(pending) > 1 {
+		lines = append(lines, fmt.Sprintf("anygrade: %d push(es) to grade, oldest first", len(pending)))
+	}
+	var graded []string
+	for i, p := range pending {
+		if ctx.Err() != nil {
+			lines = append(lines, "anygrade: out of time; the rest is graded on the next push")
+			break
+		}
+		mark := ""
+		if i == 0 {
+			mark = baseline
+		}
+		out, processed := s.gradePush(ctx, user, dir, p, mark)
+		lines = append(lines, out...)
+		if !processed {
+			lines = append(lines, "anygrade: push kept in the log; the next push grades it again")
+			break
+		}
+		if err := s.DB.MarkPushProcessed(ctx, p.ID, time.Now()); err != nil {
+			s.log().Error("push not marked processed", "push", p.ID, "repo", dir, "err", err)
+			lines = append(lines, "anygrade: push kept in the log; the next push grades it again")
+			break
+		}
+		graded = append(graded, p.NewSHA)
+	}
+	// The mark moves only when this drain graded the commit the branch now
+	// points at. Rows are drained in id order, which is the order the handlers
+	// reached the store - close to the order the pushes arrived, but not it, so
+	// the last row drained is not always the newest commit. The branch tip is
+	// the one thing that is authoritative, because receive-pack moves it under
+	// its own lock. When it is not among the commits just graded, either a push
+	// we have no row for yet is in flight, or an older push was drained after a
+	// newer one; in both cases the mark stays where it is. It may only ever
+	// mean "everything up to here has been graded".
+	if head, err := gitserver.Git(ctx, dir, "rev-parse", "--verify", "--quiet",
+		pending[0].Ref); err == nil && slices.Contains(graded, head) {
+		lines = append(lines, s.advanceBaseline(ctx, dir, baseline, head)...)
+	}
+	return lines
+}
+
+// gradePush grades one recorded push over its own range: from the tip it
+// replaced to the tip it set. mark is refs/anygrade/baseline when this is the
+// oldest pending push and "" otherwise - see the recovery scan below.
+//
+// The second return value reports whether the push can be marked processed:
+// false only when a detected task failed to record, so that the push stays in
+// the log and is graded again rather than lost.
+func (s *Server) gradePush(ctx context.Context, user store.User, dir string,
+	p store.Push, mark string) ([]string, bool) {
 
 	c := s.Course.Get()
 
-	baseline := ""
-	if out, err := gitserver.Git(ctx, dir, "rev-parse", "--verify", "--quiet", "refs/anygrade/baseline"); err == nil {
-		baseline = out
+	from := p.OldSHA
+	if from == zeroSHA {
+		from = emptyTree
 	}
-	// The ref value advanceBaseline compare-and-swaps against, captured before
-	// the self-healing below can clear `baseline`: a repo whose baseline object
-	// is gone still has to update the ref it actually holds.
-	oldBaseline := baseline
-	base := baseline
-	if base == "" {
-		base = emptyTree
-	}
-	diffOut, err := gitserver.Git(ctx, dir, "diff", "--name-only", base, newSHA)
-	if err != nil && base != emptyTree {
-		// Baseline object gone (gc after a force push): self-heal by
-		// re-detecting everything instead of failing.
-		baseline = ""
-		diffOut, err = gitserver.Git(ctx, dir, "diff", "--name-only", emptyTree, newSHA)
+	paths, err := changedPaths(ctx, dir, from, p.NewSHA)
+	if err != nil && from != emptyTree {
+		// The replaced tip is gone (gc after a force push): self-heal by
+		// re-detecting everything instead of failing. The empty tree already
+		// covers whatever the recovery scan below would have added.
+		from = emptyTree
+		paths, err = changedPaths(ctx, dir, emptyTree, p.NewSHA)
 	}
 	if err != nil {
-		return []string{"anygrade: change detection failed: " + err.Error()}
+		// Even the empty tree failed, so the pushed commit itself is
+		// unreadable and no later handler can do better. Marking the push
+		// processed anyway keeps it from blocking every push behind it.
+		s.log().Error("change detection failed",
+			"push", p.ID, "repo", dir, "commit", p.NewSHA, "err", err)
+		return []string{"anygrade: change detection failed: " + err.Error()}, true
 	}
-	var paths []string
-	for p := range strings.SplitSeq(diffOut, "\n") {
-		if p != "" {
-			paths = append(paths, p)
-		}
-	}
-	taskIDs, dropped := s.dropAlreadyRecorded(ctx, dir, user.ID, c, c.DetectTasks(paths), newSHA)
 
-	// Explicit [recheck <task-id>] markers; scanned only against a real
-	// baseline (a first push already detects every task by diff).
-	if baseline != "" {
-		if msgs, err := gitserver.Git(ctx, dir, "log", "--format=%B", baseline+".."+newSHA); err == nil {
+	// Recovery scan. A push whose hook never reached the server leaves no row,
+	// and its content would sit in the gap between the graded mark and the tip
+	// this push replaced - a gap no row covers. It is folded in here because
+	// this is the first handler that can see it, and only here: merging it into
+	// the range above instead would let a push and its revert cancel out, and
+	// then neither of the two pushes that really happened has any content left
+	// to grade. Errors are not fatal - the mark can point at a gc'd commit -
+	// and whatever it re-detects, the filter below drops if it was graded
+	// already.
+	if from != emptyTree && mark != "" && mark != p.OldSHA {
+		gap, err := changedPaths(ctx, dir, mark, p.OldSHA)
+		if err != nil {
+			s.log().Warn("recovery scan skipped",
+				"push", p.ID, "repo", dir, "from", mark, "err", err)
+		}
+		paths = append(paths, gap...)
+	}
+
+	taskIDs, dropped := s.dropAlreadyRecorded(ctx, dir, user.ID, c, c.DetectTasks(paths), p.NewSHA)
+
+	// Explicit [recheck <task-id>] markers, scanned over the commits this push
+	// introduced and nothing else. The content diff above may reach further
+	// back than that when the baseline lags, and re-reading a range is harmless
+	// there - the re-detection filter drops what was already graded at the same
+	// content. A marker is the one thing that filter lets through by design, so
+	// a range walked twice would charge two attempts for one marker. The cost
+	// is that a marker in a push whose hook never reached the server is lost;
+	// its content changes are not.
+	if p.OldSHA != zeroSHA {
+		if msgs, err := gitserver.Git(ctx, dir, "log", "--format=%B", p.OldSHA+".."+p.NewSHA); err == nil {
 			for _, m := range recheckRe.FindAllStringSubmatch(msgs, -1) {
 				if _, _, ok := c.Task(m[1]); ok && !slices.Contains(taskIDs, m[1]) {
 					taskIDs = append(taskIDs, m[1])
@@ -334,7 +418,7 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, ref, newSH
 		if skipped == 0 {
 			lines = append(lines, "anygrade: no tasks changed")
 		}
-		return append(lines, s.advanceBaseline(ctx, dir, oldBaseline, newSHA, true)...)
+		return lines, true
 	}
 
 	width := 0
@@ -345,8 +429,12 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, ref, newSH
 	processed := true
 	for _, id := range taskIDs {
 		task, _, _ := c.Task(id)
+		// ReceivedAt is the push's own arrival time, not this handler's clock:
+		// a push graded late - because its handler died, or because it queued
+		// behind an older one - must still be judged against the deadline,
+		// cooldown and penalty of the moment it arrived.
 		sub, d, err := s.Queue.Submit(ctx, task, store.NewSubmission{
-			UserID: user.ID, TaskID: id, CommitSHA: newSHA, ReceivedAt: now,
+			UserID: user.ID, TaskID: id, CommitSHA: p.NewSHA, ReceivedAt: p.ReceivedAt,
 		}, false)
 		if err != nil {
 			lines = append(lines, fmt.Sprintf("  %-*s error: %v", width, id, err))
@@ -357,7 +445,7 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, ref, newSH
 		// is a recorded row like any other, its page links to the submitted
 		// code, and this ref is the only thing that keeps that tree alive once
 		// a force push moves the branch and gc runs (SPEC §6 step 7).
-		pinErr := s.pinSubmission(ctx, dir, sub.ID, newSHA)
+		pinErr := s.pinSubmission(ctx, dir, sub.ID, p.NewSHA)
 		if d.Admit {
 			line := fmt.Sprintf("  %-*s submission #%d queued", width, id, sub.ID)
 			if s.BaseURL != "" {
@@ -372,29 +460,43 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir, ref, newSH
 				width, id))
 		}
 	}
-	return append(lines, s.advanceBaseline(ctx, dir, oldBaseline, newSHA, processed)...)
+	return lines, processed
 }
 
-// advanceBaseline moves refs/anygrade/baseline to newSHA, but only once every
-// detected task has been processed. The ref is the "last processed commit"
-// marker, so advancing it past a task that failed to record would lose that
-// change for good: the next push would diff against a commit that already
-// contains it. Deliberately not deferred, so the error paths above matter.
-// Returns the push-output lines for the cases where the ref did not move.
-//
-// The move is a compare-and-swap against oldSHA, the value read at the start
-// of this push. Hook connections are served concurrently, so the handler of an
-// older push can finish after the handler of a newer one; a blind write would
-// then roll the marker back and make the next push re-walk a range that was
-// already processed. An empty oldSHA means the ref must still be absent, which
-// git spells as the zero SHA - the legacy repos without a baseline are exactly
-// the ones re-detecting everything, so they need the guard most.
-func (s *Server) advanceBaseline(ctx context.Context, dir, oldSHA, newSHA string, processed bool) []string {
-	if !processed {
-		s.log().Warn("baseline kept after a processing error",
-			"repo", dir, "commit", newSHA)
-		return []string{"anygrade: baseline kept; the next push re-detects these changes"}
+// changedPaths lists the repository paths whose content differs between two
+// trees. Ancestry is irrelevant: after a force push the topology lies and the
+// content does not.
+func changedPaths(ctx context.Context, dir, from, to string) ([]string, error) {
+	out, err := gitserver.Git(ctx, dir, "diff", "--name-only", from, to)
+	if err != nil {
+		return nil, err
 	}
+	var paths []string
+	for p := range strings.SplitSeq(out, "\n") {
+		if p != "" {
+			paths = append(paths, p)
+		}
+	}
+	return paths, nil
+}
+
+// advanceBaseline moves refs/anygrade/baseline to newSHA, the newest commit
+// the drain graded. The ref is the high-water mark of graded content: the push
+// log now owns the per-push ranges, but a push whose hook never reached the
+// server leaves no row at all, and only this mark can tell the next drain how
+// far back to look. Advancing it past a push that failed to record would lose
+// that push's changes twice over, so the caller advances it to the last push it
+// actually graded, and no further. Returns the push-output lines for the cases
+// where the ref did not move.
+//
+// The move is a compare-and-swap against oldSHA, the value read at the start of
+// the drain. Within this process the per-student lock already rules out a
+// competing writer; the guard is what covers a ref moved from outside it, where
+// a blind write would roll the mark back. An empty oldSHA means the ref must
+// still be absent, which git spells as the zero SHA - the legacy repos without
+// a baseline are exactly the ones re-detecting everything, so they need the
+// guard most.
+func (s *Server) advanceBaseline(ctx context.Context, dir, oldSHA, newSHA string) []string {
 	expected := cmp.Or(oldSHA, zeroSHA)
 	if _, err := gitserver.Git(ctx, dir, "update-ref", "refs/anygrade/baseline", newSHA, expected); err != nil {
 		if staleBaseline(err) {
