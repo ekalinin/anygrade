@@ -340,6 +340,7 @@ SQLite tables:
 - `tokens` (user_id, hash, created_at, last_used_at)
 - `ssh_keys` (user_id, fingerprint, public_key, created_at)
 - `invites` (token_hash, user_id, expires_at, used_at)
+- `pushes` (id, user_id, ref, old_sha, new_sha, received_at, processed_at) - the intake log: every accepted push to a graded branch, recorded on arrival and graded afterwards, so a push is an event with its own boundaries and arrival time rather than a ref position
 - `submissions` (id, user_id, task_id, commit_sha, received_at, attempt_no, status: queued|running|done|infra_error|rejected_deadline|rejected_limit, raw_score, penalty_percent, final_score, log_dir, worker_note)
 - `check_results` (submission_id, name, passed, exit_code, duration_ms, weight, log_excerpt)
 - `score_overrides` (user_id, task_id, score, comment, teacher_id, created_at)

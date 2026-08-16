@@ -23,6 +23,7 @@ const (
 // Store is the full persistence interface; *DB is the only implementation.
 type Store interface {
 	SubmissionStore
+	PushStore
 	UserStore
 	SessionStore
 	AuditStore
@@ -245,6 +246,43 @@ type SubmissionStore interface {
 	// ListActive returns queued, running, and infra_error submissions
 	// (teacher queue view), newest first.
 	ListActive(ctx context.Context) ([]Submission, error)
+}
+
+// Push is one accepted ref update on a student's graded branch (SPEC §13).
+// The row is what makes a push an event rather than a ref position: it has an
+// identity a force-push cycle cannot repeat, the boundaries of exactly this
+// push, the time the server accepted it, and a processed marker.
+type Push struct {
+	ID         int64
+	UserID     int64
+	Ref        string
+	OldSHA     string // the branch tip this push replaced; zero SHA on creation
+	NewSHA     string
+	ReceivedAt time.Time // server clock at hook arrival; the submission's own
+	// ProcessedAt is nil while the push still has to be graded.
+	ProcessedAt *time.Time
+}
+
+// NewPush is the intake payload; RecordPush assigns the ID.
+type NewPush struct {
+	UserID     int64
+	Ref        string
+	OldSHA     string
+	NewSHA     string
+	ReceivedAt time.Time
+}
+
+// PushStore persists the push log. Hook handlers are concurrent and can die
+// mid-flight, so a push is recorded on arrival and graded afterwards: whoever
+// holds the student's lock next drains every pending row in order.
+type PushStore interface {
+	// RecordPush appends an accepted ref update, unprocessed.
+	RecordPush(ctx context.Context, np NewPush) (Push, error)
+	// PendingPushes returns the student's ungraded pushes, oldest first.
+	PendingPushes(ctx context.Context, userID int64) ([]Push, error)
+	// MarkPushProcessed records that the push has been graded; the row is
+	// never handed out by PendingPushes again.
+	MarkPushProcessed(ctx context.Context, id int64, at time.Time) error
 }
 
 // Invite is a one-shot activation link for a tokenless user (SPEC §8).
