@@ -44,6 +44,7 @@ course-repo/
 ```yaml
 name: "Go course 2026"
 language: en              # web UI language: en | ru (default en)
+timezone: Europe/Berlin   # IANA name the UI renders times in (default UTC)
 
 registration:
   mode: invite            # invite | open

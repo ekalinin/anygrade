@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ekalinin/anygrade/internal/i18n"
 	"github.com/ekalinin/anygrade/internal/version"
@@ -62,6 +63,33 @@ func TestRenderFooter(t *testing.T) {
 		if !strings.Contains(out, version.Short()) {
 			t.Errorf("footer [%s]: missing version %q", lang, version.Short())
 		}
+	}
+}
+
+// TestFmtTimeCourseTimezone checks the template helper renders in the course
+// timezone (SPEC §13) and falls back to UTC - never the machine's local zone -
+// when no source is installed.
+func TestFmtTimeCourseTimezone(t *testing.T) {
+	fmtTime, ok := localeFuncs("en")["fmtTime"].(func(any) string)
+	if !ok {
+		t.Fatal("fmtTime is not func(any) string")
+	}
+	// 12:30 UTC; Europe/Berlin is UTC+2 on that date.
+	at := time.Date(2026, 7, 1, 12, 30, 0, 0, time.UTC)
+
+	t.Cleanup(func() { courseTZ.Store(nil) })
+	courseTZ.Store(nil)
+	if got, want := fmtTime(at), "2026-07-01 12:30"; got != want {
+		t.Errorf("no source installed: fmtTime = %q, want %q (UTC)", got, want)
+	}
+
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatalf("LoadLocation: %v", err)
+	}
+	SetTimezoneSource(func() *time.Location { return berlin })
+	if got, want := fmtTime(&at), "2026-07-01 14:30"; got != want {
+		t.Errorf("Europe/Berlin: fmtTime = %q, want %q", got, want)
 	}
 }
 

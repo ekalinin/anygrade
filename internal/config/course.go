@@ -8,6 +8,7 @@ type Course struct {
 	Name         string       `yaml:"name"`
 	TasksDir     string       `yaml:"tasks_dir"`
 	Language     string       `yaml:"language"` // web UI language (en | ru); empty defaults to en
+	Timezone     string       `yaml:"timezone"` // IANA name the UI renders times in; empty defaults to UTC
 	Registration Registration `yaml:"registration"`
 	Leaderboard  Leaderboard  `yaml:"leaderboard"`
 	Scoring      Scoring      `yaml:"scoring"`

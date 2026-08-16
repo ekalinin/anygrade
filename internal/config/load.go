@@ -6,6 +6,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
+	// The course timezone is an IANA name, so the binary must be able to
+	// resolve one on hosts without a system tz database (scratch images,
+	// Windows). Embedding the database is the only way to make `timezone:`
+	// behave the same everywhere.
+	_ "time/tzdata"
 
 	"gopkg.in/yaml.v3"
 
@@ -163,5 +169,20 @@ func resolveCourse(c *Course) ResolvedCourse {
 		Registration:  c.Registration,
 		Leaderboard:   c.Leaderboard,
 		ScoringPolicy: policy,
+		Timezone:      loadLocation(c.Timezone),
 	}
+}
+
+// loadLocation resolves an IANA name, falling back to UTC. Resolution stays
+// lenient (like Language above) so a bad name still yields a usable Resolved;
+// Validate is what turns it into an error.
+func loadLocation(name string) *time.Location {
+	if name == "" {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
 }

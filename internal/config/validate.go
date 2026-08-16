@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ekalinin/anygrade/internal/i18n"
 )
@@ -86,6 +87,11 @@ func Validate(r *Resolved) []Diagnostic {
 	}
 	if l := r.rawCourse.Language; l != "" && !i18n.Supported(l) {
 		add(SevError, courseFile, "language", "must be one of %s, got %q", strings.Join(i18n.Locales(), "|"), l)
+	}
+	if tz := r.rawCourse.Timezone; tz != "" {
+		if _, err := time.LoadLocation(tz); err != nil {
+			add(SevError, courseFile, "timezone", "must be an IANA location name (e.g. Europe/Berlin), got %q", tz)
+		}
 	}
 	if len(r.Tasks) == 0 {
 		add(SevError, courseFile, "tasks_dir", "no task.yaml found under %q", c.TasksDir)

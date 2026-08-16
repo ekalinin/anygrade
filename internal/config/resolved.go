@@ -22,6 +22,10 @@ type ResolvedCourse struct {
 	Registration  Registration
 	Leaderboard   Leaderboard
 	ScoringPolicy string
+	// Timezone is the location the UI renders timestamps in (SPEC §13);
+	// never nil - an unset or unloadable name resolves to UTC, and Validate
+	// reports the latter as an error.
+	Timezone *time.Location
 }
 
 // ResolvedTask is a task with all runner/limits/deadline defaults merged in.

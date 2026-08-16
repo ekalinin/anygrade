@@ -63,6 +63,7 @@ The tasks root directory is configurable; a task is any directory under it conta
 name: "Go course 2026"
 tasks_dir: tasks
 language: en              # web UI language: en | ru (default en)
+timezone: Europe/Berlin   # IANA name the UI renders times in (default UTC)
 
 registration:
   mode: invite            # invite | open
