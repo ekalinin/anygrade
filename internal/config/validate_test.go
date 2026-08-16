@@ -246,6 +246,44 @@ func TestValidateLogExcerpt(t *testing.T) {
 	}
 }
 
+// TestValidateCheckNameShape covers the check-name warning: a slash or
+// whitespace stays legal (the log download resolves names against the
+// submission's results) but is worth flagging, because it is rewritten in the
+// log file name and percent-encoded in the URL.
+func TestValidateCheckNameShape(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	task := &Task{
+		Dir: dir, ID: "w", Name: "W", Score: 100,
+		SolutionFiles: []string{"main.go"},
+		Runner:        RunnerSpec{Type: new("local")},
+		Checks: []Check{
+			{Name: "build/all", Weight: 50, Run: "go build ./..."},
+			{Name: "unit", Weight: 50, Run: "go test ./..."},
+		},
+	}
+	rt := Resolve(&Course{}, task)
+	rt.file = "task.yaml"
+	diags := Validate(&Resolved{
+		Course:    ResolvedCourse{Name: "C", TasksDir: "tasks", Registration: Registration{Mode: "invite"}, ScoringPolicy: "best"},
+		rawCourse: &Course{Registration: Registration{Mode: "invite"}, Scoring: Scoring{Policy: "best"}},
+		Tasks:     []ResolvedTask{rt},
+	})
+
+	if HasErrors(diags) {
+		t.Fatalf("a slash in a check name must not fail validation: %v", diagStrings(diags))
+	}
+	joined := strings.Join(diagStrings(diags), "\n")
+	if !strings.Contains(joined, "rewritten in the log file name") {
+		t.Errorf("expected a check-name warning, got:\n%s", joined)
+	}
+	if strings.Count(joined, "rewritten in the log file name") != 1 {
+		t.Errorf("only checks[0] should warn, got:\n%s", joined)
+	}
+}
+
 // hasFieldError reports whether diags carries a SevError for the given field.
 func hasFieldError(diags []Diagnostic, field string) bool {
 	for _, d := range diags {

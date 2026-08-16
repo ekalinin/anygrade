@@ -268,6 +268,12 @@ func validateChecks(t *ResolvedTask, add func(Severity, string, string, string, 
 			add(SevError, f, field+".name", "check name is required")
 		} else if seen[ch.Name] {
 			add(SevError, f, field+".name", "duplicate check name %q", ch.Name)
+		} else if strings.ContainsAny(ch.Name, "/ \t\r\n") {
+			// Still supported end to end - the log download resolves the name
+			// against the submission's results - but it is percent-encoded in
+			// the URL and rewritten in the log file name, so two such names can
+			// end up sharing one file.
+			add(SevWarning, f, field+".name", "%q contains a path separator or whitespace, which is rewritten in the log file name", ch.Name)
 		}
 		seen[ch.Name] = true
 		if ch.Run == "" {

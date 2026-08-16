@@ -72,7 +72,9 @@ func New(h *Handler) http.Handler {
 	mux.Handle("GET /submissions/{id}", h.requireAuth(h.submissionPage))
 	mux.Handle("GET /submissions/{id}/fragment", h.requireAuth(h.submissionFragment))
 	mux.Handle("GET /submissions/{id}/stream", h.requireAuth(h.submissionStream))
-	mux.Handle("GET /submissions/{id}/logs/{check}", h.requireAuth(h.submissionLog))
+	// {check...}: a check name may contain '/' (metadata only forbids empty and
+	// duplicate names), which a single-segment wildcard could never match.
+	mux.Handle("GET /submissions/{id}/logs/{check...}", h.requireAuth(h.submissionLog))
 	mux.Handle("GET /leaderboard", h.requireAuth(h.leaderboardPage))
 	mux.Handle("GET /settings", h.requireAuth(h.settingsPage))
 	mux.Handle("POST /settings/token", h.requireAuth(h.regenToken))

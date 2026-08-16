@@ -1,10 +1,11 @@
 package web
 
 import (
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
+	"slices"
 	"strconv"
 	"time"
 
@@ -99,29 +100,37 @@ func (h *Handler) submissionFragment(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(html))
 }
 
-var checkNameRe = regexp.MustCompile(`^[A-Za-z0-9._ -]+$`)
-
-// submissionLog downloads one full check log from disk (SPEC §13: the DB
-// holds only the 64KB excerpt).
+// submissionLog downloads one full check log from disk (SPEC §13: the DB holds
+// only the excerpt).
+//
+// The check name is validated by membership in this submission's results, not
+// by shape: metadata only requires a name to be non-empty and unique within the
+// task, so any pattern-based allowlist rejects logs the run legitimately wrote.
+// Traversal is not a concern either way - the name never reaches the path, only
+// runner.LogFileName's deterministic rendering of it does.
 func (h *Handler) submissionLog(w http.ResponseWriter, r *http.Request) {
-	sub, _, ok := h.loadSubmission(w, r)
+	sub, checks, ok := h.loadSubmission(w, r)
 	if !ok {
 		return
 	}
 	check := r.PathValue("check")
-	if !checkNameRe.MatchString(check) {
+	if !slices.ContainsFunc(checks, func(c store.CheckRow) bool { return c.Name == check }) {
 		http.NotFound(w, r)
 		return
 	}
-	path := filepath.Join(intake.SubmissionLogDir(h.DataDir, sub.ID), runner.LogFileName(check))
-	f, err := os.Open(path)
+	name := runner.LogFileName(check)
+	f, err := os.Open(filepath.Join(intake.SubmissionLogDir(h.DataDir, sub.ID), name))
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
 	defer f.Close()
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+runner.LogFileName(check)+`"`)
+	// FormatMediaType quotes and RFC 2231-encodes the file name; building the
+	// header by hand would let a check name carrying a quote break out of it.
+	if cd := mime.FormatMediaType("attachment", map[string]string{"filename": name}); cd != "" {
+		w.Header().Set("Content-Disposition", cd)
+	}
 	http.ServeContent(w, r, "", modTime(f), f)
 }
 
