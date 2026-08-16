@@ -12,9 +12,11 @@ import (
 )
 
 // Display statuses beyond the raw store statuses (SPEC §10). "retrying",
-// "error", and "canceled" refine infra_error for humans.
+// "error", and "canceled" refine infra_error for humans; "overridden" is the
+// task a teacher scored by hand without the student ever submitting to it.
 const (
 	StatusNotStarted = "not started"
+	StatusOverridden = "overridden"
 	StatusRetrying   = "retrying"
 	StatusError      = "error"
 	StatusCanceled   = "canceled"
@@ -81,18 +83,19 @@ func Build(users []store.User, tasks []TaskCol, subs []store.Submission,
 		row := Row{User: u, Cells: make(map[string]Cell, len(tasks))}
 		for _, t := range tasks {
 			history := byUserTask[u.ID][t.ID]
-			cell := Cell{
-				Status:   DeriveStatus(history, t.MaxScore),
-				Computed: DisplayScore(history, policy),
+			cell := Cell{Computed: DisplayScore(history, policy)}
+			if o, ok := ovr[u.ID][t.ID]; ok {
+				cell.Override = &o
 			}
+			cell.Status = DeriveStatus(history, t.MaxScore, cell.Override != nil)
+			// The empty status is what the matrix draws a dash for. Only a task
+			// contributing nothing may have it: an override is a score, and the
+			// row total counts it, so its cell has to show it too.
 			if cell.Status == StatusNotStarted {
 				cell.Status = ""
 			}
 			if len(history) > 0 {
 				cell.LatestSubID = history[len(history)-1].ID
-			}
-			if o, ok := ovr[u.ID][t.ID]; ok {
-				cell.Override = &o
 			}
 			switch {
 			case cell.Override != nil:
@@ -112,9 +115,18 @@ func Build(users []store.User, tasks []TaskCol, subs []store.Submission,
 }
 
 // DeriveStatus maps a task's submission history (received_at ascending) to
-// its display status (SPEC §10).
-func DeriveStatus(history []store.Submission, taskScore int) string {
+// its display status (SPEC §10). overridden says whether a teacher set a score
+// for the pair by hand: on a task the student never submitted to, that score is
+// the only thing there is, and calling the task "not started" would hide a
+// deliberate teacher action while its score counts toward the total (SPEC §9).
+// With a history the override changes only the number shown, not the status -
+// the submissions did happen, and their outcome is still what the status is
+// about.
+func DeriveStatus(history []store.Submission, taskScore int, overridden bool) string {
 	if len(history) == 0 {
+		if overridden {
+			return StatusOverridden
+		}
 		return StatusNotStarted
 	}
 	last := history[len(history)-1]

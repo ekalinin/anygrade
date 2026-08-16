@@ -17,27 +17,31 @@ func TestDeriveStatus(t *testing.T) {
 	retryAt := time.Now().Add(time.Minute)
 	canceledAt := time.Now()
 	tests := []struct {
-		name    string
-		history []store.Submission
-		want    string
+		name       string
+		history    []store.Submission
+		overridden bool
+		want       string
 	}{
-		{"empty", nil, StatusNotStarted},
-		{"queued", []store.Submission{sub(store.StatusQueued, nil, true)}, "queued"},
-		{"running", []store.Submission{sub(store.StatusRunning, nil, true)}, "running"},
-		{"passed", []store.Submission{sub(store.StatusDone, new(float64(100)), true)}, StatusPassed},
-		{"partial", []store.Submission{sub(store.StatusDone, new(float64(60)), true)}, StatusPartial},
-		{"failed", []store.Submission{sub(store.StatusDone, new(float64(0)), true)}, StatusFailed},
-		{"rejected", []store.Submission{sub(store.StatusRejectedDeadline, nil, true)}, StatusRejected},
+		{"empty", nil, false, StatusNotStarted},
+		{"overridden without submissions", nil, true, StatusOverridden},
+		{"an override does not mask a real outcome",
+			[]store.Submission{sub(store.StatusDone, new(float64(0)), true)}, true, StatusFailed},
+		{"queued", []store.Submission{sub(store.StatusQueued, nil, true)}, false, "queued"},
+		{"running", []store.Submission{sub(store.StatusRunning, nil, true)}, false, "running"},
+		{"passed", []store.Submission{sub(store.StatusDone, new(float64(100)), true)}, false, StatusPassed},
+		{"partial", []store.Submission{sub(store.StatusDone, new(float64(60)), true)}, false, StatusPartial},
+		{"failed", []store.Submission{sub(store.StatusDone, new(float64(0)), true)}, false, StatusFailed},
+		{"rejected", []store.Submission{sub(store.StatusRejectedDeadline, nil, true)}, false, StatusRejected},
 		{"latest wins", []store.Submission{
 			sub(store.StatusDone, new(float64(100)), true),
 			sub(store.StatusQueued, nil, true),
-		}, "queued"},
-		{"retrying", []store.Submission{{Status: store.StatusInfraError, RetryAt: &retryAt}}, StatusRetrying},
-		{"terminal infra", []store.Submission{{Status: store.StatusInfraError}}, StatusError},
-		{"canceled", []store.Submission{{Status: store.StatusInfraError, CanceledAt: &canceledAt}}, StatusCanceled},
+		}, false, "queued"},
+		{"retrying", []store.Submission{{Status: store.StatusInfraError, RetryAt: &retryAt}}, false, StatusRetrying},
+		{"terminal infra", []store.Submission{{Status: store.StatusInfraError}}, false, StatusError},
+		{"canceled", []store.Submission{{Status: store.StatusInfraError, CanceledAt: &canceledAt}}, false, StatusCanceled},
 	}
 	for _, tc := range tests {
-		if got := DeriveStatus(tc.history, 100); got != tc.want {
+		if got := DeriveStatus(tc.history, 100, tc.overridden); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
@@ -82,18 +86,45 @@ func TestBuildMatrix(t *testing.T) {
 	if c := a.Cells["t1"]; c.Display != 80 || c.Status != StatusPassed && c.Status != StatusPartial || c.LatestSubID != 11 {
 		t.Errorf("alice t1: %+v", c)
 	}
-	if c := a.Cells["t2"]; c.Override == nil || c.Display != 33 || c.Computed != nil {
+	// An override with no submissions behind it: the score counts toward the
+	// total, so the cell must carry a status the matrix draws instead of a dash.
+	if c := a.Cells["t2"]; c.Override == nil || c.Display != 33 || c.Computed != nil ||
+		c.Status != StatusOverridden {
 		t.Errorf("alice t2 override: %+v", c)
 	}
 	if a.Total != 113 {
 		t.Errorf("alice total: %v", a.Total)
 	}
+	assertTotalIsVisible(t, a)
+	assertTotalIsVisible(t, m.Rows[1])
 	b := m.Rows[1]
 	if c := b.Cells["t2"]; c.Status != "queued" || c.Display != 0 {
 		t.Errorf("bob t2: %+v", c)
 	}
 	if c := b.Cells["t1"]; c.Status != "" || c.LatestSubID != 0 {
 		t.Errorf("bob t1 empty cell: %+v", c)
+	}
+}
+
+// assertTotalIsVisible: the matrix draws a dash for a cell with an empty
+// status and the score for every other one, so the row total has to equal the
+// sum of the cells that are not blank. A cell that contributes to the total
+// while showing a dash makes the row not add up.
+func assertTotalIsVisible(t *testing.T, row Row) {
+	t.Helper()
+	visible := 0.0
+	for id, c := range row.Cells {
+		if c.Status == "" {
+			if c.Display != 0 {
+				t.Errorf("%s %s: a blank cell contributes %v to the total",
+					row.User.Login, id, c.Display)
+			}
+			continue
+		}
+		visible += c.Display
+	}
+	if visible != row.Total {
+		t.Errorf("%s: visible cells sum to %v, row total is %v", row.User.Login, visible, row.Total)
 	}
 }
 

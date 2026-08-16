@@ -150,6 +150,8 @@ tbody tr:hover { background: var(--surface); }
 .st-failed, .st-rejected, .st-rejected-deadline, .st-rejected-limit, .st-error { color: var(--bad); background: var(--bad-weak); }
 .st-running { color: var(--info); background: var(--info-weak); }
 .st-not-started, .st-skipped { color: var(--muted); background: var(--surface-2); border-color: var(--line); }
+/* A hand-set score: neutral, but not muted - the number is real. */
+.st-overridden { color: var(--fg); background: var(--surface-2); border-color: var(--line); }
 
 /* Meta / hints / flashes */
 .meta { display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: 0.9rem; }
