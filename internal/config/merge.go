@@ -7,14 +7,20 @@ import (
 
 // Built-in fallback defaults, used when course.yaml omits a defaults field
 // entirely. These are the base layer of the merge (SPEC §4.2 example values).
+// DefaultLogExcerpt is the built-in per-check log excerpt size (SPEC §13:
+// "truncated to a configurable excerpt, default 64 KB per check"). It lives
+// here rather than in runner because runner imports config, not the reverse.
+const DefaultLogExcerpt = 64 << 10
+
 func builtinRunner() ResolvedRunner {
 	return ResolvedRunner{
-		Type:    "docker",
-		Image:   "",
-		Timeout: 5 * time.Minute,
-		Memory:  512 << 20, // 512m
-		CPUs:    1,
-		Network: "none",
+		Type:       "docker",
+		Image:      "",
+		Timeout:    5 * time.Minute,
+		Memory:     512 << 20, // 512m
+		CPUs:       1,
+		Network:    "none",
+		LogExcerpt: DefaultLogExcerpt,
 	}
 }
 
@@ -94,6 +100,9 @@ func mergeRunner(base ResolvedRunner, over RunnerSpec) ResolvedRunner {
 	}
 	if over.Network != nil {
 		base.Network = *over.Network
+	}
+	if over.LogExcerpt != nil {
+		base.LogExcerpt = over.LogExcerpt.Bytes()
 	}
 	return base
 }

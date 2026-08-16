@@ -26,7 +26,7 @@ func (r *LocalRunner) Run(ctx context.Context, job Job) ([]Outcome, error) {
 }
 
 func (r *LocalRunner) execCheck(ctx context.Context, job Job, c config.Check, logPath string) (Outcome, error) {
-	log, err := openCheckLog(logPath, r.Mirror)
+	log, err := openCheckLog(logPath, r.Mirror, job.Spec.LogExcerpt)
 	if err != nil {
 		return Outcome{}, infraErr("workspace", err)
 	}

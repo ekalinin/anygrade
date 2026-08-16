@@ -49,6 +49,44 @@ func TestLocalRunnerPassFail(t *testing.T) {
 	}
 }
 
+// TestLocalRunnerLogExcerptSize checks the excerpt honors the task's
+// runner.log_excerpt while the log file on disk stays complete (SPEC §13),
+// and that an unset size still falls back to the 64 KB default.
+func TestLocalRunnerLogExcerptSize(t *testing.T) {
+	// 200 lines of 11 bytes = 2200 bytes: well over the 128-byte excerpt
+	// below and well under the default.
+	const loud = "for i in $(seq 1 200); do echo 0123456789; done"
+	const fullSize = 200 * 11
+
+	run := func(excerpt int64) Outcome {
+		t.Helper()
+		job := localJob(t, time.Minute, []config.Check{{Name: "loud", Weight: 1, Run: loud}})
+		job.Spec.LogExcerpt = excerpt
+		outcomes, err := (&LocalRunner{}).Run(t.Context(), job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(readFile(t, outcomes[0].LogPath)); got != fullSize {
+			t.Errorf("log file: got %d bytes, want the full %d", got, fullSize)
+		}
+		return outcomes[0]
+	}
+
+	const marker = "[...truncated...]\n"
+	capped := run(128)
+	if !strings.HasPrefix(capped.LogExcerpt, marker) {
+		t.Fatalf("excerpt should be marked truncated: %q", capped.LogExcerpt)
+	}
+	if got := len(strings.TrimPrefix(capped.LogExcerpt, marker)); got != 128 {
+		t.Errorf("excerpt: got %d bytes, want 128", got)
+	}
+
+	if full := run(0); len(full.LogExcerpt) != fullSize {
+		t.Errorf("unset log_excerpt: got %d bytes, want the full %d (default is %d)",
+			len(full.LogExcerpt), fullSize, DefaultExcerptSize)
+	}
+}
+
 func TestLocalRunnerTimeoutKillsProcessGroup(t *testing.T) {
 	r := &LocalRunner{}
 	job := localJob(t, 300*time.Millisecond, []config.Check{

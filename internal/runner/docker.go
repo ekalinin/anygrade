@@ -200,7 +200,7 @@ func (s *dockerSession) alive() bool {
 }
 
 func (s *dockerSession) execCheck(ctx context.Context, job Job, c config.Check, logPath string) (Outcome, error) {
-	log, err := openCheckLog(logPath, s.r.Mirror)
+	log, err := openCheckLog(logPath, s.r.Mirror, job.Spec.LogExcerpt)
 	if err != nil {
 		return Outcome{}, infraErr("workspace", err)
 	}

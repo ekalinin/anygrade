@@ -15,9 +15,11 @@ import (
 	"github.com/ekalinin/anygrade/internal/store"
 )
 
-// paneCap matches the stored excerpt size (SPEC §13): the live view shows at
-// most this much per check; the full log is a download away.
-const paneCap int64 = runner.DefaultExcerptSize
+// defaultPaneCap is the live-view cap used when the task is unknown (deleted
+// from the course while a submission was in flight). A known task caps at its
+// own `runner.log_excerpt`, so the live view shows exactly as much as the
+// stored excerpt will (SPEC §13); the full log is a download away.
+const defaultPaneCap int64 = runner.DefaultExcerptSize
 
 const tailInterval = 400 * time.Millisecond
 
@@ -63,7 +65,11 @@ func (h *Handler) submissionStream(w http.ResponseWriter, r *http.Request) {
 	// the DOM (no dynamic element creation, no OOB swaps).
 	logDir := intake.SubmissionLogDir(h.DataDir, sub.ID)
 	var tails []*tailState
+	paneCap := defaultPaneCap
 	if task, _, ok := h.Course.Get().Task(sub.TaskID); ok {
+		if task.Runner.LogExcerpt > 0 {
+			paneCap = task.Runner.LogExcerpt
+		}
 		for _, c := range task.Checks {
 			tails = append(tails, &tailState{path: filepath.Join(logDir, runner.LogFileName(c.Name))})
 		}
@@ -79,19 +85,19 @@ func (h *Handler) submissionStream(w http.ResponseWriter, r *http.Request) {
 		case ev := <-events:
 			sse.send("status", statusBadge(lang, ev.Status))
 			if terminalStatus(ev.Status) {
-				h.drainTails(sse, lang, tails) // flush the last buffered output first
+				h.drainTails(sse, lang, tails, paneCap) // flush the last buffered output first
 				sse.send("done", "")
 				return
 			}
 		case <-ticker.C:
-			h.drainTails(sse, lang, tails)
+			h.drainTails(sse, lang, tails, paneCap)
 		}
 	}
 }
 
 // drainTails emits new bytes of every growing log file, HTML-escaped, capped
-// per pane at the excerpt size.
-func (h *Handler) drainTails(sse *sseWriter, lang string, tails []*tailState) {
+// per pane at the task's excerpt size.
+func (h *Handler) drainTails(sse *sseWriter, lang string, tails []*tailState, paneCap int64) {
 	for i, t := range tails {
 		if t.capped {
 			continue

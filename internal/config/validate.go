@@ -54,6 +54,11 @@ func HasErrors(diags []Diagnostic) bool {
 	return false
 }
 
+// maxSaneLogExcerpt is the point above which runner.log_excerpt only earns a
+// warning, not an error: bigger excerpts work, they just cost memory per
+// running check and space in every submission row.
+const maxSaneLogExcerpt = 1 << 20
+
 var (
 	validRunnerTypes  = map[string]bool{"docker": true, "local": true}
 	validNetworks     = map[string]bool{"none": true, "bridge": true, "host": true}
@@ -132,6 +137,13 @@ func validateTask(t *ResolvedTask, add func(Severity, string, string, string, ..
 	}
 	if t.Runner.CPUs <= 0 {
 		add(SevError, f, "runner.cpus", "must be > 0")
+	}
+	if t.Runner.LogExcerpt <= 0 {
+		add(SevError, f, "runner.log_excerpt", "must be > 0")
+	} else if t.Runner.LogExcerpt > maxSaneLogExcerpt {
+		// The excerpt is buffered in memory per running check and then stored
+		// in the DB row; the full log is on disk either way.
+		add(SevWarning, f, "runner.log_excerpt", "%d bytes is kept in memory per check and stored in the database", t.Runner.LogExcerpt)
 	}
 	// Memory/cpu limits are docker-only (SPEC §14); warn when a local-runner
 	// task sets them explicitly so they don't look enforced.

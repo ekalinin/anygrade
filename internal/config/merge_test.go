@@ -5,6 +5,22 @@ import (
 	"time"
 )
 
+// TestLogExcerptInheritance pins runner.log_excerpt through all three merge
+// layers, so an unset value keeps the SPEC §13 default of 64 KB.
+func TestLogExcerptInheritance(t *testing.T) {
+	if got := Resolve(&Course{}, &Task{}).Runner.LogExcerpt; got != DefaultLogExcerpt {
+		t.Errorf("builtin: got %d, want %d", got, DefaultLogExcerpt)
+	}
+	course := &Course{Defaults: Defaults{Runner: RunnerSpec{LogExcerpt: new(ByteSize(128 << 10))}}}
+	if got := Resolve(course, &Task{}).Runner.LogExcerpt; got != 128<<10 {
+		t.Errorf("course default: got %d, want %d", got, 128<<10)
+	}
+	task := &Task{Runner: RunnerSpec{LogExcerpt: new(ByteSize(1 << 20))}}
+	if got := Resolve(course, task).Runner.LogExcerpt; got != 1<<20 {
+		t.Errorf("task override: got %d, want %d", got, 1<<20)
+	}
+}
+
 // TestRunnerInheritsUnsetFields verifies deep, field-by-field merge: a task that
 // overrides only runner.image inherits type/timeout/memory/cpus/network from the
 // course defaults (SPEC §4.2).

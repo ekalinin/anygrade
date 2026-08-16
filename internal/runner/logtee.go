@@ -3,11 +3,14 @@ package runner
 import (
 	"io"
 	"os"
+
+	"github.com/ekalinin/anygrade/internal/config"
 )
 
-// DefaultExcerptSize is the maximum size of the log excerpt kept in memory for
-// the DB/UI; the full log always lives on disk (SPEC §13).
-const DefaultExcerptSize = 64 << 10
+// DefaultExcerptSize is the excerpt size used when a Job carries none; the
+// full log always lives on disk (SPEC §13). Courses set their own through
+// `runner.log_excerpt`, which resolves to Job.Spec.LogExcerpt.
+const DefaultExcerptSize = config.DefaultLogExcerpt
 
 // tailBuffer keeps the last max bytes written to it.
 type tailBuffer struct {
@@ -43,12 +46,18 @@ type checkLog struct {
 	w    io.Writer
 }
 
-func openCheckLog(path string, mirror io.Writer) (*checkLog, error) {
+// openCheckLog creates the check's log file and its excerpt tail. A
+// non-positive excerpt falls back to DefaultExcerptSize, so a Job assembled
+// without a resolved config still behaves.
+func openCheckLog(path string, mirror io.Writer, excerpt int64) (*checkLog, error) {
 	f, err := os.Create(path)
 	if err != nil {
 		return nil, err
 	}
-	tail := newTailBuffer(DefaultExcerptSize)
+	if excerpt <= 0 {
+		excerpt = DefaultExcerptSize
+	}
+	tail := newTailBuffer(int(excerpt))
 	var w io.Writer = io.MultiWriter(f, tail)
 	if mirror != nil {
 		w = io.MultiWriter(f, tail, mirror)

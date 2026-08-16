@@ -65,6 +65,7 @@ defaults:                 # inherited by every task.yaml, overridable per task
     memory: 512m
     cpus: 1
     network: none
+    log_excerpt: 64k      # per-check log tail kept in the DB/UI (default 64k)
 ```
 
 `task.yaml`:

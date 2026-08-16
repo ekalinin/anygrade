@@ -55,12 +55,13 @@ type ResolvedWorkspace struct {
 
 // ResolvedRunner is a concrete runner configuration (all defaults applied).
 type ResolvedRunner struct {
-	Type    string
-	Image   string
-	Timeout time.Duration
-	Memory  int64
-	CPUs    float64
-	Network string
+	Type       string
+	Image      string
+	Timeout    time.Duration
+	Memory     int64
+	CPUs       float64
+	Network    string
+	LogExcerpt int64
 }
 
 // ResolvedLimits is a concrete attempt/cooldown configuration.
