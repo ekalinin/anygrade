@@ -189,7 +189,7 @@ anygrade export  scores --format csv
 anygrade version
 ```
 
-`serve --local` runs with a single implicit user and no auth for offline use; it refuses to bind to non-loopback addresses.
+`serve --local` runs with a single implicit user and no auth for offline use; it refuses to bind to non-loopback addresses, so the listen addresses default to `127.0.0.1:8080` and `127.0.0.1:2222` in that mode.
 
 ## Security
 
