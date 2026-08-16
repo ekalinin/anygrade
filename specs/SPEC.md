@@ -240,7 +240,7 @@ Consequences:
 
 ## 7. Git server
 
-- Per-student bare repos are created lazily at account activation as clones of the course repo.
+- Per-student bare repos are clones of the course repo, created at account activation. The first git access creates one too, as a fallback: accounts made with `anygrade user add` never go through an activation page, and the activation itself must not fail on a slow clone once the invite is already spent.
 - Students have read/write access to their own repo only, and read-only access to the upstream course repo.
 - Suggested student setup (printed on the invite/activation page):
 
@@ -269,7 +269,9 @@ Three modes, all supported:
 
 Registration (configured in `course.yaml`):
 
-- `invite`: the teacher loads a roster (CLI `anygrade user add` or a CSV import); the system generates one-time invite links. A student opens the link, sets up a token and/or SSH key, and gets their repo URL.
+- `invite`: the teacher creates the accounts and the students activate them. Two CLI commands cover the two ways an account can start (§11):
+  - `anygrade user invite` creates the account and prints a one-time link, for one login or for a whole roster via `--csv`. The student opens the link, sets up a token and/or SSH key, and gets their repo URL. This is the normal path;
+  - `anygrade user add` creates the account and issues its personal token right away, printed once. There is no link and no activation page - the teacher hands the token over. This is what the first teacher account needs, since nobody exists yet to invite it, and what scripted setups use when no browser is involved.
 - `open`: students self-register with the course code; the teacher can deactivate accounts.
 
 Roles: `student` and `teacher`. Teachers see everything, adjust scores, manage users, trigger rechecks, export CSV. The first teacher account is created via CLI.
@@ -302,7 +304,7 @@ Teacher pages:
 - CSV export of the score matrix;
 - queue view: pending/running checks, cancel, recheck.
 
-Leaderboard (if enabled): total scores ranked; `anonymize` replaces logins with stable aliases. Visible to all authenticated users.
+Leaderboard (if enabled): total scores ranked, visible to all authenticated users. `anonymize` replaces logins with stable aliases **for students**; teachers keep seeing logins. Anonymization exists so students cannot read each other's standings off the board, and §8 gives teachers full visibility anyway - hiding the names from them would only send them to the matrix for the same information, one click away.
 
 ### 10.1 Localization
 
@@ -324,7 +326,11 @@ anygrade check   [--runner local|docker] [--timeout D] [--keep] [-v] [TASK ...]
                               # codes: 0 all passed, 1 checks failed, 2 usage,
                               # 3 infrastructure (docker down etc.)
 anygrade validate             # validate course.yaml and all task.yaml files
-anygrade user    add|list|remove|invite|reset-token ...
+anygrade user    add|list|remove|reset-token|add-key|invite ...
+                              # add: create an account and issue its token now,
+                              #      shown once (first teacher, scripted setup)
+                              # invite: create an account and print a one-time
+                              #      activation link; --csv for a whole roster
 anygrade export  scores --format csv
 ```
 
