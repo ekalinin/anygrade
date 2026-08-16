@@ -93,7 +93,7 @@ func (h *Handler) invitePage(w http.ResponseWriter, r *http.Request) {
 // in (SPEC §8).
 func (h *Handler) inviteSubmit(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
-		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+		h.httpError(w, r, "error.cross_origin", http.StatusForbidden)
 		return
 	}
 	inv, target, ok := h.resolveInvite(r)
@@ -120,7 +120,7 @@ func (h *Handler) inviteSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	token, err := h.DB.IssueToken(r.Context(), target.ID)
 	if err != nil {
-		http.Error(w, "activation failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.activation_failed", http.StatusInternalServerError)
 		return
 	}
 	_ = h.DB.MarkInviteUsed(r.Context(), inv.ID, time.Now())
@@ -179,7 +179,7 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !sameOrigin(r) {
-		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+		h.httpError(w, r, "error.cross_origin", http.StatusForbidden)
 		return
 	}
 	course := h.Course.Get()
@@ -207,7 +207,7 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	token, err := h.DB.IssueToken(r.Context(), target.ID)
 	if err != nil {
-		http.Error(w, "registration failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.registration_failed", http.StatusInternalServerError)
 		return
 	}
 	h.ensureRepo(r.Context(), target.Login)

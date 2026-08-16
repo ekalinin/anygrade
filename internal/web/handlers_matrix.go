@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/ekalinin/anygrade/internal/gradebook"
-	"github.com/ekalinin/anygrade/internal/i18n"
 	"github.com/ekalinin/anygrade/internal/store"
 )
 
@@ -52,7 +51,7 @@ func (h *Handler) matrixPage(w http.ResponseWriter, r *http.Request) {
 	u := user(r)
 	m, err := h.buildMatrix(r)
 	if err != nil {
-		http.Error(w, "load failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
 		return
 	}
 	q := r.URL.Query().Get("q")
@@ -136,7 +135,7 @@ func cellStatus(row gradebook.Row, taskID string) string {
 func (h *Handler) matrixStream(w http.ResponseWriter, r *http.Request) {
 	sse, ok := newSSEWriter(w)
 	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		h.httpError(w, r, "error.streaming_unsupported", http.StatusInternalServerError)
 		return
 	}
 	events, cancel := h.Hub.SubscribeAll()
@@ -191,7 +190,7 @@ func (h *Handler) buildMatrixRow(r *http.Request, userID int64) (gradebook.Row, 
 func (h *Handler) exportCSV(w http.ResponseWriter, r *http.Request) {
 	m, err := h.buildMatrix(r)
 	if err != nil {
-		http.Error(w, "load failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
@@ -214,13 +213,13 @@ func (h *Handler) setOverride(w http.ResponseWriter, r *http.Request) {
 	}
 	score, err := strconv.ParseFloat(r.FormValue("score"), 64)
 	if err != nil || score < 0 {
-		http.Error(w, "score must be a non-negative number", http.StatusBadRequest)
+		h.httpError(w, r, "error.invalid_score", http.StatusBadRequest)
 		return
 	}
 	// SPEC §9: an override is "with a comment" - no silent regrades.
 	comment := strings.TrimSpace(r.FormValue("comment"))
 	if comment == "" {
-		http.Error(w, i18n.For(h.lang(r)).T("student.comment_required"), http.StatusBadRequest)
+		h.httpError(w, r, "student.comment_required", http.StatusBadRequest)
 		return
 	}
 	err = h.DB.SetScoreOverride(r.Context(), store.ScoreOverride{
@@ -228,7 +227,7 @@ func (h *Handler) setOverride(w http.ResponseWriter, r *http.Request) {
 		Comment: comment, TeacherID: actor.ID,
 	})
 	if err != nil {
-		http.Error(w, "save failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.save_failed", http.StatusInternalServerError)
 		return
 	}
 	_ = h.DB.Log(r.Context(), store.Event{
@@ -248,7 +247,7 @@ func (h *Handler) clearOverride(w http.ResponseWriter, r *http.Request) {
 	}
 	taskID := r.PathValue("id")
 	if err := h.DB.DeleteScoreOverride(r.Context(), target.ID, taskID); err != nil {
-		http.Error(w, "delete failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.delete_failed", http.StatusInternalServerError)
 		return
 	}
 	_ = h.DB.Log(r.Context(), store.Event{

@@ -37,7 +37,7 @@ func (h *Handler) auditPage(w http.ResponseWriter, r *http.Request) {
 	// Fetch one extra row to know whether a next page exists.
 	events, err := h.DB.ListEvents(r.Context(), kind, target, auditPageSize+1, page*auditPageSize)
 	if err != nil {
-		http.Error(w, "load failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
 		return
 	}
 	hasNext := len(events) > auditPageSize
@@ -46,7 +46,7 @@ func (h *Handler) auditPage(w http.ResponseWriter, r *http.Request) {
 	}
 	kinds, err := h.DB.ListEventKinds(r.Context())
 	if err != nil {
-		http.Error(w, "load failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
 		return
 	}
 

@@ -50,7 +50,7 @@ func (h *Handler) loadCodeView(w http.ResponseWriter, r *http.Request) (codeData
 	}
 	files, err := h.ListStudentFiles(r.Context(), target.Login, sub.CommitSHA, relDir)
 	if err != nil {
-		http.Error(w, "commit unreadable", http.StatusInternalServerError)
+		h.httpError(w, r, "error.commit_unreadable", http.StatusInternalServerError)
 		return codeData{}, false
 	}
 	u := user(r)

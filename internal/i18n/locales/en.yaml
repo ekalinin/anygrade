@@ -117,6 +117,7 @@ task.recheck_latest: "recheck latest"
 task.recheck_disabled_title: "nothing to recheck, or limits reached"
 task.no_submissions: "No submissions yet: push your solution to your personal repo."
 task.override_note: "set by teacher"
+task.no_readme: "No README.md in the task directory."
 
 # submission.html
 submission.title: "Submission"
@@ -225,3 +226,25 @@ countdown.m: "%dm"
 
 # Live-output stream (stream.go).
 stream.truncated: "[output truncated; full log available after the run]"
+
+# Plain-text error bodies (Handler.httpError). Users see these in the browser,
+# so they are localized like any other UI string; server logs stay English.
+error.load_failed: "load failed"
+error.render_failed: "render failed"
+error.save_failed: "save failed"
+error.delete_failed: "delete failed"
+error.reset_failed: "reset failed"
+error.cancel_failed: "cancel failed"
+error.recheck_failed: "recheck failed"
+error.login_failed: "login failed"
+error.activation_failed: "activation failed"
+error.registration_failed: "registration failed"
+error.token_reset_failed: "token reset failed"
+error.streaming_unsupported: "streaming unsupported"
+error.commit_unreadable: "commit unreadable"
+error.cross_origin: "cross-origin request rejected"
+error.auth_required: "authentication required"
+error.unsupported_language: "unsupported language"
+error.invalid_score: "score must be a non-negative number"
+error.invalid_state: "state must be active or disabled"
+error.own_state: "refusing to change your own state"

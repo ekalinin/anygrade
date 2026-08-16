@@ -57,12 +57,12 @@ func (h *Handler) queuePage(w http.ResponseWriter, r *http.Request) {
 	u := user(r)
 	subs, err := h.DB.ListActive(r.Context())
 	if err != nil {
-		http.Error(w, "load failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
 		return
 	}
 	users, err := h.DB.ListUsers(r.Context())
 	if err != nil {
-		http.Error(w, "load failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
 		return
 	}
 	logins := map[int64]string{}
@@ -86,7 +86,7 @@ func (h *Handler) queuePage(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) queueStream(w http.ResponseWriter, r *http.Request) {
 	sse, ok := newSSEWriter(w)
 	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		h.httpError(w, r, "error.streaming_unsupported", http.StatusInternalServerError)
 		return
 	}
 	events, cancel := h.Hub.SubscribeAll()
@@ -129,7 +129,7 @@ func (h *Handler) cancelSubmission(w http.ResponseWriter, r *http.Request) {
 	}
 	ok, err := h.Cancel.Cancel(r.Context(), id)
 	if err != nil {
-		http.Error(w, "cancel failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.cancel_failed", http.StatusInternalServerError)
 		return
 	}
 	if ok {
@@ -172,7 +172,7 @@ func (h *Handler) recheckSubmission(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, intake.ErrNothingToRecheck):
 		http.Redirect(w, r, "/queue?flash=nothing_to_recheck", http.StatusSeeOther)
 	case err != nil:
-		http.Error(w, "recheck failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.recheck_failed", http.StatusInternalServerError)
 	default:
 		http.Redirect(w, r, submissionURL(fresh.ID, warn), http.StatusSeeOther)
 	}

@@ -37,7 +37,7 @@ func (h *Handler) loginForm(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
-		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+		h.httpError(w, r, "error.cross_origin", http.StatusForbidden)
 		return
 	}
 	login := strings.TrimSpace(r.FormValue("login"))
@@ -50,7 +50,7 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	u, ok, err := h.DB.VerifyToken(r.Context(), token)
 	if err != nil {
-		http.Error(w, "login failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.login_failed", http.StatusInternalServerError)
 		return
 	}
 	if !ok || u.Login != login {
@@ -66,7 +66,7 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	sid, err := h.DB.CreateSession(r.Context(), u.ID, token, sessionTTL)
 	if err != nil {
-		http.Error(w, "login failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.login_failed", http.StatusInternalServerError)
 		return
 	}
 	setSessionCookie(w, r, sid, sessionTTL)

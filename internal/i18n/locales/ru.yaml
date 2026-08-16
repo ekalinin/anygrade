@@ -113,6 +113,7 @@ task.recheck_latest: "перепроверить последнюю"
 task.recheck_disabled_title: "нечего перепроверять или достигнут лимит"
 task.no_submissions: "Пока нет отправок: запушьте решение в свой персональный репозиторий."
 task.override_note: "выставлено преподавателем"
+task.no_readme: "В каталоге задачи нет README.md."
 
 # submission.html
 submission.title: "Отправка"
@@ -221,3 +222,25 @@ countdown.m: "%dм"
 
 # Live-output stream.
 stream.truncated: "[вывод обрезан; полный лог доступен после прогона]"
+
+# Текст ошибок в plain-text ответах (Handler.httpError). Пользователь видит их
+# в браузере, поэтому они локализованы; серверные логи остаются английскими.
+error.load_failed: "не удалось загрузить данные"
+error.render_failed: "не удалось отрисовать страницу"
+error.save_failed: "не удалось сохранить"
+error.delete_failed: "не удалось удалить"
+error.reset_failed: "не удалось сбросить"
+error.cancel_failed: "не удалось отменить"
+error.recheck_failed: "не удалось запустить перепроверку"
+error.login_failed: "не удалось войти"
+error.activation_failed: "не удалось активировать аккаунт"
+error.registration_failed: "не удалось зарегистрироваться"
+error.token_reset_failed: "не удалось перевыпустить токен"
+error.streaming_unsupported: "потоковая передача не поддерживается"
+error.commit_unreadable: "коммит недоступен для чтения"
+error.cross_origin: "запрос с другого источника отклонён"
+error.auth_required: "требуется аутентификация"
+error.unsupported_language: "неподдерживаемый язык"
+error.invalid_score: "балл должен быть неотрицательным числом"
+error.invalid_state: "состояние должно быть active или disabled"
+error.own_state: "нельзя менять состояние собственной учётной записи"

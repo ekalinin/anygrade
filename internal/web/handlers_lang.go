@@ -29,12 +29,12 @@ func (h *Handler) lang(r *http.Request) string {
 // page. Public route: it must work before login.
 func (h *Handler) setLang(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
-		http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+		h.httpError(w, r, "error.cross_origin", http.StatusForbidden)
 		return
 	}
 	lang := r.FormValue("lang")
 	if !i18n.Supported(lang) {
-		http.Error(w, "unsupported language", http.StatusBadRequest)
+		h.httpError(w, r, "error.unsupported_language", http.StatusBadRequest)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{

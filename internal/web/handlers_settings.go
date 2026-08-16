@@ -36,7 +36,7 @@ func (h *Handler) regenToken(w http.ResponseWriter, r *http.Request) {
 	u := user(r)
 	token, err := h.DB.IssueToken(r.Context(), u.ID)
 	if err != nil {
-		http.Error(w, "token reset failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.token_reset_failed", http.StatusInternalServerError)
 		return
 	}
 	// Show the token even if the re-bind below fails: it is shown only once.
@@ -76,7 +76,7 @@ func (h *Handler) delOwnKey(w http.ResponseWriter, r *http.Request) {
 	// reused by a key added meanwhile is not removed by a stale form.
 	ok, err := h.DB.DeleteSSHKey(r.Context(), u.ID, id, r.FormValue("fingerprint"))
 	if err != nil {
-		http.Error(w, "delete failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.delete_failed", http.StatusInternalServerError)
 		return
 	}
 	if !ok {
@@ -110,7 +110,7 @@ func (h *Handler) leaderboardPage(w http.ResponseWriter, r *http.Request) {
 	u := user(r)
 	m, err := h.buildMatrix(r)
 	if err != nil {
-		http.Error(w, "load failed", http.StatusInternalServerError)
+		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
 		return
 	}
 	anonymize := lb.Anonymize && u.Role != "teacher"
