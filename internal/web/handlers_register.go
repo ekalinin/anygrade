@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/url"
@@ -123,6 +124,7 @@ func (h *Handler) inviteSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = h.DB.MarkInviteUsed(r.Context(), inv.ID, time.Now())
+	h.ensureRepo(r.Context(), target.Login)
 	_ = h.DB.Log(r.Context(), store.Event{
 		ActorID: &target.ID, Kind: "user.activate", Target: target.Login,
 	})
@@ -130,6 +132,21 @@ func (h *Handler) inviteSubmit(w http.ResponseWriter, r *http.Request) {
 		setSessionCookie(w, r, sid, sessionTTL)
 	}
 	h.renderTokenOnce(w, r, target.Login, token, true)
+}
+
+// ensureRepo provisions the personal repo as part of activation, so the clone
+// command shown on the very next page already works (SPEC §7).
+//
+// A failure is deliberately not surfaced: the account is activated and its
+// token is about to be shown once, and there is no way back from here. The git
+// transports create the repo on first access anyway, so the cost of a failure
+// is one slow first clone, not a broken account. The injected implementation
+// logs it.
+func (h *Handler) ensureRepo(ctx context.Context, login string) {
+	if h.EnsureRepo == nil {
+		return
+	}
+	_ = h.EnsureRepo(ctx, login)
 }
 
 type registerData struct {
@@ -193,6 +210,7 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "registration failed", http.StatusInternalServerError)
 		return
 	}
+	h.ensureRepo(r.Context(), target.Login)
 	_ = h.DB.Log(r.Context(), store.Event{
 		ActorID: &target.ID, Kind: "user.register", Target: target.Login,
 	})

@@ -62,6 +62,14 @@ func testOpenRegistration(t *testing.T, e *env) {
 	if !strings.Contains(body, wantSSH) {
 		t.Fatalf("register: body missing SSH clone URL %q:\n%s", wantSSH, body)
 	}
+
+	// SPEC §7: the personal repo is created at activation, so the clone URL
+	// just printed already works. This scenario runs before the first git
+	// access, so nothing else could have provisioned it.
+	bare := filepath.Join(e.dataDir, "repos", "students", "alice.git")
+	if _, err := os.Stat(bare); err != nil {
+		t.Fatalf("register: personal repo not provisioned at %s: %v", bare, err)
+	}
 }
 
 // 4. clone and push over http: alice pushes a correct sum.sh and the push

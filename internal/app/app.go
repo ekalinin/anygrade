@@ -148,6 +148,17 @@ func Run(ctx context.Context, opts Options) error {
 		ReadStudentFile: func(ctx context.Context, login, commit, relPath string) ([]byte, bool, error) {
 			return gitserver.GitSource{Dir: repos.StudentDir(login), Commit: commit}.File(ctx, relPath)
 		},
+		// SPEC §7: the personal repo is created at activation. web only asks;
+		// reporting a failure is this side's job, because the caller must not
+		// fail an activation over it (the transports still provision lazily).
+		EnsureRepo: func(ctx context.Context, login string) error {
+			_, err := repos.EnsureStudent(ctx, login)
+			if err != nil {
+				log.Warn("provisioning the student repo at activation failed; it will be created on first git access",
+					"login", login, "err", err)
+			}
+			return err
+		},
 		DataDir: opts.DataDir,
 		BaseURL: baseURL(opts),
 		SSHAddr: opts.SSHAddr,
