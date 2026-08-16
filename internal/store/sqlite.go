@@ -55,10 +55,16 @@ func Open(ctx context.Context, dataDir string) (*DB, error) {
 // Close implements io.Closer.
 func (s *DB) Close() error { return s.db.Close() }
 
-// Timestamps are stored as RFC 3339 UTC strings: lexicographic order equals
-// chronological order, so string comparisons in SQL are correct.
+// Timestamps are stored as RFC 3339 UTC strings of *fixed* width: lexicographic
+// order equals chronological order, so string comparisons in SQL are correct.
+// The width matters. time.RFC3339Nano drops trailing zeros of the fractional
+// part, so ".387Z" and ".387026Z" are compared at their 4th fractional
+// character - 'Z' (0x5A) against '0' (0x30) - and the earlier timestamp sorts
+// last. Nine mandatory digits remove the case; migration 0004 rewrote the rows
+// written before it.
+const timeLayout = "2006-01-02T15:04:05.000000000Z"
 
-func fmtTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+func fmtTime(t time.Time) string { return t.UTC().Format(timeLayout) }
 
 func fmtTimePtr(t *time.Time) any {
 	if t == nil {
@@ -67,6 +73,8 @@ func fmtTimePtr(t *time.Time) any {
 	return fmtTime(*t)
 }
 
+// parseTime stays on RFC3339Nano: it accepts any number of fractional digits,
+// so it reads both timeLayout and anything a pre-0004 database still holds.
 func parseTime(s string) (time.Time, error) { return time.Parse(time.RFC3339Nano, s) }
 
 func parseTimePtr(s *string) (*time.Time, error) {
