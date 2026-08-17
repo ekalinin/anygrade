@@ -36,11 +36,17 @@ func (s *DB) VerifyInvite(ctx context.Context, tokenPlaintext string) (Invite, b
 	return inv, true, nil
 }
 
-// MarkInviteUsed implements InviteStore.
-func (s *DB) MarkInviteUsed(ctx context.Context, id int64, now time.Time) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE invites SET used_at = ? WHERE id = ?`, fmtTime(now), id)
-	return err
+// ConsumeInvite implements InviteStore: the used_at guard makes the link
+// one-shot even under a race, since VerifyInvite alone only proves the invite
+// was unused at the time it was read.
+func (s *DB) ConsumeInvite(ctx context.Context, id int64, now time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE invites SET used_at = ? WHERE id = ? AND used_at IS NULL`, fmtTime(now), id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 func scanInvite(row scanner) (Invite, error) {

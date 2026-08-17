@@ -44,6 +44,42 @@ func TestSessionLifecycle(t *testing.T) {
 	}
 }
 
+// TestSessionIDStoredHashed: the cookie itself never reaches the database.
+// It used to be the primary key verbatim, so anybody able to read anygrade.db
+// held a ready-to-use cookie for every live session, teachers included, while
+// the tokens in the next table were hashed (SPEC §14).
+func TestSessionIDStoredHashed(t *testing.T) {
+	db := openTestDB(t)
+	u := testUser(t, db)
+
+	plaintext, err := db.IssueToken(t.Context(), u.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := db.CreateSession(t.Context(), u.ID, plaintext, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stored string
+	if err := db.db.QueryRowContext(t.Context(), `SELECT id_hash FROM sessions`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored == id {
+		t.Fatal("the session cookie is stored in plaintext")
+	}
+	if stored != hashToken(id) {
+		t.Fatalf("stored %q, want the hash of the cookie", stored)
+	}
+	// What the database holds is not usable as a cookie either.
+	if _, ok, err := db.LookupSession(t.Context(), stored); err != nil || ok {
+		t.Fatalf("stored value accepted as a cookie: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := db.LookupSession(t.Context(), id); err != nil || !ok {
+		t.Fatalf("the real cookie must still resolve: ok=%v err=%v", ok, err)
+	}
+}
+
 // TestSessionExpiry: an already-expired session is never looked up.
 func TestSessionExpiry(t *testing.T) {
 	db := openTestDB(t)

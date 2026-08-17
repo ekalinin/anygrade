@@ -205,11 +205,19 @@ func (q *Queue) workerLoop(ctx context.Context) {
 // process runs one claimed submission through prepare → assemble → run →
 // score → persist. No DB transaction is ever held across the check run.
 func (q *Queue) process(ctx context.Context, sub store.Submission) {
-	q.publish(sub, store.StatusRunning)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	q.trackStart(sub.ID, cancel)
 	defer q.trackEnd(sub.ID)
+	// A cancel that arrived between the claim and the registration above found
+	// no job to interrupt, so the row - not the in-memory marker - is what
+	// says whether this submission is still ours to run. Read it before any
+	// work starts; Cancel reads the registry again after its own write, so
+	// between the two checks no cancel can slip through unnoticed.
+	if q.canceledMeanwhile(ctx, sub.ID) {
+		return
+	}
+	q.publish(sub, store.StatusRunning)
 
 	p, err := q.Prep.Prepare(ctx, sub)
 	if err != nil {
@@ -327,11 +335,35 @@ func (q *Queue) Cancel(ctx context.Context, id int64) (bool, error) {
 		q.mu.Unlock()
 		return false, err
 	}
+	// And read the registry once more AFTER the write. A worker that had
+	// claimed the row but not yet registered its job when the first read
+	// happened is registered by now, or it has not reached its own status
+	// re-read yet - it registers before reading. Either this read finds the
+	// job and kills it, or that read finds the canceled row and stops before
+	// the check starts.
+	q.mu.Lock()
+	if cancel = q.running[id]; cancel != nil {
+		q.canceling[id] = true
+	}
+	q.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
 	q.publish(sub, "canceled")
 	return true, nil
+}
+
+// canceledMeanwhile reports whether the claimed row stopped being this
+// worker's to run. Only a teacher cancel takes a claimed row out of 'running'
+// while a worker holds it, so any change means the run must not start. A
+// failed read is not treated as a cancel: dropping a live submission over a
+// transient DB error would cost more than the one wasted run it saves.
+func (q *Queue) canceledMeanwhile(ctx context.Context, id int64) bool {
+	cur, _, err := q.Store.GetSubmission(ctx, id)
+	if err != nil {
+		return false
+	}
+	return cur.Status != store.StatusRunning || cur.CanceledAt != nil
 }
 
 func (q *Queue) trackStart(id int64, cancel context.CancelFunc) {
@@ -368,16 +400,23 @@ func (q *Queue) retry(sub store.Submission, cause error) {
 	// ±10% jitter avoids a thundering herd on a shared cause (docker down).
 	delay += time.Duration((rand.Float64() - 0.5) * 0.2 * float64(delay))
 	at := time.Now().Add(delay)
-	wctx, cancel := writeCtx()
-	defer cancel()
-	_ = q.Store.ScheduleRetry(wctx, sub.ID, &at, note)
-	q.publish(sub, store.StatusInfraError)
+	q.scheduleRetry(sub, &at, note)
 }
 
 func (q *Queue) terminal(sub store.Submission, note string) {
+	q.scheduleRetry(sub, nil, note)
+}
+
+// scheduleRetry publishes only what it managed to write: the store refuses the
+// update once the row stopped being this worker's running submission (a
+// teacher cancel landing after the in-memory marker was read), and an event
+// for a status nobody wrote would contradict the row itself.
+func (q *Queue) scheduleRetry(sub store.Submission, at *time.Time, note string) {
 	wctx, cancel := writeCtx()
 	defer cancel()
-	_ = q.Store.ScheduleRetry(wctx, sub.ID, nil, note)
+	if ok, err := q.Store.ScheduleRetry(wctx, sub.ID, at, note); err != nil || !ok {
+		return
+	}
 	q.publish(sub, store.StatusInfraError)
 }
 

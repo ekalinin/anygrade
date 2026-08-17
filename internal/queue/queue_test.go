@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,9 +26,12 @@ type testPrep struct {
 	// auth replaces the authoritative source when set: tests use it to pin the
 	// cancellation window inside runner.Assemble.
 	auth runner.Source
+	// calls counts started jobs; a run that must never happen leaves it at 0.
+	calls atomic.Int64
 }
 
 func (p *testPrep) Prepare(_ context.Context, sub store.Submission) (Prepared, error) {
+	p.calls.Add(1)
 	if p.failErr != nil {
 		return Prepared{}, p.failErr
 	}
@@ -405,6 +409,47 @@ func TestTeacherCancelRunning(t *testing.T) {
 	// Cancel of an already-terminal submission reports ok=false.
 	if ok, err := q.Cancel(context.Background(), sub.ID); ok || err != nil {
 		t.Fatalf("second cancel: ok=%v err=%v", ok, err)
+	}
+}
+
+// TestTeacherCancelBeforeJobRegistered: the cancel lands in the window between
+// the claim and the registration of the running job, where it finds nothing to
+// interrupt. The worker has to notice by itself that the row is no longer its
+// to run - and it must notice before starting the check, not only when it
+// finally fails to write a result.
+func TestTeacherCancelBeforeJobRegistered(t *testing.T) {
+	q, db, u, prep := newTestQueue(t)
+	prep.task.Checks = []config.Check{{Name: "slow", Weight: 1, Run: "sleep 30"}}
+
+	sub, err := q.Enqueue(t.Context(), store.NewSubmission{
+		UserID: u.ID, TaskID: "t1", CommitSHA: "abc", ReceivedAt: time.Now(), Counts: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Play the worker's first step by hand: the row is claimed, but no job is
+	// registered yet.
+	claimed, ok, err := db.ClaimNext(t.Context(), time.Now())
+	if err != nil || !ok || claimed.ID != sub.ID {
+		t.Fatalf("claim: #%d ok=%v err=%v", claimed.ID, ok, err)
+	}
+	if ok, err := q.Cancel(t.Context(), sub.ID); err != nil || !ok {
+		t.Fatalf("cancel: ok=%v err=%v", ok, err)
+	}
+
+	// Only now does the worker pick up the submission it claimed.
+	q.process(t.Context(), claimed)
+
+	if n := prep.calls.Load(); n != 0 {
+		t.Fatalf("the check was started %d times for a canceled submission, want 0", n)
+	}
+	got, _, err := db.GetSubmission(t.Context(), sub.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusInfraError || got.CanceledAt == nil ||
+		got.RetryAt != nil || got.Counts || got.WorkerNote != "canceled by teacher" {
+		t.Fatalf("canceled row mutated: %+v", got)
 	}
 }
 

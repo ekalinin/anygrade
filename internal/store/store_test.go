@@ -2,7 +2,11 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -56,6 +60,67 @@ func enqueueAcrossTasks(t *testing.T, db *DB, userID int64, n int) []Submission 
 		subs[i] = enqueueN(t, db, userID, fmt.Sprintf("t%d", i+1), 1)[0]
 	}
 	return subs
+}
+
+// TestOpenRestrictsDataDirAndDB: the data dir carries every student's repo,
+// the hidden-tests cache and the check logs, and the database carries every
+// token, session and invite hash. Neither may be reachable by other local
+// accounts, and a dir left wide open by an older version is tightened.
+func TestOpenRestrictsDataDirAndDB(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "data")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// What os.MkdirAll(dataDir, 0o755) used to leave behind.
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	fi, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o700 {
+		t.Errorf("data dir mode = %#o, want 0700", perm)
+	}
+	for _, name := range []string{"anygrade.db", "anygrade.db-wal", "anygrade.db-shm"} {
+		fi, err := os.Stat(filepath.Join(dir, name))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // -wal/-shm exist only while a connection is open
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+			t.Errorf("%s mode = %#o, want no group/other bits", name, perm)
+		}
+	}
+}
+
+// claimUntil drives the queue until id is the claimed row, finishing whatever
+// stands in front of it - the state ScheduleRetry and FinishSubmission expect,
+// since both only accept the row their caller is running.
+func claimUntil(t *testing.T, db *DB, id int64) {
+	t.Helper()
+	for range 10 {
+		sub, ok, err := db.ClaimNext(t.Context(), time.Now())
+		if err != nil || !ok {
+			t.Fatalf("claim towards #%d: ok=%v err=%v", id, ok, err)
+		}
+		if sub.ID == id {
+			return
+		}
+		if err := db.FinishSubmission(t.Context(), sub.ID, SubmissionResult{Status: StatusDone}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Fatalf("submission #%d never became claimable", id)
 }
 
 // TestConcurrentClaimUniqueness: N workers racing over M queued rows must
@@ -190,8 +255,9 @@ func TestLastByUserTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A row that left the queue is still the last thing recorded for the pair.
-	if err := db.ScheduleRetry(t.Context(), failed.ID, nil, "boom"); err != nil {
-		t.Fatal(err)
+	claimUntil(t, db, failed.ID)
+	if ok, err := db.ScheduleRetry(t.Context(), failed.ID, nil, "boom"); err != nil || !ok {
+		t.Fatalf("schedule retry: ok=%v err=%v", ok, err)
 	}
 	got, ok, err := db.LastByUserTask(t.Context(), u.ID, "t1")
 	if err != nil || !ok {
@@ -354,8 +420,8 @@ func TestScheduleRetryEligibility(t *testing.T) {
 	}
 
 	at := time.Now().Add(time.Hour)
-	if err := db.ScheduleRetry(t.Context(), sub.ID, &at, "docker down"); err != nil {
-		t.Fatal(err)
+	if ok, err := db.ScheduleRetry(t.Context(), sub.ID, &at, "docker down"); err != nil || !ok {
+		t.Fatalf("schedule retry: ok=%v err=%v", ok, err)
 	}
 	if _, ok, _ := db.ClaimNext(t.Context(), time.Now()); ok {
 		t.Fatal("must not be claimable before retry_at")
@@ -365,8 +431,8 @@ func TestScheduleRetryEligibility(t *testing.T) {
 	}
 
 	// Terminal: retry_at nil.
-	if err := db.ScheduleRetry(t.Context(), sub.ID, nil, "retries exhausted"); err != nil {
-		t.Fatal(err)
+	if ok, err := db.ScheduleRetry(t.Context(), sub.ID, nil, "retries exhausted"); err != nil || !ok {
+		t.Fatalf("terminal retry: ok=%v err=%v", ok, err)
 	}
 	if _, ok, _ := db.ClaimNext(t.Context(), time.Now().Add(24*time.Hour)); ok {
 		t.Fatal("terminal infra_error must never be claimable")
@@ -374,5 +440,131 @@ func TestScheduleRetryEligibility(t *testing.T) {
 	got, _, _ := db.GetSubmission(t.Context(), sub.ID)
 	if got.Retries != 2 || got.Status != StatusInfraError {
 		t.Errorf("terminal row: %+v", got)
+	}
+}
+
+// TestScheduleRetryAfterCancel: the teacher cancels between the worker's
+// decision to retry and its write. The canceled row must keep its note and
+// its terminal state - a re-armed retry_at would hand it back to ClaimNext
+// and the check would run after the teacher stopped it (SPEC §13).
+func TestScheduleRetryAfterCancel(t *testing.T) {
+	db := openTestDB(t)
+	u := testUser(t, db)
+	sub := enqueueN(t, db, u.ID, "t1", 1)[0]
+	if _, ok, _ := db.ClaimNext(t.Context(), time.Now()); !ok {
+		t.Fatal("claim failed")
+	}
+	if _, ok, err := db.CancelSubmission(t.Context(), sub.ID, time.Now()); err != nil || !ok {
+		t.Fatalf("cancel: ok=%v err=%v", ok, err)
+	}
+
+	at := time.Now().Add(time.Hour)
+	if ok, err := db.ScheduleRetry(t.Context(), sub.ID, &at, "docker down"); err != nil || ok {
+		t.Fatalf("retry after cancel: ok=%v err=%v, want false/nil", ok, err)
+	}
+
+	got, _, err := db.GetSubmission(t.Context(), sub.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.WorkerNote != "canceled by teacher" || got.Retries != 0 ||
+		got.RetryAt != nil || got.CanceledAt == nil || got.Counts {
+		t.Errorf("canceled row was overwritten: %+v", got)
+	}
+	if claimed, ok, _ := db.ClaimNext(t.Context(), time.Now().Add(2*time.Hour)); ok {
+		t.Errorf("canceled submission #%d became claimable again", claimed.ID)
+	}
+}
+
+// TestScheduleRetryNeedsRunningRow: a worker may only retry the row it holds.
+func TestScheduleRetryNeedsRunningRow(t *testing.T) {
+	db := openTestDB(t)
+	u := testUser(t, db)
+	sub := enqueueN(t, db, u.ID, "t1", 1)[0]
+
+	if ok, err := db.ScheduleRetry(t.Context(), sub.ID, nil, "boom"); err != nil || ok {
+		t.Fatalf("retry of a queued row: ok=%v err=%v, want false/nil", ok, err)
+	}
+	if ok, err := db.ScheduleRetry(t.Context(), sub.ID+1000, nil, "boom"); err != nil || ok {
+		t.Fatalf("retry of an unknown row: ok=%v err=%v, want false/nil", ok, err)
+	}
+	if got, _, _ := db.GetSubmission(t.Context(), sub.ID); got.Status != StatusQueued {
+		t.Errorf("queued row was moved to %q", got.Status)
+	}
+}
+
+// TestClaimWaitsForPendingRetryOfSameTask: SPEC §13 orders the submissions of
+// one (student, task) pair, and an infra_error still awaiting its backoff is
+// unfinished work - a newer push must not overtake it. The older row must
+// still get through, with the newer one right behind it.
+func TestClaimWaitsForPendingRetryOfSameTask(t *testing.T) {
+	db := openTestDB(t)
+	u := testUser(t, db)
+	first := enqueueN(t, db, u.ID, "t1", 1)[0]
+	if _, ok, _ := db.ClaimNext(t.Context(), time.Now()); !ok {
+		t.Fatal("claim failed")
+	}
+	at := time.Now().Add(time.Hour)
+	if ok, err := db.ScheduleRetry(t.Context(), first.ID, &at, "docker down"); err != nil || !ok {
+		t.Fatalf("schedule retry: ok=%v err=%v", ok, err)
+	}
+
+	second := enqueueN(t, db, u.ID, "t1", 1)[0]
+	other := enqueueN(t, db, u.ID, "t2", 1)[0]
+
+	// The newer push of the same task waits; another task flows past both.
+	claimed, ok, err := db.ClaimNext(t.Context(), time.Now())
+	if err != nil || !ok {
+		t.Fatalf("claim while t1 waits: ok=%v err=%v", ok, err)
+	}
+	if claimed.ID != other.ID {
+		t.Fatalf("claimed #%d, want #%d: a pending retry must only hold back its own task",
+			claimed.ID, other.ID)
+	}
+	if got, ok, _ := db.ClaimNext(t.Context(), time.Now()); ok {
+		t.Fatalf("claimed #%d ahead of the retry of the same task", got.ID)
+	}
+
+	// Once the backoff elapses the older submission runs first...
+	claimed, ok, err = db.ClaimNext(t.Context(), time.Now().Add(2*time.Hour))
+	if err != nil || !ok {
+		t.Fatalf("claim after retry_at: ok=%v err=%v", ok, err)
+	}
+	if claimed.ID != first.ID {
+		t.Fatalf("claimed #%d after the backoff, want the older #%d", claimed.ID, first.ID)
+	}
+	// ...and the newer one follows it, so nothing starves.
+	if err := db.FinishSubmission(t.Context(), first.ID, SubmissionResult{Status: StatusDone}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err = db.ClaimNext(t.Context(), time.Now().Add(2*time.Hour))
+	if err != nil || !ok {
+		t.Fatalf("claim of the newer row: ok=%v err=%v", ok, err)
+	}
+	if claimed.ID != second.ID {
+		t.Fatalf("claimed #%d, want #%d", claimed.ID, second.ID)
+	}
+}
+
+// TestClaimIgnoresTerminalInfraError: a retry budget spent for good (retry_at
+// nil, teacher cancel included) must never block the pair forever.
+func TestClaimIgnoresTerminalInfraError(t *testing.T) {
+	db := openTestDB(t)
+	u := testUser(t, db)
+	first := enqueueN(t, db, u.ID, "t1", 1)[0]
+	if _, ok, _ := db.ClaimNext(t.Context(), time.Now()); !ok {
+		t.Fatal("claim failed")
+	}
+	if ok, err := db.ScheduleRetry(t.Context(), first.ID, nil, "retries exhausted"); err != nil || !ok {
+		t.Fatalf("terminal retry: ok=%v err=%v", ok, err)
+	}
+
+	second := enqueueN(t, db, u.ID, "t1", 1)[0]
+	claimed, ok, err := db.ClaimNext(t.Context(), time.Now())
+	if err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+	if claimed.ID != second.ID {
+		t.Fatalf("claimed #%d, want #%d", claimed.ID, second.ID)
 	}
 }

@@ -88,22 +88,28 @@ func (h *Handler) invitePage(w http.ResponseWriter, r *http.Request) {
 	h.renderPage(w, r, "invite", data)
 }
 
-// inviteSubmit activates the account: issues the personal token (shown
-// once), stores an optional SSH key, burns the invite, and logs the browser
-// in (SPEC §8).
+// inviteSubmit activates the account: burns the one-shot invite, issues the
+// personal token (shown once), stores an optional SSH key, and logs the
+// browser in (SPEC §8).
 func (h *Handler) inviteSubmit(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
 		h.httpError(w, r, "error.cross_origin", http.StatusForbidden)
 		return
 	}
-	inv, target, ok := h.resolveInvite(r)
-	if !ok {
+	invalid := func() {
 		h.renderPage(w, r, "invite", inviteData{
 			CourseName: h.Course.Get().Resolved.Course.Name, Invalid: true,
 		})
+	}
+	inv, target, ok := h.resolveInvite(r)
+	if !ok {
+		invalid()
 		return
 	}
-	if keyText := strings.TrimSpace(r.FormValue("key")); keyText != "" {
+	// Validate before burning the invite, so a mistyped key is still
+	// correctable on the same page.
+	var keyText, fingerprint string
+	if keyText = strings.TrimSpace(r.FormValue("key")); keyText != "" {
 		pk, _, _, _, err := gossh.ParseAuthorizedKey([]byte(keyText))
 		if err != nil {
 			h.renderPage(w, r, "invite", inviteData{
@@ -113,7 +119,19 @@ func (h *Handler) inviteSubmit(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		if _, err := h.DB.AddSSHKey(r.Context(), target.ID, gossh.FingerprintSHA256(pk), keyText); err != nil {
+		fingerprint = gossh.FingerprintSHA256(pk)
+	}
+	// Burn the invite before any side effect. VerifyInvite only proves the
+	// link was unused when it was read, so two concurrent activations of one
+	// link would both register a key and both rotate the token - and the
+	// second rotation invalidates the token the first student was just shown
+	// (SPEC §8: the link is one-shot).
+	if used, err := h.DB.ConsumeInvite(r.Context(), inv.ID, time.Now()); err != nil || !used {
+		invalid()
+		return
+	}
+	if keyText != "" {
+		if _, err := h.DB.AddSSHKey(r.Context(), target.ID, fingerprint, keyText); err != nil {
 			// Duplicate key: not worth failing the activation over.
 			_ = err
 		}
@@ -123,7 +141,6 @@ func (h *Handler) inviteSubmit(w http.ResponseWriter, r *http.Request) {
 		h.httpError(w, r, "error.activation_failed", http.StatusInternalServerError)
 		return
 	}
-	_ = h.DB.MarkInviteUsed(r.Context(), inv.ID, time.Now())
 	h.ensureRepo(r.Context(), target.Login)
 	_ = h.DB.Log(r.Context(), store.Event{
 		ActorID: &target.ID, Kind: "user.activate", Target: target.Login,

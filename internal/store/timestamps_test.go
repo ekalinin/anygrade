@@ -88,18 +88,22 @@ func TestSubmissionsOrderByReceivedAt(t *testing.T) {
 // TestMigrateSortableTimestamps drives migration 0004 over rows in the old
 // RFC3339Nano shapes: no fractional part, and a fraction shorter than nine
 // digits.
+//
+// The file is applied directly, not by rewinding user_version. Migrations are
+// a one-way ledger: the runner only moves the version forward and no code path
+// ever replays one. Rewinding to reach 0004 would replay everything after it
+// too, and later migrations are deliberately not replayable - 0005 creates a
+// table, 0006 renames a column and drops an index. 0004 is idempotent by
+// design (its guard skips values already 30 characters wide), which is what
+// makes applying it here the same operation an upgrade performs.
 func TestMigrateSortableTimestamps(t *testing.T) {
-	dir := t.TempDir()
-	db, err := Open(t.Context(), dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := openTestDB(t)
 	u := testUser(t, db)
 	earlier, later := unsortable()
 	first := enqueueAt(t, db, u.ID, "t1", "sha-earlier", earlier)
 	second := enqueueAt(t, db, u.ID, "t1", "sha-later", later)
 
-	// Rewind to the pre-0004 world: legacy text and the matching user_version.
+	// Put the rows back into the shapes pre-0004 versions wrote.
 	legacy := map[int64]string{
 		first.ID:  earlier.UTC().Format(time.RFC3339Nano),
 		second.ID: later.UTC().Format(time.RFC3339Nano),
@@ -110,16 +114,12 @@ func TestMigrateSortableTimestamps(t *testing.T) {
 	// One value with no fractional part at all, on a column that also nulls.
 	exec(t, db.db, `UPDATE submissions SET started_at = ? WHERE id = ?`,
 		earlier.Truncate(time.Second).Format(time.RFC3339Nano), first.ID)
-	exec(t, db.db, `PRAGMA user_version = 3`)
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
 
-	db, err = Open(t.Context(), dir)
+	content, err := migrationsFS.ReadFile("migrations/0004_sortable_timestamps.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
+	exec(t, db.db, string(content))
 
 	var got, startedAt string
 	if err := db.db.QueryRowContext(t.Context(),

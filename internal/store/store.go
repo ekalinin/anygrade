@@ -215,9 +215,12 @@ type SubmissionStore interface {
 	// FinishSubmission writes the terminal status, scores, and all check
 	// rows in one transaction.
 	FinishSubmission(ctx context.Context, id int64, res SubmissionResult) error
-	// ScheduleRetry records an infra_error; retryAt nil marks it terminal
-	// (retries exhausted, surfaced in the teacher queue view).
-	ScheduleRetry(ctx context.Context, id int64, retryAt *time.Time, note string) error
+	// ScheduleRetry records an infra_error for the row the caller is running;
+	// retryAt nil marks it terminal (retries exhausted, surfaced in the
+	// teacher queue view). ok=false when the row is no longer running or was
+	// canceled meanwhile - the caller must not report a status it did not
+	// write.
+	ScheduleRetry(ctx context.Context, id int64, retryAt *time.Time, note string) (ok bool, err error)
 	// RequeueRunning resets every running row to queued (startup recovery,
 	// SPEC §5). Returns the number of rows requeued.
 	RequeueRunning(ctx context.Context) (int, error)
@@ -298,6 +301,8 @@ type InviteStore interface {
 	CreateInvite(ctx context.Context, userID int64, tokenPlaintext string, expiresAt time.Time) error
 	// VerifyInvite resolves a plaintext token to an unused, unexpired invite.
 	VerifyInvite(ctx context.Context, tokenPlaintext string) (Invite, bool, error)
-	// MarkInviteUsed sets used_at; the invite is one-shot.
-	MarkInviteUsed(ctx context.Context, id int64, now time.Time) error
+	// ConsumeInvite burns the one-shot invite: ok=true for the single caller
+	// that set used_at, false when someone else already did. Callers must
+	// consume before any side effect of the activation.
+	ConsumeInvite(ctx context.Context, id int64, now time.Time) (bool, error)
 }

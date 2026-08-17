@@ -106,15 +106,18 @@ func rejectedRow(ctx context.Context, q dbtx, ns NewSubmission, status, reason s
 // oldest eligible row to running. Serialized by MaxOpenConns(1), so concurrent
 // workers always claim distinct rows.
 //
-// A row is skipped while another submission of the same (student, task) is
-// running: successive pushes to one task run in order rather than racing each
-// other (SPEC §13). The row stays queued and is picked up on a later claim, so
-// other students and other tasks keep flowing past it.
+// A row is skipped while an *earlier* submission of the same (student, task)
+// is still in flight: successive pushes to one task run in order rather than
+// racing each other (SPEC §13). In flight means running, or waiting on a retry
+// backoff - an infra_error that will run again is unfinished work, and letting
+// a newer submission past it would put the pair's results out of order. The
+// row stays queued and is picked up on a later claim, so other students and
+// other tasks keep flowing past it.
 //
-// The guard covers the queued path only. An infra_error waiting on its backoff
-// does not hold the task back - blocking a newer submission behind a retry
-// schedule that can stretch to minutes would cost far more than the ordering
-// is worth.
+// The blocker predicate is strictly "earlier", so the oldest row of a pair is
+// never blocked by its own successors and the queue cannot stall: the earliest
+// one runs, and each retry either completes or exhausts its budget into a
+// terminal infra_error (retry_at NULL), which blocks nobody.
 func (s *DB) ClaimNext(ctx context.Context, now time.Time) (Submission, bool, error) {
 	row := s.db.QueryRowContext(ctx, `
 		UPDATE submissions SET status = 'running', started_at = ?
@@ -124,9 +127,12 @@ func (s *DB) ClaimNext(ctx context.Context, now time.Time) (Submission, bool, er
 		     OR (s.status = 'infra_error' AND s.retry_at IS NOT NULL AND s.retry_at <= ?))
 		    AND NOT EXISTS (
 		      SELECT 1 FROM submissions r
-		      WHERE r.status = 'running'
-		        AND r.user_id = s.user_id
+		      WHERE r.user_id = s.user_id
 		        AND r.task_id = s.task_id
+		        AND (r.status = 'running'
+		          OR (r.status = 'infra_error' AND r.retry_at IS NOT NULL
+		            AND (r.received_at < s.received_at
+		              OR (r.received_at = s.received_at AND r.id < s.id))))
 		    )
 		  ORDER BY s.received_at ASC, s.id ASC
 		  LIMIT 1
@@ -173,7 +179,7 @@ func (s *DB) FinishSubmission(ctx context.Context, id int64, res SubmissionResul
 	result, err := tx.ExecContext(ctx, `
 		UPDATE submissions SET status = ?, raw_score = ?, penalty_percent = ?,
 		  final_score = ?, worker_note = ?, log_dir = ?, retry_at = NULL
-		WHERE id = ? AND status = 'running'`,
+		WHERE id = ? AND status = 'running' AND canceled_at IS NULL`,
 		res.Status, res.Raw, res.Penalty, res.Final, res.Note, res.LogDir, id)
 	if err != nil {
 		return err
@@ -184,14 +190,22 @@ func (s *DB) FinishSubmission(ctx context.Context, id int64, res SubmissionResul
 	return tx.Commit()
 }
 
-// ScheduleRetry implements SubmissionStore.
-func (s *DB) ScheduleRetry(ctx context.Context, id int64, retryAt *time.Time, note string) error {
-	_, err := s.db.ExecContext(ctx, `
+// ScheduleRetry implements SubmissionStore. The guard closes the teacher-cancel
+// race: the worker decides to retry, the teacher cancels in between (terminal
+// row, counts=0, its own note), and an unconditional update would overwrite the
+// note, count a retry and re-arm retry_at - handing the canceled submission
+// back to ClaimNext. ok=false says the row was no longer the caller's to write.
+func (s *DB) ScheduleRetry(ctx context.Context, id int64, retryAt *time.Time, note string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
 		UPDATE submissions SET status = 'infra_error', retries = retries + 1,
 		  retry_at = ?, worker_note = ?
-		WHERE id = ?`,
+		WHERE id = ? AND status = 'running' AND canceled_at IS NULL`,
 		fmtTimePtr(retryAt), note, id)
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 // RequeueRunning implements SubmissionStore (startup recovery, SPEC §5).
@@ -209,7 +223,8 @@ func (s *DB) RequeueRunning(ctx context.Context) (int, error) {
 // counting, the submission simply goes back to the queue).
 func (s *DB) Requeue(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE submissions SET status = 'queued', started_at = NULL WHERE id = ? AND status = 'running'`, id)
+		`UPDATE submissions SET status = 'queued', started_at = NULL
+		 WHERE id = ? AND status = 'running' AND canceled_at IS NULL`, id)
 	return err
 }
 

@@ -190,13 +190,18 @@ func TestInviteLifecycle(t *testing.T) {
 		t.Fatal("unknown token must not verify")
 	}
 
-	if err := db.MarkInviteUsed(t.Context(), inv.ID, time.Now()); err != nil {
-		t.Fatal(err)
+	if used, err := db.ConsumeInvite(t.Context(), inv.ID, time.Now()); err != nil || !used {
+		t.Fatalf("consume: used=%v err=%v", used, err)
 	}
 	if _, ok, err := db.VerifyInvite(t.Context(), "inv-tok"); err != nil {
 		t.Fatal(err)
 	} else if ok {
 		t.Fatal("used invite must not verify")
+	}
+	// Two requests can both pass VerifyInvite before either writes; exactly
+	// one of them may then consume the link.
+	if used, err := db.ConsumeInvite(t.Context(), inv.ID, time.Now()); err != nil || used {
+		t.Fatalf("second consume: used=%v err=%v, want false/nil", used, err)
 	}
 
 	if err := db.CreateInvite(t.Context(), u.ID, "expired-tok", time.Now().Add(-time.Hour)); err != nil {
