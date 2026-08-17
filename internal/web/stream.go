@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"html"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/ekalinin/anygrade/internal/gradebook"
 	"github.com/ekalinin/anygrade/internal/i18n"
 	"github.com/ekalinin/anygrade/internal/intake"
+	"github.com/ekalinin/anygrade/internal/queue"
 	"github.com/ekalinin/anygrade/internal/runner"
 	"github.com/ekalinin/anygrade/internal/store"
 )
@@ -44,7 +46,7 @@ func (h *Handler) submissionStream(w http.ResponseWriter, r *http.Request) {
 		h.httpError(w, r, "error.streaming_unsupported", http.StatusInternalServerError)
 		return
 	}
-	if terminalStatus(sub.Status) {
+	if terminalSubmission(sub) {
 		sse.send("done", "")
 		return
 	}
@@ -54,7 +56,7 @@ func (h *Handler) submissionStream(w http.ResponseWriter, r *http.Request) {
 	// Re-fetch once after subscribing: a terminal flip between the first
 	// load and the subscription would otherwise leave the stream hanging.
 	if cur, _, err := h.DB.GetSubmission(r.Context(), sub.ID); err == nil {
-		if terminalStatus(cur.Status) {
+		if terminalSubmission(cur) {
 			sse.send("done", "")
 			return
 		}
@@ -83,8 +85,9 @@ func (h *Handler) submissionStream(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case ev := <-events:
-			sse.send("status", statusBadge(lang, ev.Status))
-			if terminalStatus(ev.Status) {
+			status, done := h.streamStatus(r.Context(), ev, sub.ID)
+			sse.send("status", statusBadge(lang, status))
+			if done {
 				h.drainTails(sse, lang, tails, paneCap) // flush the last buffered output first
 				sse.send("done", "")
 				return
@@ -93,6 +96,21 @@ func (h *Handler) submissionStream(w http.ResponseWriter, r *http.Request) {
 			h.drainTails(sse, lang, tails, paneCap)
 		}
 	}
+}
+
+// streamStatus turns one event into the status to display and whether it ends
+// the stream. Only infra_error is undecidable from the event alone - retrying,
+// retries exhausted, or canceled by a teacher all carry that status - so that
+// one case is resolved against the row itself.
+func (h *Handler) streamStatus(ctx context.Context, ev queue.Event, id int64) (string, bool) {
+	if ev.Status != store.StatusInfraError {
+		return ev.Status, terminalStatus(ev.Status)
+	}
+	cur, _, err := h.DB.GetSubmission(ctx, id)
+	if err != nil {
+		return gradebook.StatusRetrying, false // keep streaming; the next event decides
+	}
+	return subDisplayStatus(cur), terminalSubmission(cur)
 }
 
 // drainTails emits new bytes of every growing log file, HTML-escaped, capped

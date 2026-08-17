@@ -18,7 +18,7 @@ func WriteCSV(w io.Writer, m Matrix) error {
 		return err
 	}
 	for _, row := range m.Rows {
-		rec := []string{row.User.Login, row.User.DisplayName}
+		rec := []string{csvSafe(row.User.Login), csvSafe(row.User.DisplayName)}
 		for _, t := range m.Tasks {
 			rec = append(rec, FmtScore(row.Cells[t.ID].Display))
 		}
@@ -31,10 +31,30 @@ func WriteCSV(w io.Writer, m Matrix) error {
 	return cw.Error()
 }
 
+// csvSafe neutralizes spreadsheet formula injection. Excel, LibreOffice, and
+// Sheets evaluate a cell that starts with =, +, - or @ as a formula, and a
+// display name comes straight out of open registration - so an export the
+// teacher opens would run whatever the student typed. The conventional escape
+// is a leading apostrophe: spreadsheets strip it on import and show the literal
+// text, and a plain CSV reader sees one extra character.
+//
+// Score cells are not run through this: they are formatted by FmtScore, never
+// negative, and quoting them would break every consumer of the export.
+func csvSafe(s string) string {
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + s
+	}
+	return s
+}
+
 func taskIDs(tasks []TaskCol) []string {
 	ids := make([]string, len(tasks))
 	for i, t := range tasks {
-		ids[i] = t.ID
+		ids[i] = csvSafe(t.ID)
 	}
 	return ids
 }

@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"mime"
 	"net/http"
 	"slices"
 	"strconv"
@@ -99,7 +100,13 @@ func (h *Handler) codeFile(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("download") == "1" {
 		name := path[strings.LastIndexByte(path, '/')+1:]
 		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+		// The name comes out of the student's commit, so it is arbitrary by
+		// definition. FormatMediaType quotes and RFC 2231-encodes it; building
+		// the header by hand would let a crafted file name carry a quote and
+		// hand the teacher a download under some other name entirely.
+		if cd := mime.FormatMediaType("attachment", map[string]string{"filename": name}); cd != "" {
+			w.Header().Set("Content-Disposition", cd)
+		}
 		_, _ = w.Write(content)
 		return
 	}

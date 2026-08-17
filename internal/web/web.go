@@ -7,6 +7,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/ekalinin/anygrade/internal/gradebook"
 	"github.com/ekalinin/anygrade/internal/intake"
 	"github.com/ekalinin/anygrade/internal/queue"
 	"github.com/ekalinin/anygrade/internal/ratelimit"
@@ -53,6 +54,14 @@ type Handler struct {
 	// as this user (serve --local; the caller guarantees a loopback bind).
 	// The zero value is the secure one: only the composition root sets it.
 	Local *store.User
+	// BehindProxy makes the site trust X-Forwarded-Proto when deciding whether
+	// the browser's connection is encrypted (session cookie Secure flag). Off
+	// by default: the header is forgeable by anyone who reaches the port.
+	BehindProxy bool
+	// Alias anonymizes leaderboard names for students (SPEC §10). The secret
+	// behind it is per instance and comes from the composition root; the zero
+	// value derives guessable aliases and is test-only.
+	Alias gradebook.Aliaser
 }
 
 // New builds the site mux. Everything except /login, /invite, /register, and
@@ -105,7 +114,7 @@ func New(h *Handler) http.Handler {
 	mux.Handle("GET /students/{login}/submissions/{id}/code", h.requireTeacher(h.codeList))
 	mux.Handle("GET /students/{login}/submissions/{id}/code/{path...}", h.requireTeacher(h.codeFile))
 	mux.Handle("GET /audit", h.requireTeacher(h.auditPage))
-	return mux
+	return h.secureContext(mux)
 }
 
 // requireTeacher layers the role check over requireAuth (SPEC §14).

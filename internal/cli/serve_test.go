@@ -57,3 +57,27 @@ func TestServeLocalAddrDefaults(t *testing.T) {
 		})
 	}
 }
+
+// TestServeTLSFlags: --tls-cert/--tls-key and --behind-proxy reach Options, and
+// they default off so an unchanged invocation keeps behaving as before.
+func TestServeTLSFlags(t *testing.T) {
+	f := newServeFlags()
+	f.fs.SetOutput(io.Discard)
+	if err := f.parse(nil); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if *f.tlsCert != "" || *f.tlsKey != "" || *f.behindProxy {
+		t.Errorf("TLS defaults are not off: cert=%q key=%q behindProxy=%v",
+			*f.tlsCert, *f.tlsKey, *f.behindProxy)
+	}
+
+	f = newServeFlags()
+	f.fs.SetOutput(io.Discard)
+	if err := f.parse([]string{"--tls-cert", "c.pem", "--tls-key", "k.pem", "--behind-proxy"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if *f.tlsCert != "c.pem" || *f.tlsKey != "k.pem" || !*f.behindProxy {
+		t.Errorf("flags not parsed: cert=%q key=%q behindProxy=%v",
+			*f.tlsCert, *f.tlsKey, *f.behindProxy)
+	}
+}

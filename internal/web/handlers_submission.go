@@ -18,14 +18,20 @@ type submissionData struct {
 	CourseName string
 	User       userView
 	Sub        store.Submission
-	TaskName   string
-	TaskScore  int
-	Checks     []store.CheckRow
+	// Status is the refined display status (retrying / error / canceled for an
+	// infra_error), the same value the queue view shows.
+	Status    string
+	TaskName  string
+	TaskScore int
+	Checks    []store.CheckRow
 	// Panes pre-renders one log pane per metadata check, so the SSE stream
 	// never has to create elements dynamically (design risk #4 avoidance).
-	Panes    []logPane
-	Running  bool
-	Rejected bool
+	Panes []logPane
+	// CanDownloadLogs gates the raw full-log download to teachers (SPEC §14:
+	// students see the log as their tests produced it, teachers see it whole).
+	CanDownloadLogs bool
+	Running         bool
+	Rejected        bool
 	// Flash carries a recheck warning from the redirect that landed here
 	// (submissionURL); the fragment renderer leaves it empty.
 	Flash string
@@ -52,12 +58,14 @@ func (h *Handler) loadSubmission(w http.ResponseWriter, r *http.Request) (store.
 	return sub, checks, true
 }
 
-func (h *Handler) submissionData(sub store.Submission, checks []store.CheckRow) submissionData {
+func (h *Handler) submissionData(sub store.Submission, checks []store.CheckRow, viewer store.User) submissionData {
 	data := submissionData{
-		Sub:      sub,
-		Checks:   checks,
-		Running:  !terminalStatus(sub.Status),
-		Rejected: sub.Status == store.StatusRejectedDeadline || sub.Status == store.StatusRejectedLimit,
+		Sub:             sub,
+		Status:          subDisplayStatus(sub),
+		Checks:          checks,
+		CanDownloadLogs: viewer.Role == "teacher",
+		Running:         !terminalSubmission(sub),
+		Rejected:        sub.Status == store.StatusRejectedDeadline || sub.Status == store.StatusRejectedLimit,
 	}
 	if task, _, ok := h.Course.Get().Task(sub.TaskID); ok {
 		data.TaskName = task.Name
@@ -77,7 +85,7 @@ func (h *Handler) submissionPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := user(r)
-	data := h.submissionData(sub, checks)
+	data := h.submissionData(sub, checks, u)
 	data.CourseName = h.Course.Get().Resolved.Course.Name
 	data.User = h.userViewOf(u)
 	data.Flash = r.URL.Query().Get("flash")
@@ -91,7 +99,7 @@ func (h *Handler) submissionFragment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	html, err := renderPartial(h.lang(r), "sub-results", h.submissionData(sub, checks))
+	html, err := renderPartial(h.lang(r), "sub-results", h.submissionData(sub, checks, user(r)))
 	if err != nil {
 		h.httpError(w, r, "error.render_failed", http.StatusInternalServerError)
 		return
@@ -103,6 +111,13 @@ func (h *Handler) submissionFragment(w http.ResponseWriter, r *http.Request) {
 // submissionLog downloads one full check log from disk (SPEC §13: the DB holds
 // only the excerpt).
 //
+// Teachers only (SPEC §14: "check logs are shown to students as produced by
+// their tests; teachers see full logs"). Student code runs under the same UID
+// as the hidden tests copied into the workspace, so a solution can read them
+// and print them; handing their own author the raw log would turn that into an
+// exfiltration channel. The stored excerpt and the live stream stay with the
+// student - both are bounded by the task's `runner.log_excerpt`.
+//
 // The check name is validated by membership in this submission's results, not
 // by shape: metadata only requires a name to be non-empty and unique within the
 // task, so any pattern-based allowlist rejects logs the run legitimately wrote.
@@ -111,6 +126,10 @@ func (h *Handler) submissionFragment(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) submissionLog(w http.ResponseWriter, r *http.Request) {
 	sub, checks, ok := h.loadSubmission(w, r)
 	if !ok {
+		return
+	}
+	if user(r).Role != "teacher" {
+		http.NotFound(w, r) // 404, not 403: never leak what exists (SPEC §14)
 		return
 	}
 	check := r.PathValue("check")
@@ -146,8 +165,21 @@ func terminalStatus(s string) bool {
 	case store.StatusQueued, store.StatusRunning:
 		return false
 	case store.StatusInfraError:
-		return false // retrying or awaiting teacher action; keep the stream open
+		return false // ambiguous by status alone; see terminalSubmission
 	default:
 		return true
 	}
+}
+
+// terminalSubmission applies the queue's retry model to the one status that
+// terminalStatus cannot decide on its own. An infra_error is only on its way
+// back to a worker while a retry is actually scheduled: retries exhausted
+// (retry_at nil) and a teacher cancel (canceled_at set) are both final, and
+// treating them as running left the page promising a "retrying" that never
+// came and the SSE stream open until the client gave up.
+func terminalSubmission(sub store.Submission) bool {
+	if sub.Status == store.StatusInfraError {
+		return sub.RetryAt == nil || sub.CanceledAt != nil
+	}
+	return terminalStatus(sub.Status)
 }

@@ -57,11 +57,39 @@ func (h *Handler) addOwnKey(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/settings?flash=unparseable_ssh_key", http.StatusSeeOther)
 		return
 	}
-	if _, err := h.DB.AddSSHKey(r.Context(), u.ID, gossh.FingerprintSHA256(pk), keyText); err != nil {
-		http.Redirect(w, r, "/settings?flash=key_already_registered", http.StatusSeeOther)
+	fingerprint := gossh.FingerprintSHA256(pk)
+	if _, err := h.DB.AddSSHKey(r.Context(), u.ID, fingerprint, keyText); err != nil {
+		http.Redirect(w, r, "/settings?flash="+h.reportDuplicateKey(r, u, fingerprint), http.StatusSeeOther)
 		return
 	}
 	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+}
+
+// reportDuplicateKey turns a rejected duplicate fingerprint into a flash code,
+// and records an audit event when the key belongs to somebody else.
+//
+// Public keys are public and ssh_keys.fingerprint is globally unique, so
+// registering a key is first-come-first-served: an attacker who posts a
+// classmate's public key locks that classmate out of their own key and makes
+// their SSH connections resolve to the attacker's identity - denial of service,
+// not stolen access, since the attacker still cannot use the private key.
+// Proof of possession (sign a server challenge) is the real fix and is left as
+// follow-up work; until then the event names both accounts, so a teacher can
+// see who holds the key and remove it from that student's page.
+func (h *Handler) reportDuplicateKey(r *http.Request, actor store.User, fingerprint string) string {
+	holder, ok, err := h.DB.UserByFingerprint(r.Context(), fingerprint)
+	if err != nil || !ok || holder.ID == actor.ID {
+		// Own key re-added, or the holder is deactivated and no longer
+		// resolvable: nothing to report beyond the plain duplicate.
+		return "key_already_registered"
+	}
+	// Target is the holder: the teacher UI lists a student's keys with a delete
+	// button on their own page, which is where this has to lead.
+	_ = h.DB.Log(r.Context(), store.Event{
+		ActorID: &actor.ID, Kind: "key.duplicate", Target: holder.Login,
+		Detail: "requested by " + actor.Login + ", fingerprint " + fingerprint,
+	})
+	return "key_registered_elsewhere"
 }
 
 func (h *Handler) delOwnKey(w http.ResponseWriter, r *http.Request) {
@@ -115,7 +143,7 @@ func (h *Handler) leaderboardPage(w http.ResponseWriter, r *http.Request) {
 	}
 	anonymize := lb.Anonymize && u.Role != "teacher"
 	rows := make([]leaderboardRow, 0)
-	for _, lr := range gradebook.Leaderboard(m) {
+	for _, lr := range gradebook.Leaderboard(m, h.Alias) {
 		name := lr.Login
 		if anonymize {
 			name = lr.Alias

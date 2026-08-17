@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,5 +113,61 @@ func TestSubmissionLogRejectsUnknownCheck(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("GET log %q: status %d, want 404 (body %q)", name, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+// TestSubmissionLogDownloadIsTeacherOnly: student code runs under the same UID
+// as the hidden tests copied into its workspace, so it can read them and print
+// them - and the raw full log would hand that straight back to its author.
+// SPEC §14 already draws the line: students see the log their tests produced,
+// teachers see it whole.
+func TestSubmissionLogDownloadIsTeacherOnly(t *testing.T) {
+	h, _ := newTestSite(t)
+	h.DataDir = t.TempDir()
+	student, sub := finishedWithChecks(t, h, "build")
+
+	h.Local = &student
+	if rec := getLog(t, h, "/submissions/"+itoa(sub.ID)+"/logs/build"); rec.Code != http.StatusNotFound {
+		t.Errorf("owner downloaded the full log: status %d, body %q", rec.Code, rec.Body.String())
+	}
+
+	teacher, err := h.DB.GetUserByLogin(t.Context(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Local = &teacher
+	rec := getLog(t, h, "/submissions/"+itoa(sub.ID)+"/logs/build")
+	if rec.Code != http.StatusOK || rec.Body.String() != "log of build" {
+		t.Errorf("teacher: status %d, body %q, want 200 and the log", rec.Code, rec.Body.String())
+	}
+}
+
+// TestSubmissionPageHidesLogLinkFromStudent: the page must not offer a download
+// it will 404, and must say where the full log went.
+func TestSubmissionPageHidesLogLinkFromStudent(t *testing.T) {
+	h, _ := newTestSite(t)
+	h.DataDir = t.TempDir()
+	student, sub := finishedWithChecks(t, h, "build")
+	h.Local = &student
+
+	rec := httptest.NewRecorder()
+	New(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/submissions/"+itoa(sub.ID), nil))
+	body := rec.Body.String()
+	if strings.Contains(body, "/logs/") {
+		t.Errorf("student page still links to the full log:\n%s", body)
+	}
+	if !strings.Contains(body, "full logs are available to teachers") {
+		t.Errorf("student page does not explain the missing download:\n%s", body)
+	}
+
+	teacher, err := h.DB.GetUserByLogin(t.Context(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Local = &teacher
+	rec = httptest.NewRecorder()
+	New(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/submissions/"+itoa(sub.ID), nil))
+	if !strings.Contains(rec.Body.String(), "/logs/build") {
+		t.Errorf("teacher page lost the log download:\n%s", rec.Body.String())
 	}
 }

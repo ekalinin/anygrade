@@ -29,6 +29,9 @@ type serveFlags struct {
 	workers          *int
 	local            *bool
 	allowLocalRunner *bool
+	tlsCert          *string
+	tlsKey           *string
+	behindProxy      *bool
 }
 
 func newServeFlags() *serveFlags {
@@ -45,6 +48,10 @@ func newServeFlags() *serveFlags {
 			"local mode: no auth, single implicit user, loopback only (addresses default to "+loopbackHost+")"),
 		allowLocalRunner: fs.Bool("allow-local-runner", false,
 			"allow local-runner tasks on a non-loopback bind (executes untrusted code on the host)"),
+		tlsCert: fs.String("tls-cert", "", "PEM certificate chain; serves HTTPS (requires --tls-key)"),
+		tlsKey:  fs.String("tls-key", "", "PEM private key for --tls-cert"),
+		behindProxy: fs.Bool("behind-proxy", false,
+			"trust X-Forwarded-Proto from a TLS-terminating reverse proxy"),
 	}
 }
 
@@ -111,6 +118,9 @@ func cmdServe(args []string) int {
 		Workers:          *f.workers,
 		Local:            *f.local,
 		AllowLocalRunner: *f.allowLocalRunner,
+		TLSCert:          *f.tlsCert,
+		TLSKey:           *f.tlsKey,
+		BehindProxy:      *f.behindProxy,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
