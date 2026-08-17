@@ -284,6 +284,149 @@ func TestValidateCheckNameShape(t *testing.T) {
 	}
 }
 
+// TestValidateCheckWeightNegative covers the check-weight rule: weights are
+// normalized over the non-gate checks (SPEC §4.3), so a negative weight shrinks
+// the divisor - 60 and -40 sum to 20, and passing the first check alone would
+// score 300 out of 100. Weight 0 stays legal (dead-weight warning only).
+func TestValidateCheckWeightNegative(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	build := func(checks ...Check) []Diagnostic {
+		return validateOneTask(&Task{
+			Dir: dir, ID: "w", Name: "W", Score: 100,
+			SolutionFiles: []string{"main.go"},
+			Runner:        RunnerSpec{Type: new("local")},
+			Checks:        checks,
+		})
+	}
+
+	neg := build(
+		Check{Name: "basic", Weight: 60, Run: "go test -run Basic ./..."},
+		Check{Name: "advanced", Weight: -40, Run: "go test -run Advanced ./..."},
+	)
+	if !hasFieldError(neg, "checks[1].weight") {
+		t.Errorf("a negative weight should be an error, got:\n%s", strings.Join(diagStrings(neg), "\n"))
+	}
+
+	zero := build(
+		Check{Name: "build", Required: true, Weight: 0, Run: "go build ./..."},
+		Check{Name: "basic", Weight: 100, Run: "go test ./..."},
+		Check{Name: "extra", Weight: 0, Run: "go vet ./..."},
+	)
+	if HasErrors(zero) {
+		t.Errorf("weight 0 must stay legal, got:\n%s", strings.Join(diagStrings(zero), "\n"))
+	}
+}
+
+// TestValidateHiddenLocalPath covers the hidden_tests.path rules for
+// source: local. The path is resolved on the machine that runs the checks, so a
+// missing or relative path only warns; an existing absolute directory is clean.
+func TestValidateHiddenLocalPath(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hiddenFile := filepath.Join(dir, "main.go")
+	build := func(path string) []Diagnostic {
+		return validateOneTask(&Task{
+			Dir: dir, ID: "w", Name: "W", Score: 100,
+			SolutionFiles: []string{"main.go"},
+			Runner:        RunnerSpec{Type: new("local")},
+			HiddenTests:   &HiddenTests{Source: "local", Path: path},
+			Checks:        []Check{{Name: "test", Weight: 100, Run: "go test ./..."}},
+		})
+	}
+
+	cases := []struct {
+		path string
+		want string // expected substring; "" = no hidden_tests.path diagnostic
+	}{
+		{dir, ""},
+		{filepath.Join(dir, "nope"), "does not exist here"},
+		{"hidden/01-intro", "should be an absolute path"},
+		{hiddenFile, "is not a directory"},
+	}
+	for _, tc := range cases {
+		diags := build(tc.path)
+		if HasErrors(diags) {
+			t.Errorf("path %q must not fail validation, got:\n%s", tc.path, strings.Join(diagStrings(diags), "\n"))
+		}
+		var got []string
+		for _, d := range diags {
+			if d.Field == "hidden_tests.path" {
+				got = append(got, d.String())
+			}
+		}
+		joined := strings.Join(got, "\n")
+		if tc.want == "" {
+			if len(got) > 0 {
+				t.Errorf("path %q should be clean, got:\n%s", tc.path, joined)
+			}
+			continue
+		}
+		if !strings.Contains(joined, tc.want) {
+			t.Errorf("path %q: missing warning %q, got:\n%s", tc.path, tc.want, joined)
+		}
+	}
+}
+
+// TestValidateHiddenGitURLCredentials covers the hidden_tests.url rule: the URL
+// is passed to git and logged, so credentials must come from the environment
+// (SPEC §11, §14). A bare ssh username is a normal remote address, not a secret.
+func TestValidateHiddenGitURLCredentials(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	build := func(url string) []Diagnostic {
+		return validateOneTask(&Task{
+			Dir: dir, ID: "w", Name: "W", Score: 100,
+			SolutionFiles: []string{"main.go"},
+			Runner:        RunnerSpec{Type: new("local")},
+			HiddenTests:   &HiddenTests{Source: "git", URL: url, Ref: "main"},
+			Checks:        []Check{{Name: "test", Weight: 100, Run: "go test ./..."}},
+		})
+	}
+
+	cases := []struct {
+		url     string
+		wantErr bool
+	}{
+		{"https://user:s3cret@example.com/org/hidden.git", true},
+		{"https://s3cret@example.com/org/hidden.git", true},
+		{"ssh://git:s3cret@example.com/org/hidden.git", true},
+		{"https://example.com/org/hidden.git", false},
+		{"ssh://git@example.com/org/hidden.git", false},
+		{"git@github.com:org/hidden.git", false},
+		{"file:///srv/hidden.git", false},
+	}
+	for _, tc := range cases {
+		diags := build(tc.url)
+		got := hasFieldError(diags, "hidden_tests.url")
+		if got != tc.wantErr {
+			t.Errorf("url %q: error=%v, want %v; diagnostics:\n%s", tc.url, got, tc.wantErr, strings.Join(diagStrings(diags), "\n"))
+		}
+		// The diagnostic travels back in the teacher's push output; it must
+		// not repeat the secret it complains about.
+		if joined := strings.Join(diagStrings(diags), "\n"); strings.Contains(joined, "s3cret") {
+			t.Errorf("url %q: diagnostic leaks the credential:\n%s", tc.url, joined)
+		}
+	}
+}
+
+// validateOneTask validates a single task inside an otherwise valid course.
+func validateOneTask(task *Task) []Diagnostic {
+	rt := Resolve(&Course{}, task)
+	rt.file = "task.yaml"
+	return Validate(&Resolved{
+		Course:    ResolvedCourse{Name: "C", TasksDir: "tasks", Registration: Registration{Mode: "invite"}, ScoringPolicy: "best"},
+		rawCourse: &Course{Registration: Registration{Mode: "invite"}, Scoring: Scoring{Policy: "best"}},
+		Tasks:     []ResolvedTask{rt},
+	})
+}
+
 // hasFieldError reports whether diags carries a SevError for the given field.
 func hasFieldError(diags []Diagnostic, field string) bool {
 	for _, d := range diags {

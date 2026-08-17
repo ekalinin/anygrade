@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -285,6 +286,12 @@ func validateChecks(t *ResolvedTask, add func(Severity, string, string, string, 
 			}
 			continue
 		}
+		if ch.Weight < 0 {
+			// Weights are normalized over the non-gate checks (SPEC §4.3): a
+			// negative weight shrinks the divisor, so a passed check can score
+			// above the task score - or below 0 once the sum turns negative.
+			add(SevError, f, field+".weight", "must be >= 0, got %d (weights are normalized over the non-gate checks)", ch.Weight)
+		}
 		scoredCount++
 		if ch.Weight > 0 {
 			positiveWeightCount++
@@ -314,12 +321,50 @@ func validateHidden(t *ResolvedTask, add func(Severity, string, string, string, 
 		add(SevError, f, "hidden_tests.source", "must be one of git|local, got %q", h.Source)
 		return
 	}
-	if h.Source == "git" && h.URL == "" {
-		add(SevError, f, "hidden_tests.url", "url is required when source is git")
+	if h.Source == "git" {
+		switch {
+		case h.URL == "":
+			add(SevError, f, "hidden_tests.url", "url is required when source is git")
+		case urlHasCredentials(h.URL):
+			// The URL reaches git's argv and the server log, so an embedded
+			// token would leak (SPEC §11, §14). The diagnostic must not echo
+			// the URL: it is reported back in the teacher's push output.
+			add(SevError, f, "hidden_tests.url", "must not embed credentials; hidden-tests credentials come from the environment (ANYGRADE_HIDDEN_GIT_TOKEN)")
+		}
 	}
-	if h.Source == "local" && h.Path == "" {
-		add(SevError, f, "hidden_tests.path", "path is required when source is local")
+	if h.Source == "local" {
+		switch {
+		case h.Path == "":
+			add(SevError, f, "hidden_tests.path", "path is required when source is local")
+		case !filepath.IsAbs(h.Path):
+			// A relative path is resolved against the working directory of
+			// whoever reads it (server vs `anygrade check`), so its existence
+			// cannot be checked here either.
+			add(SevWarning, f, "hidden_tests.path", "%q should be an absolute path: it is resolved on the machine that runs the checks", h.Path)
+		default:
+			if st, err := os.Stat(h.Path); err != nil {
+				add(SevWarning, f, "hidden_tests.path", "%q does not exist here; it must exist on the grading server", h.Path)
+			} else if !st.IsDir() {
+				add(SevWarning, f, "hidden_tests.path", "%q is not a directory", h.Path)
+			}
+		}
 	}
+}
+
+// urlHasCredentials reports whether a hidden-tests URL carries userinfo that
+// would end up in git's argv and the server log. A bare ssh username
+// (git@host:org/repo.git, ssh://git@host/...) is the normal way to address a
+// remote and stays allowed; a password, or any userinfo on an http(s) URL, is
+// a credential.
+func urlHasCredentials(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.User == nil {
+		return false
+	}
+	if _, ok := u.User.Password(); ok {
+		return true
+	}
+	return u.Scheme == "http" || u.Scheme == "https"
 }
 
 func validatePenaltyWarnings(t *ResolvedTask, add func(Severity, string, string, string, ...any)) {
