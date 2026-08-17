@@ -42,14 +42,41 @@ func dockerSpec(timeout time.Duration) config.ResolvedRunner {
 }
 
 // TestDockerUserArg pins the user policy: student code never runs as root
-// (SPEC §14), on every platform. The workspace is copied into the container
-// with `docker cp`, which keeps the uid of the host files, so the container
-// user is the process that assembled the workspace.
+// (SPEC §14), on every platform and whoever anygrade itself runs as. The
+// workspace is copied into the container with `docker cp`, which keeps the uid
+// of the host files, so the container user is normally the process that
+// assembled the workspace - unless that process is root, and then a fixed
+// unprivileged id takes over.
 func TestDockerUserArg(t *testing.T) {
+	nobody := fmt.Sprintf("%d:%d", nobodyUID, nobodyGID)
+	tests := []struct {
+		name     string
+		explicit string
+		uid, gid int
+		want     string
+		fellBack bool
+	}{
+		{name: "explicit user wins", explicit: "1000:1000", uid: 501, gid: 20, want: "1000:1000"},
+		{name: "explicit name is left to the image", explicit: "student", uid: 501, gid: 20, want: "student"},
+		{name: "explicit root is refused", explicit: "0:0", uid: 501, gid: 20, want: nobody, fellBack: true},
+		{name: "explicit bare root is refused", explicit: "0", uid: 501, gid: 20, want: nobody, fellBack: true},
+		{name: "process uid by default", uid: 501, gid: 20, want: "501:20"},
+		{name: "root process falls back", uid: 0, gid: 0, want: nobody, fellBack: true},
+		{name: "root group falls back", uid: 501, gid: 0, want: nobody, fellBack: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, fellBack := containerUser(tc.explicit, tc.uid, tc.gid)
+			if got != tc.want || fellBack != tc.fellBack {
+				t.Errorf("containerUser(%q, %d, %d) = %q, %v; want %q, %v",
+					tc.explicit, tc.uid, tc.gid, got, fellBack, tc.want, tc.fellBack)
+			}
+		})
+	}
 	if got := (&DockerRunner{User: "1000:1000"}).userArg(); got != "1000:1000" {
 		t.Errorf("explicit User: got %q, want %q", got, "1000:1000")
 	}
-	want := fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+	want, _ := containerUser("", os.Getuid(), os.Getgid())
 	if got := (&DockerRunner{}).userArg(); got != want {
 		t.Errorf("default User on %s: got %q, want %q", runtime.GOOS, got, want)
 	}
@@ -83,7 +110,8 @@ func TestDockerRunArgsWorkspaceIsTmpfs(t *testing.T) {
 			t.Errorf("missing %s: %s", want, line)
 		}
 	}
-	if i := slices.Index(args, "--user"); i < 0 || args[i+1] != fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()) {
+	wantUser, _ := containerUser("", os.Getuid(), os.Getgid())
+	if i := slices.Index(args, "--user"); i < 0 || args[i+1] != wantUser {
 		t.Errorf("container must run non-root as the workspace owner: %s", line)
 	}
 	// The container itself only waits; checks are exec'd into it. The wait is
@@ -197,6 +225,54 @@ func TestDockerRunnerExportWorkspace(t *testing.T) {
 	}
 	if got := readFile(t, filepath.Join(ws, "tasks", "01", "artifact.bin")); got != "built\n" {
 		t.Errorf("artifact not exported to the host: %q", got)
+	}
+}
+
+// TestDockerRunnerAssembledWorkspace runs a real assembled workspace, which is
+// the only place the two ends meet: its directories are owner-only and its
+// hidden tests are read-only, and `docker cp` carries both into the container
+// together with the uid. So the checks must still be able to write in their
+// task dir, read the hidden tests, and fail to modify them.
+func TestDockerRunnerAssembledWorkspace(t *testing.T) {
+	if testing.Short() || !dockerAvailable() {
+		t.Skip("docker not available")
+	}
+	course := t.TempDir()
+	writeFiles(t, course, map[string]string{"tasks/01/main.sh": "echo main\n"})
+	hidden := t.TempDir()
+	writeFiles(t, hidden, map[string]string{"hidden_test.txt": "expectations\n"})
+
+	ws, err := Assemble(t.Context(), Assembly{
+		Dest:          filepath.Join(t.TempDir(), "ws"),
+		Task:          config.ResolvedTask{SolutionFiles: []string{"main.sh"}},
+		TaskRelDir:    "tasks/01",
+		Authoritative: WorkingCopySource{Root: course},
+		Hidden:        WorkingCopySource{Root: hidden},
+		RunAsUID:      -1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+
+	outcomes, err := (&DockerRunner{}).Run(t.Context(), Job{
+		WorkspaceDir: ws.Root,
+		TaskRelDir:   "tasks/01",
+		Spec:         dockerSpec(time.Minute),
+		Checks: []config.Check{
+			{Name: "reads-hidden", Required: true, Run: "cat hidden_test.txt"},
+			{Name: "writes-own-file", Required: true, Run: "echo artifact > out.txt"},
+			{Name: "cannot-modify-hidden", Required: true, Run: "! echo tampered > hidden_test.txt"},
+		},
+		LogDir: filepath.Join(t.TempDir(), "logs"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, o := range outcomes {
+		if !o.Passed {
+			t.Errorf("%s must pass: %+v excerpt=%q", o.Name, o, o.LogExcerpt)
+		}
 	}
 }
 

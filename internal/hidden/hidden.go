@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -250,6 +251,6 @@ func (s subdirSource) Export(ctx context.Context, srcRel, dstAbs string) error {
 	return s.inner.Export(ctx, path.Join(s.sub, srcRel), dstAbs)
 }
 
-func (s subdirSource) File(ctx context.Context, srcRel string) ([]byte, bool, error) {
-	return s.inner.File(ctx, path.Join(s.sub, srcRel))
+func (s subdirSource) Open(ctx context.Context, srcRel string) (io.ReadCloser, bool, error) {
+	return s.inner.Open(ctx, path.Join(s.sub, srcRel))
 }

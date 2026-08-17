@@ -6,11 +6,12 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/ekalinin/anygrade/internal/config"
@@ -56,7 +57,8 @@ type Runner interface {
 }
 
 // New returns the runner for spec.Type. dockerUser is the --user value for
-// containers ("" = the uid:gid of this process, see DockerRunner.userArg).
+// containers ("" = the uid:gid of this process, or a fixed unprivileged id
+// when that is root; see containerUser).
 // mirror, when non-nil, receives a live copy of all check output.
 func New(spec config.ResolvedRunner, dockerUser string, mirror io.Writer) (Runner, error) {
 	switch spec.Type {
@@ -92,7 +94,9 @@ type checkExecutor interface {
 // short-circuit (after a failed required check the remaining checks are
 // reported Skipped), and honors parent-context cancellation.
 func runAll(ctx context.Context, job Job, ex checkExecutor) ([]Outcome, error) {
-	if err := os.MkdirAll(job.LogDir, 0o755); err != nil {
+	// Owner-only: check logs hold the full output of a student's run, and the
+	// data dir around them is 0700 as well.
+	if err := os.MkdirAll(job.LogDir, 0o700); err != nil {
 		return nil, infraErr("workspace", err)
 	}
 	outcomes := make([]Outcome, 0, len(job.Checks))
@@ -118,10 +122,78 @@ func runAll(ctx context.Context, job Job, ex checkExecutor) ([]Outcome, error) {
 	return outcomes, nil
 }
 
-// logFileName maps a check name to a safe file name.
+const (
+	// logStemSep separates a sanitized stem from its hash. It is never produced
+	// by sanitizeLogStem and disqualifies a name from safeLogStem, so it cannot
+	// occur in a file name built from a name that was kept verbatim.
+	logStemSep = "~"
+	// maxLogStem keeps the file name well inside the 255-byte limit even after
+	// the separator, the hash and ".log".
+	maxLogStem = 64
+)
+
+// logFileName maps a check name to a safe file name, injectively: check names
+// that are already file-name safe keep their spelling, everything else is
+// sanitized and tagged with a hash of the original name. Without the tag
+// "a/b", "a b" and "a_b" would all write to a_b.log and silently overwrite
+// each other's logs.
 func logFileName(name string) string {
-	r := strings.NewReplacer("/", "_", " ", "_", "\t", "_")
-	return r.Replace(name) + ".log"
+	if safeLogStem(name) {
+		return name + ".log"
+	}
+	return sanitizeLogStem(name) + logStemSep + shortHash(name) + ".log"
+}
+
+// safeLogStem reports whether name can be used as a file name as is. The
+// alphabet is deliberately narrow: uppercase is excluded because macOS is
+// case-insensitive by default, where "Build" and "build" would be one file.
+func safeLogStem(name string) bool {
+	if name == "" || len(name) > maxLogStem {
+		return false
+	}
+	if name[0] == '.' || name[0] == '-' {
+		return false // hidden file / leading dash
+	}
+	for i := range len(name) {
+		if !safeStemByte(name[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func safeStemByte(b byte) bool {
+	switch {
+	case b >= 'a' && b <= 'z', b >= '0' && b <= '9':
+		return true
+	case b == '.' || b == '-' || b == '_':
+		return true
+	}
+	return false
+}
+
+// readableStemByte is safeStemByte plus uppercase: the hash already separates
+// names that differ only in case, so the stem may keep the original spelling.
+func readableStemByte(b byte) bool { return safeStemByte(b) || (b >= 'A' && b <= 'Z') }
+
+// sanitizeLogStem keeps the name readable: everything else (the separator and
+// any non-ASCII byte included) becomes "_".
+func sanitizeLogStem(name string) string {
+	if len(name) > maxLogStem {
+		name = name[:maxLogStem]
+	}
+	b := []byte(name)
+	for i := range b {
+		if !readableStemByte(b[i]) {
+			b[i] = '_'
+		}
+	}
+	return string(b)
+}
+
+func shortHash(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:8])
 }
 
 // LogFileName is logFileName for other packages: the web layer must tail

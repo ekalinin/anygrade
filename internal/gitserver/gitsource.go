@@ -6,13 +6,19 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 )
+
+// exportDirMode keeps an exported tree owner-only: it lands in the data dir
+// (check workspaces) or in a temp dir, and nothing outside anygrade reads it.
+const exportDirMode = 0o700
 
 // GitSource implements runner.Source over a bare repo pinned to one commit:
 // the server-side counterpart of runner.WorkingCopySource (SPEC §6.1).
@@ -91,14 +97,16 @@ func untarTo(tr *tar.Reader, srcRel, dstAbs string) error {
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
+			if err := os.MkdirAll(target, exportDirMode); err != nil {
 				return err
 			}
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(target), exportDirMode); err != nil {
 				return err
 			}
-			out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC,
+			// O_NOFOLLOW because no entry may ever redirect a write through a
+			// link: nothing here creates one, so this can only fire on a race.
+			out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW,
 				hdr.FileInfo().Mode().Perm())
 			if err != nil {
 				return err
@@ -111,20 +119,91 @@ func untarTo(tr *tar.Reader, srcRel, dstAbs string) error {
 				return err
 			}
 		case tar.TypeSymlink:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				return err
-			}
-			_ = os.Remove(target)
-			if err := os.Symlink(hdr.Linkname, target); err != nil {
-				return err
-			}
+			// Never restored: a link in the exported tree is what every later
+			// write resolves through - the solution-file overlay above all - and
+			// an absolute one points straight out of the workspace. Dropping the
+			// entry rather than failing the export keeps a stray link in some
+			// unrelated corner of the course repo from taking the whole course
+			// down; where it matters (a solution_file or a workspace.include
+			// path) it shows up as a missing file, which validate reports.
+			slog.Warn("skipped a symlink in a git export: the workspace must be a plain tree",
+				"entry", hdr.Name)
 		}
 	}
 }
 
-// File implements runner.Source. `cat-file blob` also rejects trees, so a
-// solution-file path that is a directory in the student repo reads as absent
-// and the authoritative version stays.
+// Open implements runner.Source: it streams `git cat-file blob`, so a blob is
+// never buffered whole. The pushed pack is bounded compressed, which says
+// nothing about the size it unpacks to; the caller stops reading at its own
+// limit and closes, which kills git.
+//
+// The type probe runs first, and it is what keeps the semantics of File: a
+// missing path and a directory both read as absent, a broken repo or commit is
+// an error. Probing before the stream also means a missing blob can never
+// truncate the authoritative file the overlay is about to replace.
+func (s GitSource) Open(ctx context.Context, srcRel string) (io.ReadCloser, bool, error) {
+	typ, err := s.output(ctx, "cat-file", "-t", s.Commit+":"+srcRel)
+	if err != nil {
+		if _, probeErr := s.output(ctx, "cat-file", "-e", s.Commit+"^{commit}"); probeErr != nil {
+			return nil, false, probeErr
+		}
+		return nil, false, nil
+	}
+	if string(bytes.TrimSpace(typ)) != "blob" {
+		return nil, false, nil
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	cmd := exec.CommandContext(ctx, "git", "-C", s.Dir, "cat-file", "blob", s.Commit+":"+srcRel)
+	cmd.Env = append(os.Environ(), s.Env...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		cancel()
+		return nil, false, err
+	}
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return nil, false, err
+	}
+	return &blobReader{cmd: cmd, stdout: stdout, stderr: &stderr, cancel: cancel}, true, nil
+}
+
+// blobReader is the live `git cat-file blob` of GitSource.Open.
+type blobReader struct {
+	cmd    *exec.Cmd
+	stdout io.Reader
+	stderr *bytes.Buffer
+	cancel context.CancelFunc
+	eof    bool
+}
+
+func (b *blobReader) Read(p []byte) (int, error) {
+	n, err := b.stdout.Read(p)
+	if err == io.EOF {
+		b.eof = true
+	}
+	return n, err
+}
+
+// Close reaps git. A caller that stopped early (size limit) leaves git blocked
+// on a pipe nobody drains, so it is killed and its status ignored; only a
+// stream read to the end can say whether git actually produced the blob.
+func (b *blobReader) Close() error {
+	if !b.eof {
+		b.cancel()
+	}
+	err := b.cmd.Wait()
+	b.cancel()
+	if !b.eof || err == nil {
+		return nil
+	}
+	return fmt.Errorf("git cat-file blob: %w: %s", err, bytes.TrimSpace(b.stderr.Bytes()))
+}
+
+// File reads one blob whole. `cat-file blob` also rejects trees, so a path
+// that is a directory reads as absent.
 func (s GitSource) File(ctx context.Context, srcRel string) ([]byte, bool, error) {
 	data, err := s.output(ctx, "cat-file", "blob", s.Commit+":"+srcRel)
 	if err == nil {

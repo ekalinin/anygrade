@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -28,6 +30,8 @@ type testPrep struct {
 	auth runner.Source
 	// calls counts started jobs; a run that must never happen leaves it at 0.
 	calls atomic.Int64
+	// student, when set, overlays solution files like the real prep does.
+	student runner.Source
 }
 
 func (p *testPrep) Prepare(_ context.Context, sub store.Submission) (Prepared, error) {
@@ -46,6 +50,7 @@ func (p *testPrep) Prepare(_ context.Context, sub store.Submission) (Prepared, e
 			Task:          p.task,
 			TaskRelDir:    "tasks/t1",
 			Authoritative: authoritative,
+			Student:       p.student,
 			RunAsUID:      -1,
 			RunAsGID:      -1,
 		},
@@ -365,6 +370,45 @@ func TestTerminalPrepareError(t *testing.T) {
 	}
 }
 
+// TestTamperingIsTerminal: an overlay the workspace refuses (here: a solution
+// file past the size limit) is the student's doing, so the submission fails
+// terminally with the reason as the note - retrying it forever would only
+// occupy a worker and hide the cause from the teacher.
+func TestTamperingIsTerminal(t *testing.T) {
+	q, db, u, prep := newTestQueue(t)
+	student := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(student, "tasks", "t1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(student, "tasks", "t1", "solution.txt"),
+		[]byte(strings.Repeat("x", 4096)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prep.student = runner.WorkingCopySource{Root: student}
+	prep.task.Workspace = config.ResolvedWorkspace{MaxFileSize: 64, MaxTotalSize: 64}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = q.Start(ctx) }()
+
+	sub, err := q.Enqueue(ctx, store.NewSubmission{
+		UserID: u.ID, TaskID: "t1", CommitSHA: "abc", ReceivedAt: time.Now(), Counts: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitStatus(t, db, sub.ID, store.StatusInfraError)
+	cancel()
+	<-done
+
+	if got.RetryAt != nil {
+		t.Fatalf("a rejected overlay must not be retried: %+v", got.RetryAt)
+	}
+	if !strings.Contains(got.WorkerNote, "exceeds") {
+		t.Fatalf("worker note %q", got.WorkerNote)
+	}
+}
+
 // TestTeacherCancelRunning: Queue.Cancel on a live submission kills the run,
 // keeps the row terminal-canceled, and never requeues or resurrects it.
 func TestTeacherCancelRunning(t *testing.T) {
@@ -504,7 +548,7 @@ func (s *blockingSource) Export(ctx context.Context, _, _ string) error {
 	return ctx.Err()
 }
 
-func (s *blockingSource) File(context.Context, string) ([]byte, bool, error) {
+func (s *blockingSource) Open(context.Context, string) (io.ReadCloser, bool, error) {
 	return nil, false, nil
 }
 
