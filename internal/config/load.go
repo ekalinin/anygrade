@@ -162,6 +162,12 @@ func resolveCourse(c *Course) ResolvedCourse {
 	if lang == "" {
 		lang = i18n.Default
 	}
+	// A non-positive value would disable the cap; Validate reports it, and
+	// resolution stays lenient (like Language above) so Resolved is usable.
+	maxPush := int64(DefaultMaxPushSize)
+	if c.Limits.MaxPushSize != nil && c.Limits.MaxPushSize.Bytes() > 0 {
+		maxPush = c.Limits.MaxPushSize.Bytes()
+	}
 	return ResolvedCourse{
 		Name:          c.Name,
 		TasksDir:      tasksDir,
@@ -169,6 +175,7 @@ func resolveCourse(c *Course) ResolvedCourse {
 		Registration:  c.Registration,
 		Leaderboard:   c.Leaderboard,
 		ScoringPolicy: policy,
+		MaxPushSize:   maxPush,
 		Timezone:      loadLocation(c.Timezone),
 	}
 }

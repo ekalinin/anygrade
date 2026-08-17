@@ -12,6 +12,10 @@ import (
 // here rather than in runner because runner imports config, not the reverse.
 const DefaultLogExcerpt = 64 << 10
 
+// DefaultMaxPushSize is the built-in `limits.max_push_size` (SPEC §13:
+// "max_push_size (default 50 MB) guards against giant blobs").
+const DefaultMaxPushSize = 50 << 20
+
 // DefaultLogMax bounds the full on-disk log of one check, DefaultOverlayFile
 // and DefaultOverlayTotal the decompressed size of the student overlay. All
 // three exist because the data they bound is produced by untrusted code.

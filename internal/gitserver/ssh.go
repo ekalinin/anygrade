@@ -7,6 +7,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -120,12 +121,32 @@ func (s *SSHServer) handle(sess ssh.Session) {
 		}
 	}
 
+	// The cap is ours to enforce so the rejection is ours to word (SPEC §13).
+	var guard *oversizeReader
+	stdin := io.Reader(sess)
+	limit := s.Repos.MaxInputSize()
+	if write {
+		guard = newOversizeReader(sess, limit)
+		stdin = guard
+	}
+
 	cmd := exec.CommandContext(sess.Context(), "git", gitSub(svc), dir)
 	cmd.Env = env
-	cmd.Stdin = sess
+	cmd.Stdin = stdin
 	cmd.Stdout = sess
 	cmd.Stderr = sess.Stderr()
-	if err := cmd.Run(); err != nil {
+	err = cmd.Run()
+	if guard != nil && guard.hit {
+		// Unlike HTTP there is nothing to hold back here - receive-pack has
+		// been talking to the client since the ref advertisement, and its own
+		// report-status ends the side-band stream. The explanation goes on the
+		// session's stderr instead, which ssh puts straight on the student's
+		// terminal next to git's "unpack-objects abnormal exit".
+		fmt.Fprintln(sess.Stderr(), "anygrade: push rejected: "+oversizeMessage(limit))
+		_ = sess.Exit(1)
+		return
+	}
+	if err != nil {
 		if exit, ok := errors.AsType[*exec.ExitError](err); ok {
 			_ = sess.Exit(exit.ExitCode())
 			return
@@ -199,7 +220,7 @@ func ensureHostKey(path string) (gossh.Signer, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := ensureDir(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
 	if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o600); err != nil {

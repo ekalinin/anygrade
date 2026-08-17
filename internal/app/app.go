@@ -86,6 +86,11 @@ func Run(ctx context.Context, opts Options) error {
 	if err := checkServeSafety(course.Resolved, opts.HTTPAddr, opts.SSHAddr, opts.Local, opts.AllowLocalRunner); err != nil {
 		return err
 	}
+	// EnsureCourse ran before the metadata was readable, so the mirror still
+	// carries the built-in push cap; adopt the course's own (SPEC §13).
+	if err := repos.SetMaxInputSize(ctx, course.Resolved.Course.MaxPushSize); err != nil {
+		return err
+	}
 
 	holder := &intake.Holder{}
 	holder.Set(course)
@@ -119,7 +124,7 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	q := &queue.Queue{
 		Store:   db,
-		Prep:    &intake.Prep{Repos: repos, Users: db, Course: holder, DataDir: opts.DataDir, Hidden: hcache},
+		Prep:    &intake.Prep{Repos: repos, Users: db, Course: holder, DataDir: opts.DataDir, Hidden: hcache, Log: log},
 		Workers: opts.Workers,
 		Events:  hub,
 	}
@@ -127,6 +132,13 @@ func Run(ctx context.Context, opts Options) error {
 		DB: db, Queue: q, Repos: repos, Course: holder,
 		BaseURL: baseURL(opts),
 		Log:     log,
+		// The §14 gate is a property of how this process was started, so intake
+		// gets it as a closure instead of reaching up for the serve options: a
+		// teacher push that switches a task to the local runner is rejected on
+		// a public bind, exactly as it would be at startup.
+		Safety: func(res *config.Resolved) error {
+			return checkServeSafety(res, opts.HTTPAddr, opts.SSHAddr, opts.Local, opts.AllowLocalRunner)
+		},
 	}
 	auth := storeAuth{db}
 	// One failure budget per (client IP, login) pair, shared between git

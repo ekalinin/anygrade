@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -26,6 +27,7 @@ type Prep struct {
 	Course  *Holder
 	DataDir string
 	Hidden  *hidden.Cache // git-backed hidden tests; nil only in tests
+	Log     *slog.Logger  // full-detail sink for scrubbed errors; nil = default
 }
 
 // Prepare implements queue.JobPrep. Errors are retryable infra failures,
@@ -63,13 +65,18 @@ func (p *Prep) Prepare(ctx context.Context, sub store.Submission) (queue.Prepare
 		case "local":
 			// A configured-but-unusable path must never be skipped: grading
 			// the open tests only would silently hand out a passing score.
-			// validate checks that path is set, not that it exists, so a
-			// wrong path first shows up here - and retrying will not fix it,
-			// exactly like the git source's ErrConfig below.
-			if st, err := os.Stat(h.Path); err != nil || !st.IsDir() {
+			// validate checks that path is set, not that it exists or that the
+			// operator allows it, so both first show up here. Which of the two
+			// error classes it is decides the fate of the submission, so the
+			// classification lives with the rest of the hidden-tests policy.
+			src, err := hidden.LocalSource(h.Path, p.Log)
+			if errors.Is(err, hidden.ErrConfig) {
 				return queue.Prepared{}, queue.Terminal("hidden tests unavailable for this task")
 			}
-			hiddenSrc = runner.WorkingCopySource{Root: h.Path}
+			if err != nil {
+				return queue.Prepared{}, err // already scrubbed; retryable
+			}
+			hiddenSrc = src
 		case "git":
 			src, err := p.Hidden.Source(ctx, *h)
 			if errors.Is(err, hidden.ErrConfig) {
