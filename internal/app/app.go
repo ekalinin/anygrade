@@ -194,7 +194,10 @@ func Run(ctx context.Context, opts Options) error {
 		Alias:       gradebook.NewAliaser(aliasSecret),
 	})
 	mux := http.NewServeMux()
-	mux.Handle("/git/", &gitserver.HTTPHandler{Repos: repos, Auth: auth, Socket: socket, Local: localID, Limit: limit})
+	mux.Handle("/git/", &gitserver.HTTPHandler{
+		Repos: repos, Auth: auth, Socket: socket, Local: localID,
+		Limit: limit, BehindProxy: opts.BehindProxy,
+	})
 	mux.Handle("/", site)
 	httpSrv := newHTTPServer(opts.HTTPAddr, mux)
 	sshSrv := &gitserver.SSHServer{

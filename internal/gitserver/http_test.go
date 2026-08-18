@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -252,6 +253,95 @@ func TestHTTPAuthRateLimit(t *testing.T) {
 	// A different login from the same address is unaffected (and 401s).
 	if code := get("bob", "whatever"); code != http.StatusUnauthorized {
 		t.Fatalf("other login: got %d, want 401", code)
+	}
+}
+
+// blockingAuth releases every credential check at once, which is what a burst
+// of simultaneous basic-auth requests looks like from the limiter's side.
+type blockingAuth struct {
+	arrived chan struct{}
+	release chan struct{}
+}
+
+func (b blockingAuth) ByToken(context.Context, string, string) (Identity, bool, error) {
+	b.arrived <- struct{}{}
+	<-b.release
+	return Identity{}, false, nil
+}
+
+func (b blockingAuth) ByFingerprint(context.Context, string) (Identity, bool, error) {
+	return Identity{}, false, nil
+}
+
+// TestHTTPAuthRateLimitBurst pins the reason git basic auth reserves its budget
+// slot instead of reading it: with a plain Blocked check, N requests that reach
+// the handler together all see an empty budget and all get their token
+// compared, so the limiter caps concurrent guesses at N rather than at max.
+func TestHTTPAuthRateLimitBurst(t *testing.T) {
+	const max, burst = 3, 12
+	auth := blockingAuth{arrived: make(chan struct{}, burst), release: make(chan struct{})}
+	h := &HTTPHandler{Auth: auth, Limit: ratelimit.New(max, time.Minute)}
+	ts := httptest.NewServer(h)
+	t.Cleanup(ts.Close)
+	// Cleanups run last-registered-first, so this unblocks every parked check
+	// before the server is closed - otherwise a failing assertion would leave
+	// ts.Close waiting on requests that can never finish.
+	release := sync.OnceFunc(func() { close(auth.release) })
+	t.Cleanup(release)
+
+	codes := make(chan int, burst)
+	for range burst {
+		go func() {
+			req, err := http.NewRequest(http.MethodGet,
+				ts.URL+"/git/course.git/info/refs?service=git-upload-pack", nil)
+			if err != nil {
+				codes <- 0
+				return
+			}
+			req.SetBasicAuth("alice", "wrong")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				codes <- 0
+				return
+			}
+			resp.Body.Close()
+			codes <- resp.StatusCode
+		}()
+	}
+
+	// Whatever gets past the budget is parked inside ByToken; everything else
+	// must already have been refused. Count the checks that were let through.
+	checked := 0
+	deadline := time.After(10 * time.Second)
+	for checked < max {
+		select {
+		case <-auth.arrived:
+			checked++
+		case <-deadline:
+			t.Fatalf("only %d of %d budget slots were used", checked, max)
+		}
+	}
+	// No further check may start while those are still outstanding.
+	select {
+	case <-auth.arrived:
+		t.Fatal("a credential check ran past the failure budget: Blocked-then-Fail is bypassable by a burst")
+	case <-time.After(200 * time.Millisecond):
+	}
+	release()
+
+	var throttled int
+	for range burst {
+		select {
+		case code := <-codes:
+			if code == http.StatusTooManyRequests {
+				throttled++
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("a request never completed")
+		}
+	}
+	if throttled != burst-max {
+		t.Errorf("throttled %d of %d, want %d", throttled, burst, burst-max)
 	}
 }
 

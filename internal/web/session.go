@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ekalinin/anygrade/internal/ratelimit"
+
 	"github.com/ekalinin/anygrade/internal/store"
 )
 
@@ -42,6 +44,15 @@ func (h *Handler) isSecure(r *http.Request) bool {
 		return true
 	}
 	return h.BehindProxy && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+// clientAddr is the address a failure budget is charged to. Behind a reverse
+// proxy every request arrives from the proxy, so reading RemoteAddr would put
+// the whole course in one per-IP bucket and let a few failed logins lock
+// everyone out; X-Forwarded-For is forgeable, so it is read under the same
+// opt-in that gates X-Forwarded-Proto above.
+func (h *Handler) clientAddr(r *http.Request) string {
+	return ratelimit.ClientAddr(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.BehindProxy)
 }
 
 // secure reads the flag secureContext placed on the request.

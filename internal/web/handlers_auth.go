@@ -45,7 +45,7 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	// Reserve, not Blocked: the budget slot is taken before the token is
 	// compared, so a simultaneous burst cannot all pass the check while the
 	// first failure is still being recorded.
-	rv, allowed := h.Limit.Reserve(ratelimit.AuthKey(r.RemoteAddr, login))
+	rv, allowed := h.Limit.Reserve(ratelimit.AuthKey(h.clientAddr(r), login))
 	if !allowed {
 		w.WriteHeader(http.StatusTooManyRequests)
 		h.renderPage(w, r, "login", h.loginData(r, "too_many_attempts"))
