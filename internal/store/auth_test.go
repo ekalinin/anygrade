@@ -39,6 +39,35 @@ func TestTokenLifecycle(t *testing.T) {
 	}
 }
 
+// TestIssueTokenKeepsOneRow: an account can never hold two valid tokens. The
+// rotations come from three places (student regenerate, teacher reset, invite
+// activation) and from two processes, so the schema has to carry the
+// invariant, not the ordering of two statements.
+func TestIssueTokenKeepsOneRow(t *testing.T) {
+	db := openTestDB(t)
+	u := testUser(t, db)
+
+	for range 3 {
+		if _, err := db.IssueToken(t.Context(), u.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var n int
+	if err := db.db.QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM tokens WHERE user_id = ?`, u.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("%d token rows after three rotations, want 1", n)
+	}
+	// The row two interleaved rotations used to leave behind is now refused.
+	if _, err := db.db.ExecContext(t.Context(),
+		`INSERT INTO tokens (user_id, hash, created_at)
+		 VALUES (?, 'second', '2026-01-01T00:00:00.000000000Z')`, u.ID); err == nil {
+		t.Fatal("a second token row for one user must be rejected")
+	}
+}
+
 // TestVerifyTokenDisabledUser: a disabled user's token no longer verifies.
 func TestVerifyTokenDisabledUser(t *testing.T) {
 	db := openTestDB(t)

@@ -26,17 +26,22 @@ func hashToken(plaintext string) string {
 }
 
 // IssueToken implements UserStore: a user has at most one active token.
+//
+// One upsert against UNIQUE(user_id), not a DELETE followed by an INSERT: the
+// CLI and the server are separate processes, so MaxOpenConns(1) does not order
+// two rotations racing each other (a student regenerating while the teacher
+// resets). As two statements they could both delete and then both insert,
+// leaving the account with two valid tokens.
 func (s *DB) IssueToken(ctx context.Context, userID int64) (string, error) {
 	plaintext, err := newTokenPlaintext()
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM tokens WHERE user_id = ?`, userID); err != nil {
-		return "", err
-	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO tokens (user_id, hash, created_at)
-		VALUES (?, ?, ?)`,
+		VALUES (?, ?, ?)
+		ON CONFLICT(user_id) DO UPDATE SET
+		  hash = excluded.hash, created_at = excluded.created_at, last_used_at = NULL`,
 		userID, hashToken(plaintext), fmtTime(time.Now()))
 	if err != nil {
 		return "", err

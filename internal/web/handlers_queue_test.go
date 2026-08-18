@@ -39,8 +39,8 @@ func (f *fakeRechecker) TeacherRecheck(_ context.Context, _ store.User, targetUs
 }
 
 // erroredRow seeds one submission for a fresh student and drives it to the
-// terminal infra_error state the queue view shows as `error` (retries
-// exhausted: ScheduleRetry with a nil retryAt).
+// terminal infra_error state the queue view shows as `error` the way a worker
+// does: claim it, then ScheduleRetry with a nil retryAt (retries exhausted).
 func erroredRow(t *testing.T, h *Handler, login string) (store.User, store.Submission) {
 	t.Helper()
 	student, err := h.DB.CreateUser(t.Context(), login, "Student", "student")
@@ -54,8 +54,11 @@ func erroredRow(t *testing.T, h *Handler, login string) (store.User, store.Submi
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-	if err := h.DB.ScheduleRetry(t.Context(), sub.ID, nil, "boom"); err != nil {
-		t.Fatalf("schedule retry: %v", err)
+	if _, ok, err := h.DB.ClaimNext(t.Context(), time.Now()); err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+	if ok, err := h.DB.ScheduleRetry(t.Context(), sub.ID, nil, "boom"); err != nil || !ok {
+		t.Fatalf("schedule retry: ok=%v err=%v", ok, err)
 	}
 	return student, sub
 }
