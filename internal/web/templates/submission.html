@@ -4,7 +4,7 @@
 <div {{if .Running}}hx-ext="sse" sse-connect="/submissions/{{.Sub.ID}}/stream"{{end}}>
   <h1>{{t "submission.title"}} #{{.Sub.ID}}
     <span id="sub-status" {{if .Running}}sse-swap="status" hx-swap="innerHTML"{{end}}>
-      <span class="badge {{statusClass .Sub.Status}}">{{tStatus .Sub.Status}}</span>
+      <span class="badge {{statusClass .Status}}">{{tStatus .Status}}</span>
     </span>
   </h1>
   <p class="meta">

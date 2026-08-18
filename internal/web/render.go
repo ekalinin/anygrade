@@ -201,11 +201,22 @@ func newSSEWriter(w http.ResponseWriter) (*sseWriter, bool) {
 	return &sseWriter{w: w, f: f}, true
 }
 
+// sseLineBreaks normalizes every SSE line terminator to "\n". The event-stream
+// format ends a line on CRLF, CR, or LF alike, so a lone CR inside a payload
+// would end the `data:` line early and let the rest of it be parsed as stream
+// syntax - check output containing a carriage return could inject events into
+// the stream a teacher is watching. Splitting on "\n" only is not enough.
+var sseLineBreaks = strings.NewReplacer("\r\n", "\n", "\r", "\n")
+
+// sseEventName drops line terminators outright: an event name has no multi-line
+// form, so a break in one (a task id is a directory name) could only be framing.
+var sseEventName = strings.NewReplacer("\r", "", "\n", "")
+
 // send frames one event; multi-line payloads become multiple data: lines
 // (the SSE format reassembles them with \n).
 func (s *sseWriter) send(event, payload string) {
-	fmt.Fprintf(s.w, "event: %s\n", event)
-	for line := range strings.SplitSeq(payload, "\n") {
+	fmt.Fprintf(s.w, "event: %s\n", sseEventName.Replace(event))
+	for line := range strings.SplitSeq(sseLineBreaks.Replace(payload), "\n") {
 		fmt.Fprintf(s.w, "data: %s\n", line)
 	}
 	io.WriteString(s.w, "\n")

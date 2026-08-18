@@ -11,6 +11,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 
 	"github.com/ekalinin/anygrade/internal/ident"
+	"github.com/ekalinin/anygrade/internal/ratelimit"
 	"github.com/ekalinin/anygrade/internal/store"
 )
 
@@ -174,6 +175,10 @@ type registerData struct {
 	Error      string
 }
 
+// registerLimitKey is the fixed login half of the open-registration failure
+// key, so the budget is per client IP rather than per submitted login.
+const registerLimitKey = "\x00register"
+
 func (h *Handler) openMode(w http.ResponseWriter, r *http.Request) bool {
 	if h.Course.Get().Resolved.Course.Registration.Mode != "open" {
 		http.NotFound(w, r)
@@ -209,10 +214,26 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 			Login:      login, Name: name, Error: msg,
 		})
 	}
+	// The course code is a short shared secret, so this is a credential check
+	// and belongs on the same failure budget as the login form. The key's login
+	// half is a constant: the attacker picks the submitted login freely, and a
+	// budget per (IP, attacker-chosen login) would be no budget at all.
+	rv, allowed := h.Limit.Reserve(ratelimit.AuthKey(r.RemoteAddr, registerLimitKey))
+	if !allowed {
+		w.WriteHeader(http.StatusTooManyRequests)
+		h.renderPage(w, r, "register", registerData{
+			CourseName: course.Resolved.Course.Name,
+			Login:      login, Name: name, Error: "too_many_attempts",
+		})
+		return
+	}
+	defer rv.Release() // no-op once the outcome below is reported
 	if r.FormValue("course_code") != course.Resolved.Course.Registration.CourseCode {
+		rv.Fail()
 		fail("wrong_course_code")
 		return
 	}
+	rv.Success()
 	if !ident.ValidLogin(login) {
 		fail("invalid_login")
 		return

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/ekalinin/anygrade/internal/store"
@@ -16,7 +17,38 @@ const (
 
 type ctxKey int
 
-const userKey ctxKey = 0
+const (
+	userKey ctxKey = iota
+	secureKey
+)
+
+// secureContext records, once per request, whether the browser's connection to
+// the site is encrypted. It is a middleware rather than a check inside
+// setSessionCookie so that every cookie writer - login, activation,
+// registration, token regeneration - agrees without carrying the Handler.
+func (h *Handler) secureContext(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), secureKey, h.isSecure(r))))
+	})
+}
+
+// isSecure reports whether the client reached the site over TLS: either this
+// process terminated it, or the operator explicitly opted into trusting a
+// reverse proxy's X-Forwarded-Proto. The header is trivially forgeable by
+// anyone who can reach the port directly, so it is honoured only behind that
+// opt-in - there is no trusted-CIDR machinery to get wrong.
+func (h *Handler) isSecure(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return h.BehindProxy && strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+// secure reads the flag secureContext placed on the request.
+func secure(r *http.Request) bool {
+	ok, _ := r.Context().Value(secureKey).(bool)
+	return ok
+}
 
 // currentUser reads the session cookie and resolves it to an active user.
 // In local mode (SPEC §8) there are no sessions: every request is the single
@@ -97,6 +129,6 @@ func setSessionCookie(w http.ResponseWriter, r *http.Request, value string, ttl 
 		MaxAge:   maxAge,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   r.TLS != nil,
+		Secure:   secure(r),
 	})
 }

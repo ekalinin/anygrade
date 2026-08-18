@@ -3,7 +3,7 @@
 <p class="flash error">{{t "sub.rejected"}} {{.Sub.WorkerNote}}</p>
 {{else if .Checks}}
 <table class="checks">
-  <thead><tr><th>{{t "common.check"}}</th><th>{{t "common.result"}}</th><th>{{t "common.time"}}</th><th>{{t "common.log"}}</th></tr></thead>
+  <thead><tr><th>{{t "common.check"}}</th><th>{{t "common.result"}}</th><th>{{t "common.time"}}</th>{{if .CanDownloadLogs}}<th>{{t "common.log"}}</th>{{end}}</tr></thead>
   <tbody>
   {{range .Checks}}
   <tr>
@@ -15,7 +15,7 @@
       {{else}}<span class="badge st-failed">{{t "status.fail"}}</span>{{end}}
     </td>
     <td>{{.Duration}}</td>
-    <td><a href="/submissions/{{$.Sub.ID}}/logs/{{.Name}}">{{t "common.download"}}</a></td>
+    {{if $.CanDownloadLogs}}<td><a href="/submissions/{{$.Sub.ID}}/logs/{{.Name}}">{{t "common.download"}}</a></td>{{end}}
   </tr>
   {{end}}
   </tbody>
@@ -32,6 +32,7 @@
   <pre>{{.LogExcerpt}}</pre>
 </details>
 {{end}}{{end}}
+{{if not .CanDownloadLogs}}<p class="hint">{{t "sub.logs_teacher_only"}}</p>{{end}}
 {{if .Sub.WorkerNote}}<p class="hint note">{{.Sub.WorkerNote}}</p>{{end}}
 {{else if .Running}}
 <p class="hint">{{t "sub.waiting"}}</p>

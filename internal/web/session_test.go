@@ -1,8 +1,10 @@
 package web
 
 import (
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -84,5 +86,62 @@ func TestWithoutLocalModeDashboardNeedsSession(t *testing.T) {
 	}
 	if loc := rec.Header().Get("Location"); !strings.HasPrefix(loc, "/login") {
 		t.Fatalf("GET /: Location %q, want a /login redirect", loc)
+	}
+}
+
+// TestSessionCookieSecureFlag: the session cookie is a bearer credential, so it
+// is marked Secure whenever the browser's connection actually is encrypted -
+// and X-Forwarded-Proto only counts when the operator vouched for the proxy,
+// because anyone reaching the port can forge that header.
+func TestSessionCookieSecureFlag(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		tls         bool
+		forwarded   string
+		behindProxy bool
+		want        bool
+	}{
+		{name: "plain http"},
+		{name: "direct tls", tls: true, want: true},
+		{name: "forged header without the opt-in", forwarded: "https"},
+		{name: "trusted proxy", forwarded: "https", behindProxy: true, want: true},
+		{name: "trusted proxy on plain http", forwarded: "http", behindProxy: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := newTestSite(t)
+			h.BehindProxy = tc.behindProxy
+			u, err := h.DB.CreateUser(t.Context(), "bob", "Student", "student")
+			if err != nil {
+				t.Fatal(err)
+			}
+			token, err := h.DB.IssueToken(t.Context(), u.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			form := url.Values{"login": {"bob"}, "token": {token}}
+			req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			if tc.forwarded != "" {
+				req.Header.Set("X-Forwarded-Proto", tc.forwarded)
+			}
+			if tc.tls {
+				req.TLS = &tls.ConnectionState{}
+			}
+			rec := httptest.NewRecorder()
+			New(h).ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusFound {
+				t.Fatalf("POST /login: status %d, want 302 (body %q)", rec.Code, rec.Body.String())
+			}
+			cookies := (&http.Response{Header: rec.Header()}).Cookies()
+			if len(cookies) == 0 {
+				t.Fatal("no session cookie was set")
+			}
+			if got := cookies[0].Secure; got != tc.want {
+				t.Errorf("Secure = %v, want %v (Set-Cookie: %q)",
+					got, tc.want, rec.Header().Get("Set-Cookie"))
+			}
+		})
 	}
 }

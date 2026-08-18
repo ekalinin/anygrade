@@ -141,22 +141,38 @@ func (h *Handler) matrixStream(w http.ResponseWriter, r *http.Request) {
 	events, cancel := h.Hub.SubscribeAll()
 	defer cancel()
 	lang := h.lang(r)
+	// Reconcile the whole board once the subscription is live: the page
+	// rendered its snapshot first, and an event landing in that gap - or
+	// dropped by the best-effort Hub - would otherwise leave a stale row until
+	// the next event or a manual reload.
+	if m, err := h.buildMatrix(r); err == nil {
+		tasks := taskCols(h.Course.Get())
+		for _, row := range m.Rows {
+			h.sendMatrixRow(sse, lang, row, tasks)
+		}
+	}
 	for {
 		select {
 		case <-r.Context().Done():
 			return
 		case ev := <-events:
-			row, login, err := h.buildMatrixRow(r, ev.UserID)
+			row, err := h.buildMatrixRow(r, ev.UserID)
 			if err != nil {
 				continue
 			}
-			html, err := renderPartial(lang, "matrix-row", matrixRowData{Row: row, Tasks: taskCols(h.Course.Get())})
-			if err != nil {
-				continue
-			}
-			sse.send("user-"+login, html)
+			h.sendMatrixRow(sse, lang, row, taskCols(h.Course.Get()))
 		}
 	}
+}
+
+// sendMatrixRow emits one student's row under the event name its <tr> listens
+// on ("user-<login>").
+func (h *Handler) sendMatrixRow(sse *sseWriter, lang string, row gradebook.Row, tasks []gradebook.TaskCol) {
+	html, err := renderPartial(lang, "matrix-row", matrixRowData{Row: row, Tasks: tasks})
+	if err != nil {
+		return
+	}
+	sse.send("user-"+row.User.Login, html)
 }
 
 type matrixRowData struct {
@@ -165,26 +181,26 @@ type matrixRowData struct {
 }
 
 // buildMatrixRow rebuilds a single student's row (short indexed reads only).
-func (h *Handler) buildMatrixRow(r *http.Request, userID int64) (gradebook.Row, string, error) {
+func (h *Handler) buildMatrixRow(r *http.Request, userID int64) (gradebook.Row, error) {
 	course := h.Course.Get()
 	target, err := h.DB.GetUserByID(r.Context(), userID)
 	if err != nil {
-		return gradebook.Row{}, "", err
+		return gradebook.Row{}, err
 	}
 	subs, err := h.DB.ListByUser(r.Context(), userID)
 	if err != nil {
-		return gradebook.Row{}, "", err
+		return gradebook.Row{}, err
 	}
 	overrides, err := h.DB.ListScoreOverrides(r.Context())
 	if err != nil {
-		return gradebook.Row{}, "", err
+		return gradebook.Row{}, err
 	}
 	m := gradebook.Build([]store.User{target}, taskCols(course), subs, overrides,
 		course.Resolved.Course.ScoringPolicy)
 	if len(m.Rows) == 0 {
-		return gradebook.Row{}, "", fmt.Errorf("user %d is not a student", userID)
+		return gradebook.Row{}, fmt.Errorf("user %d is not a student", userID)
 	}
-	return m.Rows[0], target.Login, nil
+	return m.Rows[0], nil
 }
 
 func (h *Handler) exportCSV(w http.ResponseWriter, r *http.Request) {

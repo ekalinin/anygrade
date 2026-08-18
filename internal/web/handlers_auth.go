@@ -42,28 +42,28 @@ func (h *Handler) loginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	login := strings.TrimSpace(r.FormValue("login"))
 	token := strings.TrimSpace(r.FormValue("token"))
-	key := ratelimit.AuthKey(r.RemoteAddr, login)
-	if h.Limit != nil && h.Limit.Blocked(key) {
+	// Reserve, not Blocked: the budget slot is taken before the token is
+	// compared, so a simultaneous burst cannot all pass the check while the
+	// first failure is still being recorded.
+	rv, allowed := h.Limit.Reserve(ratelimit.AuthKey(r.RemoteAddr, login))
+	if !allowed {
 		w.WriteHeader(http.StatusTooManyRequests)
 		h.renderPage(w, r, "login", h.loginData(r, "too_many_attempts"))
 		return
 	}
+	defer rv.Release() // no-op once the outcome below is reported
 	u, ok, err := h.DB.VerifyToken(r.Context(), token)
 	if err != nil {
 		h.httpError(w, r, "error.login_failed", http.StatusInternalServerError)
 		return
 	}
 	if !ok || u.Login != login {
-		if h.Limit != nil {
-			h.Limit.Fail(key)
-		}
+		rv.Fail()
 		w.WriteHeader(http.StatusUnauthorized)
 		h.renderPage(w, r, "login", h.loginData(r, "unknown_login"))
 		return
 	}
-	if h.Limit != nil {
-		h.Limit.Clear(key)
-	}
+	rv.Success()
 	sid, err := h.DB.CreateSession(r.Context(), u.ID, token, sessionTTL)
 	if err != nil {
 		h.httpError(w, r, "error.login_failed", http.StatusInternalServerError)

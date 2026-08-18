@@ -94,6 +94,7 @@ flash.wrong_course_code: "wrong course code"
 flash.invalid_login: "invalid login: lowercase letters, digits, ._- only"
 flash.login_taken: "login already taken"
 flash.key_already_registered: "key already registered"
+flash.key_registered_elsewhere: "this public key is already registered to another account; contact your teacher"
 flash.nothing_to_recheck: "nothing to recheck"
 flash.commit_not_pinned: "recheck queued, but the commit could not be pinned: a force push can still drop it"
 
@@ -134,6 +135,7 @@ sub.late_penalty: "late penalty"
 sub.output: "output"
 sub.waiting: "Waiting for a worker…"
 sub.no_results: "No check results recorded."
+sub.logs_teacher_only: "The output above is the excerpt your checks produced; full logs are available to teachers."
 
 # matrix.html
 matrix.title: "Matrix"

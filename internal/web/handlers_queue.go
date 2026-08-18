@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/ekalinin/anygrade/internal/gradebook"
 	"github.com/ekalinin/anygrade/internal/intake"
@@ -15,7 +16,38 @@ type queueData struct {
 	CourseName string
 	User       userView
 	Rows       []queueRow
-	Flash      string
+	// StreamIDs are the row ids this render put in the DOM, handed to the SSE
+	// endpoint so it can reconcile them once the subscription is live.
+	StreamIDs string
+	Flash     string
+}
+
+// maxStreamIDs caps the reconciliation list: the ids come back from the client,
+// and one query per id is work the server should not do on demand.
+const maxStreamIDs = 500
+
+// streamIDs renders the row ids for the stream URL.
+func streamIDs(rows []queueRow) string {
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, strconv.FormatInt(row.Sub.ID, 10))
+	}
+	return strings.Join(ids, ",")
+}
+
+// parseStreamIDs reads the list back, ignoring anything unparseable.
+func parseStreamIDs(raw string) []int64 {
+	var ids []int64
+	for part := range strings.SplitSeq(raw, ",") {
+		id, err := strconv.ParseInt(part, 10, 64)
+		if err != nil {
+			continue
+		}
+		if ids = append(ids, id); len(ids) == maxStreamIDs {
+			break
+		}
+	}
+	return ids
 }
 
 type queueRow struct {
@@ -77,6 +109,7 @@ func (h *Handler) queuePage(w http.ResponseWriter, r *http.Request) {
 		CourseName: h.Course.Get().Resolved.Course.Name,
 		User:       h.userViewOf(u),
 		Rows:       rows,
+		StreamIDs:  streamIDs(rows),
 		Flash:      r.URL.Query().Get("flash"),
 	})
 }
@@ -92,27 +125,39 @@ func (h *Handler) queueStream(w http.ResponseWriter, r *http.Request) {
 	events, cancel := h.Hub.SubscribeAll()
 	defer cancel()
 	lang := h.lang(r)
+	// Reconcile the rows the page rendered before this subscription existed: a
+	// state change in that gap is not replayed, and the Hub may drop on
+	// overflow, so without this a row can sit at "running" until the next
+	// event or a manual reload.
+	for _, id := range parseStreamIDs(r.URL.Query().Get("ids")) {
+		h.sendQueueRow(r, sse, lang, id)
+	}
 	for {
 		select {
 		case <-r.Context().Done():
 			return
 		case ev := <-events:
-			sub, _, err := h.DB.GetSubmission(r.Context(), ev.SubID)
-			if err != nil {
-				continue
-			}
-			target, err := h.DB.GetUserByID(r.Context(), sub.UserID)
-			if err != nil {
-				continue
-			}
-			row := queueRow{Sub: sub, Login: target.Login, Status: subDisplayStatus(sub)}
-			html, err := renderPartial(lang, "queue-row", row)
-			if err != nil {
-				continue
-			}
-			sse.send(fmt.Sprintf("sub-%d", sub.ID), html)
+			h.sendQueueRow(r, sse, lang, ev.SubID)
 		}
 	}
+}
+
+// sendQueueRow re-renders one queue row from the authoritative state.
+func (h *Handler) sendQueueRow(r *http.Request, sse *sseWriter, lang string, id int64) {
+	sub, _, err := h.DB.GetSubmission(r.Context(), id)
+	if err != nil {
+		return
+	}
+	target, err := h.DB.GetUserByID(r.Context(), sub.UserID)
+	if err != nil {
+		return
+	}
+	row := queueRow{Sub: sub, Login: target.Login, Status: subDisplayStatus(sub)}
+	html, err := renderPartial(lang, "queue-row", row)
+	if err != nil {
+		return
+	}
+	sse.send(fmt.Sprintf("sub-%d", sub.ID), html)
 }
 
 func (h *Handler) cancelSubmission(w http.ResponseWriter, r *http.Request) {

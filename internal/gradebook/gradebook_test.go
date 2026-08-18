@@ -2,6 +2,7 @@ package gradebook
 
 import (
 	"bytes"
+	"encoding/csv"
 	"strings"
 	"testing"
 	"time"
@@ -135,7 +136,8 @@ func TestLeaderboardRanking(t *testing.T) {
 		{User: store.User{Login: "c"}, Total: 50},
 		{User: store.User{Login: "d"}, Total: 10},
 	}}
-	rows := Leaderboard(m)
+	a := NewAliaser([]byte("instance secret"))
+	rows := Leaderboard(m, a)
 	wantRanks := []int{1, 2, 2, 4}
 	wantLogins := []string{"b", "a", "c", "d"}
 	for i := range rows {
@@ -143,11 +145,35 @@ func TestLeaderboardRanking(t *testing.T) {
 			t.Errorf("row %d: %+v, want rank %d login %s", i, rows[i], wantRanks[i], wantLogins[i])
 		}
 	}
-	if a1, a2 := Alias("alice"), Alias("alice"); a1 != a2 {
+	if a1, a2 := a.Alias("alice"), a.Alias("alice"); a1 != a2 {
 		t.Errorf("alias must be stable: %s vs %s", a1, a2)
 	}
-	if Alias("alice") == Alias("bob") {
+	if a.Alias("alice") == a.Alias("bob") {
 		t.Error("distinct logins should not collide on this input")
+	}
+}
+
+// TestAliasIsKeyed: an alias must not be reproducible from the algorithm
+// alone. The alphabet is small and the roster is guessable, so an unkeyed hash
+// de-anonymizes the whole board by offline brute force - the opposite of what
+// SPEC §10 asks anonymization for.
+func TestAliasIsKeyed(t *testing.T) {
+	one := NewAliaser([]byte("secret one"))
+	two := NewAliaser([]byte("secret two"))
+
+	differs := false
+	for _, login := range []string{"alice", "bob", "carol", "dave", "erin", "frank"} {
+		if one.Alias(login) != two.Alias(login) {
+			differs = true
+		}
+		// Same secret, same aliases: they must survive a restart of one
+		// instance, which is what the persisted key file buys.
+		if got := NewAliaser([]byte("secret one")).Alias(login); got != one.Alias(login) {
+			t.Errorf("alias of %q is not stable for one secret: %q vs %q", login, got, one.Alias(login))
+		}
+	}
+	if !differs {
+		t.Error("two instances with different secrets produced identical aliases")
 	}
 }
 
@@ -167,5 +193,44 @@ func TestWriteCSV(t *testing.T) {
 	}
 	if lines[1] != "alice,Alice A,48.5,0,48.5" {
 		t.Errorf("row: %s", lines[1])
+	}
+}
+
+// TestWriteCSVNeutralizesFormulas: a display name comes straight out of open
+// registration, so every spreadsheet formula prefix must be defused before the
+// teacher opens the export.
+func TestWriteCSVNeutralizesFormulas(t *testing.T) {
+	for _, name := range []string{
+		`=cmd|' /c calc'!A1`,
+		`+1+1`,
+		`-1+1`,
+		`@SUM(1:2)`,
+	} {
+		m := Build(
+			[]store.User{{ID: 1, Login: "alice", DisplayName: name, Role: "student"}},
+			[]TaskCol{{ID: "t1", MaxScore: 100}}, nil, nil, "best")
+		var buf bytes.Buffer
+		if err := WriteCSV(&buf, m); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := csv.NewReader(&buf).ReadAll()
+		if err != nil {
+			t.Fatalf("%q: reparse: %v", name, err)
+		}
+		got := rows[1][1]
+		if want := "'" + name; got != want {
+			t.Errorf("display name %q exported as %q, want %q", name, got, want)
+		}
+	}
+	// Scores keep their plain shape: they are never user-controlled.
+	m := Build(
+		[]store.User{{ID: 1, Login: "alice", DisplayName: "Alice", Role: "student"}},
+		[]TaskCol{{ID: "t1", MaxScore: 100}}, nil, nil, "best")
+	var buf bytes.Buffer
+	if err := WriteCSV(&buf, m); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "alice,Alice,0,0") {
+		t.Errorf("untouched row was rewritten: %s", buf.String())
 	}
 }

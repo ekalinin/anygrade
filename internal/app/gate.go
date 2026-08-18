@@ -1,9 +1,12 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/ekalinin/anygrade/internal/config"
 )
@@ -24,6 +27,56 @@ func isLoopbackAddr(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// newHTTPServer builds the public listener with a slowloris budget: a client
+// gets readHeaderTimeout to finish its request line and headers, and
+// idleTimeout of keep-alive between requests.
+//
+// Deliberately no WriteTimeout and no ReadTimeout. WriteTimeout is wall-clock
+// from the start of the response, so it would cut every SSE stream and every
+// long `git clone`; ReadTimeout would do the same to a slow but legitimate
+// `git push` of a large pack. Header timeouts bound the attack without
+// bounding the legitimate long-lived traffic this server exists to carry.
+func newHTTPServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       idleTimeout,
+	}
+}
+
+const (
+	readHeaderTimeout = 20 * time.Second
+	idleTimeout       = 2 * time.Minute
+)
+
+// plaintextWarning is the startup banner for a public listener that carries
+// credentials in the clear. The personal access token is both the git basic-auth
+// password and the web login, and the session cookie can only be marked Secure
+// when the connection actually is - so an operator who has not arranged TLS,
+// here or in a proxy, needs to be told in as many words.
+func plaintextWarning(opts Options) string {
+	if opts.TLSCert != "" || opts.BehindProxy || isLoopbackAddr(opts.HTTPAddr) {
+		return ""
+	}
+	return fmt.Sprintf("anygrade: WARNING: serving %s without TLS.\n"+
+		"anygrade: WARNING: access tokens are sent in the clear on every git push and every login.\n"+
+		"anygrade: WARNING: pass --tls-cert/--tls-key, or --behind-proxy when a reverse proxy terminates TLS.\n",
+		opts.HTTPAddr)
+}
+
+// checkTLSOptions rejects half a TLS configuration: one flag without the other
+// would otherwise start a plaintext server the operator believes is encrypted.
+func checkTLSOptions(cert, key string) error {
+	switch {
+	case cert != "" && key == "":
+		return errors.New("--tls-cert requires --tls-key")
+	case key != "" && cert == "":
+		return errors.New("--tls-key requires --tls-cert")
+	}
+	return nil
 }
 
 // checkServeSafety enforces SPEC §14 at startup: --local never binds a

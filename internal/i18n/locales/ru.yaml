@@ -90,6 +90,7 @@ flash.wrong_course_code: "неверный код курса"
 flash.invalid_login: "недопустимый логин: только строчные буквы, цифры и ._-"
 flash.login_taken: "логин уже занят"
 flash.key_already_registered: "ключ уже зарегистрирован"
+flash.key_registered_elsewhere: "этот открытый ключ уже зарегистрирован на другой аккаунт; обратитесь к преподавателю"
 flash.nothing_to_recheck: "нечего перепроверять"
 flash.commit_not_pinned: "перепроверка поставлена в очередь, но коммит не закреплён: force push всё ещё может его удалить"
 
@@ -130,6 +131,7 @@ sub.late_penalty: "штраф за опоздание"
 sub.output: "вывод"
 sub.waiting: "Ожидание воркера…"
 sub.no_results: "Результатов проверок нет."
+sub.logs_teacher_only: "Выше — фрагмент вывода ваших проверок; полные логи доступны преподавателям."
 
 # matrix.html
 matrix.title: "Матрица"

@@ -17,6 +17,7 @@ import (
 
 	"github.com/ekalinin/anygrade/internal/config"
 	"github.com/ekalinin/anygrade/internal/gitserver"
+	"github.com/ekalinin/anygrade/internal/gradebook"
 	"github.com/ekalinin/anygrade/internal/hidden"
 	"github.com/ekalinin/anygrade/internal/intake"
 	"github.com/ekalinin/anygrade/internal/queue"
@@ -35,7 +36,13 @@ type Options struct {
 	Workers          int
 	Local            bool
 	AllowLocalRunner bool
-	Log              io.Writer // startup/diagnostic lines; nil = os.Stderr
+	// TLSCert/TLSKey serve the HTTP listener over TLS; both or neither.
+	TLSCert string
+	TLSKey  string
+	// BehindProxy trusts X-Forwarded-Proto from a TLS-terminating reverse
+	// proxy (session cookie Secure flag).
+	BehindProxy bool
+	Log         io.Writer // startup/diagnostic lines; nil = os.Stderr
 }
 
 // Run starts the whole server (git transports, intake socket, worker pool)
@@ -44,6 +51,9 @@ func Run(ctx context.Context, opts Options) error {
 	logw := opts.Log
 	if logw == nil {
 		logw = os.Stderr
+	}
+	if err := checkTLSOptions(opts.TLSCert, opts.TLSKey); err != nil {
+		return err
 	}
 	hookBin, err := os.Executable()
 	if err != nil {
@@ -144,6 +154,10 @@ func Run(ctx context.Context, opts Options) error {
 	// One failure budget per (client IP, login) pair, shared between git
 	// basic auth and the web login form.
 	limit := ratelimit.New(10, 10*time.Minute)
+	aliasSecret, err := loadLeaderboardSecret(opts.DataDir)
+	if err != nil {
+		return err
+	}
 	site := web.New(&web.Handler{
 		DB:     db,
 		Course: holder,
@@ -171,16 +185,18 @@ func Run(ctx context.Context, opts Options) error {
 			}
 			return err
 		},
-		DataDir: opts.DataDir,
-		BaseURL: baseURL(opts),
-		SSHAddr: opts.SSHAddr,
-		Limit:   limit,
-		Local:   localUser,
+		DataDir:     opts.DataDir,
+		BaseURL:     baseURL(opts),
+		SSHAddr:     opts.SSHAddr,
+		Limit:       limit,
+		Local:       localUser,
+		BehindProxy: opts.BehindProxy,
+		Alias:       gradebook.NewAliaser(aliasSecret),
 	})
 	mux := http.NewServeMux()
 	mux.Handle("/git/", &gitserver.HTTPHandler{Repos: repos, Auth: auth, Socket: socket, Local: localID, Limit: limit})
 	mux.Handle("/", site)
-	httpSrv := &http.Server{Addr: opts.HTTPAddr, Handler: mux}
+	httpSrv := newHTTPServer(opts.HTTPAddr, mux)
 	sshSrv := &gitserver.SSHServer{
 		Repos: repos, Auth: auth, Socket: socket,
 		HostKey: filepath.Join(opts.DataDir, "ssh_host_ed25519_key"),
@@ -189,8 +205,15 @@ func Run(ctx context.Context, opts Options) error {
 
 	fmt.Fprintf(logw, "anygrade: course %q, %d task(s), head %.12s\n",
 		course.Resolved.Course.Name, len(course.Resolved.Tasks), course.Head)
-	fmt.Fprintf(logw, "anygrade: http %s, ssh %s, data dir %s\n",
-		opts.HTTPAddr, opts.SSHAddr, opts.DataDir)
+	scheme := "http"
+	if opts.TLSCert != "" {
+		scheme = "https"
+	}
+	fmt.Fprintf(logw, "anygrade: %s %s, ssh %s, data dir %s\n",
+		scheme, opts.HTTPAddr, opts.SSHAddr, opts.DataDir)
+	if w := plaintextWarning(opts); w != "" {
+		fmt.Fprint(logw, w)
+	}
 
 	rctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -214,7 +237,11 @@ func Run(ctx context.Context, opts Options) error {
 			defer scancel()
 			_ = httpSrv.Shutdown(sctx)
 		}()
-		if err := httpSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		serve := httpSrv.ListenAndServe
+		if opts.TLSCert != "" {
+			serve = func() error { return httpSrv.ListenAndServeTLS(opts.TLSCert, opts.TLSKey) }
+		}
+		if err := serve(); !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
 		return nil
