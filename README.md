@@ -24,7 +24,11 @@ Behavior is driven by metadata files (`course.yaml`, `task.yaml`), not by code c
 
 4. A worker builds a clean workspace (authoritative task files + the student's `solution_files` + hidden tests), runs the checks in docker or on the host, and stores results. The student watches progress live in the web UI.
 
-Editing open tests, `task.yaml`, or build files in the student repo is useless: the authoritative versions are restored before checking, and such modifications are noted for the teacher. Pushes are never rejected for policy reasons - deadlines and attempt limits reject the submission, not the push.
+Editing open tests, `task.yaml`, or build files in the student repo is useless: the authoritative versions are restored before checking, and such modifications are noted for the teacher. Pushes are never rejected for policy reasons - deadlines and attempt limits reject the submission, not the push. A pack larger than `limits.max_push_size` is the one thing the server does stop, and it says why:
+
+```
+remote: anygrade: push rejected: it is larger than max_push_size (50 MB); drop the large files from the commit (git rm --cached, then amend) and push again
+```
 
 ## Course repo layout
 
@@ -57,6 +61,9 @@ leaderboard:
   enabled: true
   anonymize: false        # true shows stable aliases instead of logins
 
+limits:                   # course-wide, unrelated to the per-task defaults below
+  max_push_size: 50m      # largest pack one student push may carry (default 50m)
+
 defaults:                 # inherited by every task.yaml, overridable per task
   runner:
     type: docker          # docker | local
@@ -66,6 +73,10 @@ defaults:                 # inherited by every task.yaml, overridable per task
     cpus: 1
     network: none
     log_excerpt: 64k      # per-check log tail kept in the DB/UI (default 64k)
+    log_max: 10m          # per-check log kept on disk, then truncated (10m)
+  workspace:
+    max_file_size: 10m    # per solution file copied out of the student commit
+    max_total_size: 64m   # all solution files of one submission together (64m)
 ```
 
 `task.yaml`:
@@ -99,7 +110,9 @@ checks:
     run: go test -run 'TestAdvanced' ./...
 ```
 
-Raw score = `score × (passed weight / total weight)`. Late submissions between the soft and hard deadline get a percentage penalty per started interval; past the hard deadline they are recorded but not graded.
+Raw score = `score × (passed weight / total weight)`. Weights must be non-negative - a negative one would push the score past the maximum, so `anygrade validate` rejects it; weight 0 is what gates carry. Late submissions between the soft and hard deadline get a percentage penalty per started interval; past the hard deadline they are recorded but not graded.
+
+Check output is kept twice: the last `log_excerpt` bytes go to the database and the UI, the whole stream to a file capped at `log_max` and closed with a truncation marker. Students see the excerpt and the live stream; the full log is a teacher-only download.
 
 ## Install
 
@@ -174,14 +187,17 @@ hidden_tests:
   path: 01-intro/
 ```
 
-The server caches hidden repos in the data dir and falls back to the last successful fetch when the remote is unreachable. Credentials come from the environment (`ANYGRADE_HIDDEN_GIT_TOKEN`, optional `ANYGRADE_HIDDEN_GIT_USER`) or the host's ssh agent, never from the course repo. Hidden test contents and fetch errors never reach student-visible output.
+The server caches hidden repos in the data dir and falls back to the last successful fetch when the remote is unreachable. Credentials come from the environment (`ANYGRADE_HIDDEN_GIT_TOKEN`, optional `ANYGRADE_HIDDEN_GIT_USER`) or the host's ssh agent, never from the course repo - `anygrade validate` rejects a `url` that embeds them. Hidden test contents and fetch errors never reach student-visible output.
+
+With `source: local` the `path` is an absolute path on the grading server; `validate` warns when it is relative or missing locally, since a course repo is usually validated elsewhere. `ANYGRADE_HIDDEN_LOCAL_ROOTS` (colon-separated absolute roots) limits which directories such a path may reach; unset means unrestricted. Set it whenever the teachers who push `course.yaml` are not the administrators of the machine. `anygrade check` reads the working copy and is not subject to it.
 
 ## CLI
 
 ```
 anygrade serve   [--repo DIR] [--data-dir DIR] [--http-addr :8080]
                  [--ssh-addr :2222] [--workers 4] [--base-url URL] [--local]
-                 [--allow-local-runner]
+                 [--allow-local-runner] [--tls-cert FILE --tls-key FILE]
+                 [--behind-proxy]
 anygrade check   [--runner local|docker] [--timeout D] [--keep] [-v] [TASK ...]
 anygrade validate
 anygrade user    add|list|remove|invite|reset-token|add-key ...
@@ -191,26 +207,32 @@ anygrade version
 
 `serve --local` runs with a single implicit user and no auth for offline use; it refuses to bind to non-loopback addresses, so the listen addresses default to `127.0.0.1:8080` and `127.0.0.1:2222` in that mode.
 
+Anything else should be served over TLS: either give `serve` a certificate (`--tls-cert` and `--tls-key`, both or neither), or put it behind a reverse proxy that terminates TLS and add `--behind-proxy`. Without one of the two the personal token - which is both the web login credential and the git password - crosses the network in the clear on every push and every login, and `serve` says so at startup. `--behind-proxy` is also what makes anygrade trust `X-Forwarded-Proto` and mark the session cookie `Secure`, and what makes the failed-login limiter read `X-Forwarded-For`. Set it whenever there really is a proxy: without it every request arrives from the proxy's address, so the whole course shares one budget and a few failed logins lock everyone out. Leave it off when there is not - both headers are forgeable by anyone who reaches the port.
+
 ## Security
 
 - Student code is untrusted: the docker runner (one ephemeral container per submission) applies memory/cpu/pids limits, no network by default, read-only base image, a non-root user, a tmpfs workspace copied into the container instead of a host bind mount, and a hard wall-clock timeout. Serving on a non-loopback address with any task on the local runner refuses to start unless `--allow-local-runner` is passed explicitly.
-- Tokens and invite links are stored hashed; SSH is limited to git commands; failed logins are rate limited per client and login across git and the web.
-- Role checks on every route; students can only read their own submissions.
+- Tokens, invite links and session cookies are stored hashed; SSH is limited to git commands; failed logins are rate limited per client and login across git and the web.
+- Role checks on every route; students can only read their own submissions. The check excerpt and the live stream are theirs; the full check log is a teacher-only download, because their code runs beside the hidden tests.
+- CSV export prefixes any cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return with an apostrophe, so a login can never become a spreadsheet formula.
 
 ## Data directory
 
 Everything lives in one directory, `./.anygrade` by default (`--data-dir` to override):
 
 ```
-.anygrade/
-  anygrade.db            # SQLite
+.anygrade/               # 0700, tightened at startup if the top level is wider
+  anygrade.db            # SQLite, 0600 with its -wal/-shm siblings
+  leaderboard.key        # 0600, the secret behind the leaderboard aliases
   repos/                 # bare course mirror + per-student repos
   hidden/                # hidden-tests cache
   logs/<submission-id>/  # raw check output
   workspaces/            # ephemeral check workspaces
 ```
 
-Backup = copy the data dir. On restart, submissions that were running are re-queued and re-run from scratch.
+Backup = copy the data dir, `leaderboard.key` included: it is what makes the anonymized leaderboard aliases stable. A missing key is regenerated and reshuffles every alias; a corrupt one stops the server with `not a hex-encoded secret; remove it to regenerate`. On restart, submissions that were running are re-queued and re-run from scratch.
+
+Upgrading migrates the database in place, and one migration is not invisible: session rows cannot be converted to the hashed form they are now stored in, so they are dropped and everyone is signed out once. Accounts that carried more than one personal token keep the newest.
 
 ## Development
 
