@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -202,11 +204,36 @@ func (b *blobReader) Close() error {
 	return fmt.Errorf("git cat-file blob: %w: %s", err, bytes.TrimSpace(b.stderr.Bytes()))
 }
 
-// File reads one blob whole. `cat-file blob` also rejects trees, so a path
-// that is a directory reads as absent.
+// MaxFileBytes bounds File. max_push_size bounds the compressed pack only, so
+// a highly compressible blob passes the push and expands on read - the same
+// hole the workspace overlay limit closes, left open on the one path that still
+// buffers a whole blob. It is well above the size the code view will inline, so
+// only a file nobody could read on screen anyway is refused.
+const MaxFileBytes = 8 << 20
+
+// ErrBlobTooLarge reports a blob past MaxFileBytes. It is deliberately distinct
+// from "not found": the file is there, and the caller should say so.
+var ErrBlobTooLarge = errors.New("blob exceeds the readable size limit")
+
+// File reads one blob whole, up to MaxFileBytes. `cat-file blob` also rejects
+// trees, so a path that is a directory reads as absent.
 func (s GitSource) File(ctx context.Context, srcRel string) ([]byte, bool, error) {
+	return s.file(ctx, srcRel, MaxFileBytes)
+}
+
+func (s GitSource) file(ctx context.Context, srcRel string, limit int64) ([]byte, bool, error) {
+	if size, err := s.blobSize(ctx, srcRel); err == nil && size > limit {
+		// Asked before reading: cat-file would otherwise hand us the whole
+		// object before anyone could object to its size.
+		return nil, true, fmt.Errorf("%w: %d bytes", ErrBlobTooLarge, size)
+	}
 	data, err := s.output(ctx, "cat-file", "blob", s.Commit+":"+srcRel)
 	if err == nil {
+		if int64(len(data)) > limit {
+			// The size probe is advisory - it fails for anything cat-file can
+			// still read - so the length is the one that decides.
+			return nil, true, fmt.Errorf("%w: %d bytes", ErrBlobTooLarge, len(data))
+		}
 		return data, true, nil
 	}
 	// Missing path and broken repo/commit both exit 128: probe the commit to
@@ -216,6 +243,16 @@ func (s GitSource) File(ctx context.Context, srcRel string) ([]byte, bool, error
 		return nil, false, probeErr
 	}
 	return nil, false, nil
+}
+
+// blobSize reads the object header only; err != nil for anything that is not a
+// readable blob, which File then reports through its own paths.
+func (s GitSource) blobSize(ctx context.Context, srcRel string) (int64, error) {
+	out, err := s.output(ctx, "cat-file", "-s", s.Commit+":"+srcRel)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseInt(string(bytes.TrimSpace(out)), 10, 64)
 }
 
 // output runs one git command in the source repo and returns raw stdout.

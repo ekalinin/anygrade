@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/ekalinin/anygrade/internal/config"
+	"github.com/ekalinin/anygrade/internal/gitserver"
+	"github.com/ekalinin/anygrade/internal/web"
 )
 
 // isLoopbackAddr reports whether a listen address can only be reached from
@@ -112,4 +114,14 @@ func checkServeSafety(res *config.Resolved, httpAddr, sshAddr string, localMode,
 		"which executes untrusted student code on the host; switch them to docker "+
 		"or pass --allow-local-runner if you accept the risk",
 		public, strings.Join(local, ", "))
+}
+
+// webFile adapts a GitSource read to the contract internal/web expects. web
+// stays git-free, so the size limit gitserver enforces has to be renamed here,
+// in the one place that already knows both sides.
+func webFile(data []byte, found bool, err error) ([]byte, bool, error) {
+	if errors.Is(err, gitserver.ErrBlobTooLarge) {
+		return nil, true, web.ErrFileTooLarge
+	}
+	return data, found, err
 }

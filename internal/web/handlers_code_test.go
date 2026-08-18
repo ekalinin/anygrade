@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -48,5 +49,42 @@ func TestCodeDownloadEncodesFileName(t *testing.T) {
 	}
 	if params["filename"] != hostile {
 		t.Errorf("filename = %q, want the whole name %q (header injection)", params["filename"], hostile)
+	}
+}
+
+// TestCodeFileTooLargeIsNotAMissingFile: the reader refuses a blob it will not
+// buffer. Reporting that as 404 would send the teacher hunting for a bug in the
+// listing that just showed them the file, so the page says what is wrong and
+// the download is refused rather than served empty.
+func TestCodeFileTooLargeIsNotAMissingFile(t *testing.T) {
+	const path = "big.bin"
+	h, teacher := newTestSite(t)
+	h.Local = &teacher
+	h.ListStudentFiles = func(context.Context, string, string, string) ([]string, error) {
+		return []string{path}, nil
+	}
+	h.ReadStudentFile = func(context.Context, string, string, string) ([]byte, bool, error) {
+		return nil, true, ErrFileTooLarge
+	}
+	student, _ := newSession(t, h, "bob", "student")
+	sub := enqueue(t, h, student.ID, "t1", time.Now())
+	base := "/students/bob/submissions/" + itoa(sub) + "/code/" + path
+
+	rec := httptest.NewRecorder()
+	New(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, base, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("page status %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "too large") {
+		t.Errorf("the page does not explain the size: %q", body)
+	}
+
+	rec = httptest.NewRecorder()
+	New(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, base+"?download=1", nil))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("download status %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	}
+	if rec.Body.Len() == 0 {
+		t.Error("the refused download says nothing")
 	}
 }

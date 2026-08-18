@@ -7,6 +7,8 @@
 <h2><code>{{.Path}}</code></h2>
 {{if .Binary}}
 <p class="hint">{{t "code.binary"}} <a href="?download=1">{{t "code.download"}}</a></p>
+{{else if .Oversize}}
+<p class="hint">{{t "code.too_large"}}</p>
 {{else if .TooBig}}
 <p class="hint">{{t "code.too_big"}} <a href="?download=1">{{t "code.download"}}</a></p>
 {{else}}
