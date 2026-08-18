@@ -20,12 +20,14 @@
 package sshsig
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"strings"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -111,6 +113,13 @@ func Verify(want ssh.PublicKey, namespace string, message, armored []byte) error
 		return fmt.Errorf("%w: namespace %q, want %q", ErrMalformed, b.Namespace, namespace)
 	}
 
+	// OpenSSH always writes an empty reserved string, and the field is echoed
+	// into the bytes that get signed - so accepting a non-empty one would carry
+	// attacker-chosen data into the signed message for no reason.
+	if len(b.Reserved) != 0 {
+		return fmt.Errorf("%w: %d reserved bytes", ErrMalformed, len(b.Reserved))
+	}
+
 	signer, err := ssh.ParsePublicKey(b.PublicKey)
 	if err != nil {
 		return fmt.Errorf("%w: embedded public key: %v", ErrMalformed, err)
@@ -118,7 +127,7 @@ func Verify(want ssh.PublicKey, namespace string, message, armored []byte) error
 	// Compare the wire encodings, not the fingerprints: the fingerprint is a
 	// hash of exactly these bytes, so this is the same check without trusting a
 	// second hash, and it also pins the key type.
-	if fp, wp := signer.Marshal(), want.Marshal(); len(fp) != len(wp) || string(fp) != string(wp) {
+	if !bytes.Equal(signer.Marshal(), want.Marshal()) {
 		return fmt.Errorf("%w: signed by %s, not %s",
 			ErrMalformed, ssh.FingerprintSHA256(signer), ssh.FingerprintSHA256(want))
 	}
@@ -142,6 +151,18 @@ func Verify(want ssh.PublicKey, namespace string, message, armored []byte) error
 	}
 	if err := ssh.Unmarshal(b.Signature, &sig); err != nil {
 		return fmt.Errorf("%w: inner signature: %v", ErrMalformed, err)
+	}
+	// x/crypto still verifies "ssh-rsa" - RSA over SHA-1 - for an ssh-rsa key.
+	// OpenSSH has signed SSHSIG with rsa-sha2-512 since the format existed, so
+	// refusing SHA-1 costs no student anything.
+	if sig.Format == ssh.KeyAlgoRSA {
+		return fmt.Errorf("%w: signature algorithm %q", ErrMalformed, sig.Format)
+	}
+	// Only security-key signatures carry anything after the signature blob (the
+	// authenticator flags and counter). For every other algorithm trailing bytes
+	// are junk, and this is the one field ssh.Unmarshal cannot reject for us.
+	if len(sig.Rest) != 0 && !strings.HasPrefix(sig.Format, "sk-") {
+		return fmt.Errorf("%w: %d bytes after the %s signature", ErrMalformed, len(sig.Rest), sig.Format)
 	}
 	if err := want.Verify(toVerify, &ssh.Signature{Format: sig.Format, Blob: sig.Blob, Rest: sig.Rest}); err != nil {
 		return fmt.Errorf("%w: %v", ErrSignature, err)

@@ -2,6 +2,8 @@ package sshsig
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/pem"
 	"errors"
 	"strings"
@@ -233,5 +235,93 @@ func TestVerifyAgainstFreshKey(t *testing.T) {
 	}
 	if err := Verify(sshPub, "anygrade", []byte("nonce-42"), armored); err != nil {
 		t.Fatalf("Verify = %v, want nil", err)
+	}
+}
+
+// reArmor rebuilds an armored blob from a modified structure, for the negative
+// cases that need a blob no ssh-keygen would ever emit.
+func reArmorBlob(t *testing.T, b blob) []byte {
+	t.Helper()
+	return pem.EncodeToMemory(&pem.Block{Type: pemType, Bytes: ssh.Marshal(b)})
+}
+
+func decodeBlob(t *testing.T, armored string) blob {
+	t.Helper()
+	block, _ := pem.Decode([]byte(armored))
+	var b blob
+	if err := ssh.Unmarshal(block.Bytes, &b); err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// TestVerifyRejectsNonEmptyReserved: the reserved string is echoed into the
+// bytes that get signed, so a non-empty one would smuggle attacker-chosen data
+// into the signed message. OpenSSH never writes one.
+func TestVerifyRejectsNonEmptyReserved(t *testing.T) {
+	b := decodeBlob(t, ed25519Sig)
+	b.Reserved = []byte("extra")
+	err := Verify(mustKey(t, ed25519Pub), goldenNamespace, []byte(goldenMessage), reArmorBlob(t, b))
+	if !errors.Is(err, ErrMalformed) {
+		t.Fatalf("Verify = %v, want %v", err, ErrMalformed)
+	}
+}
+
+// TestVerifyRejectsTrailingSignatureBytes: `ssh:"rest"` is the one field
+// ssh.Unmarshal cannot reject, and only security-key signatures legitimately
+// use it.
+func TestVerifyRejectsTrailingSignatureBytes(t *testing.T) {
+	b := decodeBlob(t, ed25519Sig)
+	b.Signature = append(append([]byte{}, b.Signature...), 'X', 'Y')
+	err := Verify(mustKey(t, ed25519Pub), goldenNamespace, []byte(goldenMessage), reArmorBlob(t, b))
+	if !errors.Is(err, ErrMalformed) {
+		t.Fatalf("Verify = %v, want %v", err, ErrMalformed)
+	}
+}
+
+// TestVerifyRejectsRSASHA1: x/crypto still accepts "ssh-rsa" (RSA over SHA-1)
+// for an ssh-rsa key. OpenSSH has never emitted it for SSHSIG, so refusing it
+// costs nothing and keeps a deprecated hash out of a credential path.
+func TestVerifyRejectsRSASHA1(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	as, ok := signer.(ssh.AlgorithmSigner)
+	if !ok {
+		t.Fatal("rsa signer is not an AlgorithmSigner")
+	}
+
+	const message = "agc_rsa"
+	hash, err := digest("sha512", []byte(message))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, err := as.SignWithAlgorithm(rand.Reader, ssh.Marshal(signedData{
+		Magic: magic, Namespace: goldenNamespace, HashAlg: "sha512", Hash: hash,
+	}), ssh.KeyAlgoRSA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sig.Format != ssh.KeyAlgoRSA {
+		t.Fatalf("signature format = %q, want %q", sig.Format, ssh.KeyAlgoRSA)
+	}
+	armored := reArmorBlob(t, blob{
+		Magic:     magic,
+		Version:   sigVersion,
+		PublicKey: signer.PublicKey().Marshal(),
+		Namespace: goldenNamespace,
+		HashAlg:   "sha512",
+		Signature: ssh.Marshal(struct {
+			Format string
+			Blob   []byte
+		}{sig.Format, sig.Blob}),
+	})
+	if err := Verify(signer.PublicKey(), goldenNamespace, []byte(message), armored); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("Verify = %v, want %v", err, ErrMalformed)
 	}
 }
