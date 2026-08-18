@@ -164,10 +164,11 @@ The token is the basic-auth password for git over HTTP and the login credential 
 Adding an SSH key takes two steps, because public keys are public: paste the key on the settings page, and the server hands back a one-time challenge to sign with the private half.
 
 ```sh
-printf '%s' 'agc_...' | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n anygrade -
+printf '%s' 'anygrade-key-proof/v1 user=alice key=SHA256:... nonce=agc_...' \
+  | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n anygrade -
 ```
 
-Paste the whole `-----BEGIN SSH SIGNATURE-----` block back and the key is registered. The challenge lasts ten minutes and works once. Keys added by a teacher with `anygrade user add-key`, and keys registered by older versions, carry no such proof: they keep working, are labelled unproven on the settings and student pages, and lose the fingerprint to whoever later proves possession of it.
+The page prints the exact line; it names your login and the key, so a line somebody else sends you would register your key to their account. Paste the whole `-----BEGIN SSH SIGNATURE-----` block back and the key is registered. The challenge lasts ten minutes and works once. Keys added by a teacher with `anygrade user add-key`, and keys registered by older versions, carry no such proof: they keep working, are labelled unproven on the settings and student pages, and lose the fingerprint to whoever later proves possession of it.
 
 Teachers push course updates to `/git/course.git` - every push is validated and rejected with the error list if the metadata is broken.
 

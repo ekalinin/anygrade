@@ -232,7 +232,12 @@ func userAddKey(args []string) error {
 		return fmt.Errorf("fingerprint %s is already registered to %s; remove it from that student's page first",
 			fingerprint, holder.Login)
 	}
-	if _, err := db.AddSSHKey(ctx, u.ID, fingerprint, strings.TrimSpace(*key)); err != nil {
+	// Store the re-marshalled key, not the pasted text: ParseAuthorizedKey reads
+	// the first line and ignores the rest, and it accepts authorized_keys
+	// options in front of the key, so the argument may hold far more than the
+	// key its fingerprint was taken from.
+	if _, err := db.AddSSHKey(ctx, u.ID, fingerprint,
+		strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pk)))); err != nil {
 		return err
 	}
 

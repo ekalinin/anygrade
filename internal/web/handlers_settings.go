@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -63,6 +64,9 @@ const keyProofNamespace = "anygrade"
 // keyChallengeTTL bounds how long a nonce stays usable. Long enough to switch
 // to a terminal, find the key and paste the output back; short enough that a
 // nonce read over someone's shoulder is worthless by the time it is used.
+//
+// The duration is quoted to the student by keyproof.expiry_hint in every
+// locale catalog; change it here and there together.
 const keyChallengeTTL = 10 * time.Minute
 
 type keyChallengeData struct {
@@ -71,7 +75,29 @@ type keyChallengeData struct {
 	Nonce       string
 	Fingerprint string
 	Namespace   string
-	Error       string
+	// Message is the exact line the student signs, printed on the page.
+	Message string
+	Error   string
+}
+
+// proofMessage is what the student's key actually signs. It is rebuilt from
+// the session's login and the stored challenge at verification time, so it
+// never has to be persisted.
+//
+// The nonce alone would be enough to make the proof fresh and single-use, and
+// it would also make the proof transferable: anybody may open a challenge for
+// anybody's public key, since public keys are public, so a signature over an
+// opaque random string is a signature over "whatever the person who asked for
+// it wanted". A student talked into running the command from a classmate's
+// screen would hand that classmate a proven claim on their own key - a worse
+// outcome than the squatting this flow exists to stop, because a proof is
+// never displaced. Naming the account and the key inside the signed bytes
+// makes that request self-incriminating: the line reads user=<someone else>.
+//
+// Logins are `[a-z0-9][a-z0-9._-]*` (internal/ident) and a fingerprint is
+// base64, so neither can carry a quote out of the shell command on the page.
+func proofMessage(login, fingerprint, nonce string) string {
+	return "anygrade-key-proof/v1 user=" + login + " key=" + fingerprint + " nonce=" + nonce
 }
 
 // newChallengeNonce returns a fresh "agc_"-prefixed random nonce. The prefix
@@ -107,6 +133,12 @@ func (h *Handler) addOwnKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fingerprint := gossh.FingerprintSHA256(pk)
+	// Store the parsed key re-marshalled, not the pasted text.
+	// ParseAuthorizedKey reads the first line and ignores everything after it,
+	// and it accepts authorized_keys options in front of the key - so the raw
+	// paste is unbounded attacker-controlled text that only looks like the key
+	// its fingerprint was taken from.
+	keyText = strings.TrimSpace(string(gossh.MarshalAuthorizedKey(pk)))
 	// The key is stored with the challenge rather than round-tripped through a
 	// hidden form field: step two then verifies the signature against the key
 	// the nonce was issued for, and a student who edits the form on the way
@@ -122,6 +154,7 @@ func (h *Handler) addOwnKey(w http.ResponseWriter, r *http.Request) {
 		Nonce:       nonce,
 		Fingerprint: fingerprint,
 		Namespace:   keyProofNamespace,
+		Message:     proofMessage(u.Login, fingerprint, nonce),
 	})
 }
 
@@ -152,9 +185,14 @@ func (h *Handler) proveOwnKey(w http.ResponseWriter, r *http.Request) {
 		h.httpError(w, r, "error.save_failed", http.StatusInternalServerError)
 		return
 	}
+	message := proofMessage(u.Login, c.Fingerprint, nonce)
 	// Verify before consuming: a mistyped paste should not cost the student the
 	// challenge, and the nonce is single-use by the delete below anyway.
-	if err := sshsig.Verify(pk, keyProofNamespace, []byte(nonce), []byte(r.FormValue("signature"))); err != nil {
+	if err := sshsig.Verify(pk, keyProofNamespace, []byte(message), []byte(r.FormValue("signature"))); err != nil {
+		// The student is told only that the proof failed; the reason is the
+		// teacher's, and it is the difference between a fumbled paste and
+		// somebody trying to register a key they do not hold.
+		slog.Warn("ssh key proof rejected", "login", u.Login, "fingerprint", c.Fingerprint, "err", err)
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		h.renderPage(w, r, "key_challenge", keyChallengeData{
 			CourseName:  h.Course.Get().Resolved.Course.Name,
@@ -162,13 +200,15 @@ func (h *Handler) proveOwnKey(w http.ResponseWriter, r *http.Request) {
 			Nonce:       nonce,
 			Fingerprint: c.Fingerprint,
 			Namespace:   keyProofNamespace,
+			Message:     message,
 			Error:       "key_proof_failed",
 		})
 		return
 	}
 	// Burn the nonce before the key is registered. Lookup only proves it was
 	// live when it was read, so two replays of one captured signature would
-	// otherwise both go through.
+	// otherwise both go through. Losing the process between here and the insert
+	// costs the student nothing but pasting the key again.
 	if used, err := h.DB.ConsumeKeyChallenge(r.Context(), nonce); err != nil || !used {
 		http.Redirect(w, r, "/settings?flash=key_challenge_expired", http.StatusSeeOther)
 		return
@@ -183,9 +223,9 @@ func (h *Handler) proveOwnKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if displaced != nil {
-		// The takeover is never silent: the losing account may be a squatter or
-		// may be a student whose legacy key this genuinely was, and only a
-		// teacher can tell the two apart afterwards.
+		// The takeover is audited, never silent: the losing account may be a
+		// squatter or may be a student whose legacy key this genuinely was, and
+		// only a teacher can tell the two apart afterwards.
 		_ = h.DB.Log(r.Context(), store.Event{
 			ActorID: &u.ID, Kind: "key.displaced", Target: displaced.Login,
 			Detail: "unproven key taken over by " + u.Login +

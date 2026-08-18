@@ -30,6 +30,7 @@ var (
 	reToken      = regexp.MustCompile(`ag_[0-9a-f]{64}`)
 	reInvite     = regexp.MustCompile(`inv_[0-9a-f]{64}`)
 	reChallenge  = regexp.MustCompile(`agc_[0-9a-f]{64}`)
+	reProofCmd   = regexp.MustCompile(`printf '%s' '([^']*)'`)
 	reSubmission = regexp.MustCompile(`submission #(\d+) queued`)
 )
 

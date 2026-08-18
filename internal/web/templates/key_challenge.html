@@ -4,8 +4,8 @@
 {{if .Error}}<p class="flash error">{{tFlash .Error}}</p>{{end}}
 
 <p>{{t "keyproof.step_sign"}}</p>
-<pre><code>printf '%s' '{{.Nonce}}' | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n {{.Namespace}} -</code></pre>
-<p class="hint">{{t "keyproof.expiry_hint"}}</p>
+<pre><code>printf '%s' '{{.Message}}' | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n {{.Namespace}} -</code></pre>
+<p class="hint">{{t "keyproof.expiry_hint"}} {{t "keyproof.own_line_warning"}}</p>
 
 <form method="post" action="/settings/keys/verify">
   <input type="hidden" name="nonce" value="{{.Nonce}}">

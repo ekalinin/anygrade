@@ -5,6 +5,7 @@ package e2e
 import (
 	"bytes"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -280,15 +281,25 @@ func testInviteAndSSH(t *testing.T, e *env) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("key challenge: status %d, body:\n%s", resp.StatusCode, body)
 	}
-	nonce := reChallenge.FindString(body)
-	if nonce == "" {
-		t.Fatalf("challenge page missing a nonce:\n%s", body)
+	// Read the command off the page and sign exactly what it prints - the line
+	// names bob and his fingerprint, not just an opaque nonce.
+	m := reProofCmd.FindStringSubmatch(html.UnescapeString(body))
+	if m == nil {
+		t.Fatalf("challenge page missing the sign command:\n%s", body)
 	}
-	signature := signChallenge(t, keyPath, nonce)
+	message := m[1]
+	nonce := reChallenge.FindString(message)
+	if nonce == "" {
+		t.Fatalf("the printed message carries no nonce: %q", message)
+	}
+	if !strings.Contains(message, "user=bob") {
+		t.Fatalf("the signed line does not name the account: %q", message)
+	}
+	signature := signChallenge(t, keyPath, message)
 
 	// A signature over somebody else's challenge is not a proof.
 	resp, _ = postForm(t, e.bobClient, e.baseURL+"/settings/keys/verify", url.Values{
-		"nonce": {nonce}, "signature": {signChallenge(t, keyPath, nonce+"x")},
+		"nonce": {nonce}, "signature": {signChallenge(t, keyPath, message+"x")},
 	})
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("bad proof: status %d, want 422", resp.StatusCode)
@@ -340,10 +351,10 @@ func testInviteAndSSH(t *testing.T, e *env) {
 // The e2e suite deliberately uses the real ssh-keygen here: the server verifies
 // the SSHSIG in pure Go, and this is what keeps that parser honest against the
 // client students actually have.
-func signChallenge(t *testing.T, keyPath, nonce string) string {
+func signChallenge(t *testing.T, keyPath, message string) string {
 	t.Helper()
 	cmd := exec.Command("ssh-keygen", "-Y", "sign", "-f", keyPath, "-n", "anygrade", "-")
-	cmd.Stdin = strings.NewReader(nonce)
+	cmd.Stdin = strings.NewReader(message)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {

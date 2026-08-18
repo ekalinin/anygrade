@@ -2,6 +2,7 @@ package web
 
 import (
 	"crypto/ed25519"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,9 +16,21 @@ import (
 	"github.com/ekalinin/anygrade/internal/sshsig"
 )
 
-// nonceRE picks the challenge out of the rendered shell command; the page is
-// the only place the plaintext nonce ever exists (the DB holds its hash).
-var nonceRE = regexp.MustCompile(`agc_[0-9a-f]{64}`)
+var (
+	// nonceRE picks the challenge out of the rendered shell command; the page
+	// is the only place the plaintext nonce ever exists (the DB holds its hash).
+	nonceRE = regexp.MustCompile(`agc_[0-9a-f]{64}`)
+	// proofCmdRE reads the message the page tells the student to sign, straight
+	// out of the command it prints - the same string a student copies.
+	proofCmdRE = regexp.MustCompile(`printf '%s' '([^']*)'`)
+)
+
+// challenge is what step one hands back: the nonce that identifies it and the
+// exact line the student is told to sign.
+type challenge struct {
+	nonce   string
+	message string
+}
 
 // testKey is one throwaway key pair: the authorized_keys line a student would
 // paste, plus the signer that stands in for their private half.
@@ -55,25 +68,31 @@ func (k testKey) fingerprint(t *testing.T) string {
 	return gossh.FingerprintSHA256(pk)
 }
 
-// startProof performs step one (paste the public key) and returns the nonce
-// the challenge page printed.
-func startProof(t *testing.T, h *Handler, c *http.Cookie, key testKey) string {
+// startProof performs step one (paste the public key) and reads the challenge
+// back off the rendered page, unescaped - which is what a student copies, and
+// what makes the page itself part of the contract.
+func startProof(t *testing.T, h *Handler, c *http.Cookie, key testKey) challenge {
 	t.Helper()
 	rec := doForm(h, "/settings/keys", c, url.Values{"key": {key.authorized}})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("challenge page: status %d, body %s", rec.Code, rec.Body.String())
 	}
-	nonce := nonceRE.FindString(rec.Body.String())
-	if nonce == "" {
-		t.Fatalf("no challenge nonce on the page: %s", rec.Body.String())
+	body := html.UnescapeString(rec.Body.String())
+	m := proofCmdRE.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("no sign command on the page: %s", body)
 	}
-	return nonce
+	nonce := nonceRE.FindString(m[1])
+	if nonce == "" {
+		t.Fatalf("the printed message carries no nonce: %q", m[1])
+	}
+	return challenge{nonce: nonce, message: m[1]}
 }
 
-// signNonce is what the student's `ssh-keygen -Y sign -n anygrade` produces.
-func signNonce(t *testing.T, k testKey, nonce string) string {
+// signMessage is what the student's `ssh-keygen -Y sign -n anygrade` produces.
+func signMessage(t *testing.T, k testKey, message string) string {
 	t.Helper()
-	armored, err := sshsig.Sign(k.signer, keyProofNamespace, []byte(nonce))
+	armored, err := sshsig.Sign(k.signer, keyProofNamespace, []byte(message))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,9 +102,9 @@ func signNonce(t *testing.T, k testKey, nonce string) string {
 // registerKey drives the whole two-step registration.
 func registerKey(t *testing.T, h *Handler, c *http.Cookie, key testKey) *httptest.ResponseRecorder {
 	t.Helper()
-	nonce := startProof(t, h, c, key)
+	ch := startProof(t, h, c, key)
 	return doForm(h, "/settings/keys/verify", c, url.Values{
-		"nonce": {nonce}, "signature": {signNonce(t, key, nonce)},
+		"nonce": {ch.nonce}, "signature": {signMessage(t, key, ch.message)},
 	})
 }
 
@@ -98,14 +117,19 @@ func TestKeyRegistrationRequiresProof(t *testing.T) {
 	key := newTestKey(t)
 	u, session := newSession(t, h, "alice", "student")
 
-	nonce := startProof(t, h, session, key)
+	ch := startProof(t, h, session, key)
 	keys, err := h.DB.ListSSHKeys(t.Context(), u.ID)
 	if err != nil || len(keys) != 0 {
 		t.Fatalf("step one registered a key without proof: %v (err %v)", keys, err)
 	}
+	// The signed line names the account and the key, so a student cannot be
+	// talked into signing an opaque string that proves something else.
+	if want := proofMessage(u.Login, key.fingerprint(t), ch.nonce); ch.message != want {
+		t.Fatalf("printed message = %q, want %q", ch.message, want)
+	}
 
 	rec := doForm(h, "/settings/keys/verify", session, url.Values{
-		"nonce": {nonce}, "signature": {signNonce(t, key, nonce)},
+		"nonce": {ch.nonce}, "signature": {signMessage(t, key, ch.message)},
 	})
 	if rec.Header().Get("Location") != "/settings" {
 		t.Fatalf("Location = %q, want /settings (body %s)", rec.Header().Get("Location"), rec.Body.String())
@@ -129,29 +153,30 @@ func TestKeyProofRejections(t *testing.T) {
 	tests := []struct {
 		name string
 		// sign builds the posted signature; nonce is the live challenge.
-		sign func(t *testing.T, own, other testKey, nonce string) string
+		sign func(t *testing.T, own, other testKey, ch challenge) string
 	}{
 		{
 			// Signed with a key the attacker really holds, submitted for the
 			// victim's key: the SSHSIG carries its own public key.
 			name: "wrong key",
-			sign: func(t *testing.T, _, other testKey, nonce string) string {
-				return signNonce(t, other, nonce)
+			sign: func(t *testing.T, _, other testKey, ch challenge) string {
+				return signMessage(t, other, ch.message)
 			},
 		},
 		{
 			// A signature over some other nonce, e.g. one captured earlier.
 			name: "signature over a different nonce",
-			sign: func(t *testing.T, own, _ testKey, _ string) string {
-				return signNonce(t, own, "agc_"+strings.Repeat("0", 64))
+			sign: func(t *testing.T, own, _ testKey, ch challenge) string {
+				return signMessage(t, own,
+					strings.Replace(ch.message, ch.nonce, "agc_"+strings.Repeat("0", 64), 1))
 			},
 		},
 		{
 			// A real signature by the right key, made under another namespace -
 			// git commit signing, say. Namespace is inside the signed bytes.
 			name: "signature from another namespace",
-			sign: func(t *testing.T, own, _ testKey, nonce string) string {
-				armored, err := sshsig.Sign(own.signer, "git", []byte(nonce))
+			sign: func(t *testing.T, own, _ testKey, ch challenge) string {
+				armored, err := sshsig.Sign(own.signer, "git", []byte(ch.message))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -160,11 +185,27 @@ func TestKeyProofRejections(t *testing.T) {
 		},
 		{
 			name: "not a signature at all",
-			sign: func(t *testing.T, _, _ testKey, _ string) string { return "please let me in" },
+			sign: func(t *testing.T, _, _ testKey, _ challenge) string { return "please let me in" },
 		},
 		{
 			name: "no signature",
-			sign: func(t *testing.T, _, _ testKey, _ string) string { return "" },
+			sign: func(t *testing.T, _, _ testKey, _ challenge) string { return "" },
+		},
+		{
+			// The phishing case the signed message exists to make visible: a
+			// signature over the bare nonce, as a student would produce if they
+			// were sent a random string to sign.
+			name: "signature over the bare nonce",
+			sign: func(t *testing.T, own, _ testKey, ch challenge) string {
+				return signMessage(t, own, ch.nonce)
+			},
+		},
+		{
+			// And a proof made out for somebody else's account.
+			name: "signature naming another account",
+			sign: func(t *testing.T, own, _ testKey, ch challenge) string {
+				return signMessage(t, own, proofMessage("mallory", own.fingerprint(t), ch.nonce))
+			},
 		},
 	}
 	for _, tc := range tests {
@@ -173,9 +214,9 @@ func TestKeyProofRejections(t *testing.T) {
 			own, other := newTestKey(t), newTestKey(t)
 			u, session := newSession(t, h, "alice", "student")
 
-			nonce := startProof(t, h, session, own)
+			ch := startProof(t, h, session, own)
 			rec := doForm(h, "/settings/keys/verify", session, url.Values{
-				"nonce": {nonce}, "signature": {tc.sign(t, own, other, nonce)},
+				"nonce": {ch.nonce}, "signature": {tc.sign(t, own, other, ch)},
 			})
 			if rec.Code != http.StatusUnprocessableEntity {
 				t.Fatalf("status = %d, want 422", rec.Code)
@@ -185,7 +226,7 @@ func TestKeyProofRejections(t *testing.T) {
 			}
 			// The challenge survives a bad paste, so the student can retry.
 			rec = doForm(h, "/settings/keys/verify", session, url.Values{
-				"nonce": {nonce}, "signature": {signNonce(t, own, nonce)},
+				"nonce": {ch.nonce}, "signature": {signMessage(t, own, ch.message)},
 			})
 			if rec.Header().Get("Location") != "/settings" {
 				t.Fatalf("retry with a good signature failed: %q", rec.Header().Get("Location"))
@@ -202,9 +243,8 @@ func TestKeyChallengeIsSingleUse(t *testing.T) {
 	key := newTestKey(t)
 	u, session := newSession(t, h, "alice", "student")
 
-	nonce := startProof(t, h, session, key)
-	signature := signNonce(t, key, nonce)
-	form := url.Values{"nonce": {nonce}, "signature": {signature}}
+	ch := startProof(t, h, session, key)
+	form := url.Values{"nonce": {ch.nonce}, "signature": {signMessage(t, key, ch.message)}}
 
 	if rec := doForm(h, "/settings/keys/verify", session, form); rec.Header().Get("Location") != "/settings" {
 		t.Fatalf("first proof failed: %q", rec.Header().Get("Location"))
@@ -216,7 +256,7 @@ func TestKeyChallengeIsSingleUse(t *testing.T) {
 	if keys, err := h.DB.ListSSHKeys(t.Context(), u.ID); err != nil || len(keys) != 1 {
 		t.Fatalf("replay changed the key list: %v (err %v)", keys, err)
 	}
-	if _, ok, err := h.DB.LookupKeyChallenge(t.Context(), nonce, time.Now()); err != nil || ok {
+	if _, ok, err := h.DB.LookupKeyChallenge(t.Context(), ch.nonce, time.Now()); err != nil || ok {
 		t.Fatalf("the nonce is still live after use: ok=%v err=%v", ok, err)
 	}
 }
@@ -235,7 +275,8 @@ func TestKeyChallengeExpires(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := doForm(h, "/settings/keys/verify", session, url.Values{
-		"nonce": {nonce}, "signature": {signNonce(t, key, nonce)},
+		"nonce":     {nonce},
+		"signature": {signMessage(t, key, proofMessage(u.Login, key.fingerprint(t), nonce))},
 	})
 	if want := "/settings?flash=key_challenge_expired"; rec.Header().Get("Location") != want {
 		t.Fatalf("Location = %q, want %q", rec.Header().Get("Location"), want)
@@ -254,9 +295,9 @@ func TestKeyChallengeBelongsToOneAccount(t *testing.T) {
 	victim, victimSession := newSession(t, h, "alice", "student")
 	mallory, mallorySession := newSession(t, h, "mallory", "student")
 
-	nonce := startProof(t, h, victimSession, key)
+	ch := startProof(t, h, victimSession, key)
 	rec := doForm(h, "/settings/keys/verify", mallorySession, url.Values{
-		"nonce": {nonce}, "signature": {signNonce(t, key, nonce)},
+		"nonce": {ch.nonce}, "signature": {signMessage(t, key, ch.message)},
 	})
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
@@ -535,13 +576,14 @@ func TestLocalModeCanRegisterAKey(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 	New(h).ServeHTTP(rec, req)
-	nonce := nonceRE.FindString(rec.Body.String())
-	if nonce == "" {
+	m := proofCmdRE.FindStringSubmatch(html.UnescapeString(rec.Body.String()))
+	if m == nil {
 		t.Fatalf("no challenge in local mode: %s", rec.Body.String())
 	}
+	nonce := nonceRE.FindString(m[1])
 
 	req = httptest.NewRequest(http.MethodPost, "/settings/keys/verify",
-		strings.NewReader(url.Values{"nonce": {nonce}, "signature": {signNonce(t, key, nonce)}}.Encode()))
+		strings.NewReader(url.Values{"nonce": {nonce}, "signature": {signMessage(t, key, m[1])}}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec = httptest.NewRecorder()
 	New(h).ServeHTTP(rec, req)
@@ -550,5 +592,40 @@ func TestLocalModeCanRegisterAKey(t *testing.T) {
 	}
 	if keys, err := h.DB.ListSSHKeys(t.Context(), local.ID); err != nil || len(keys) != 1 {
 		t.Fatalf("ListSSHKeys = %v (err %v), want one key", keys, err)
+	}
+}
+
+// TestPastedKeyIsCanonicalized: ParseAuthorizedKey reads the first line and
+// ignores whatever follows, and it accepts authorized_keys options in front of
+// the key - so the raw paste is unbounded attacker-controlled text that only
+// looks like the key its fingerprint came from. Only the re-marshalled key is
+// stored.
+func TestPastedKeyIsCanonicalized(t *testing.T) {
+	h, _ := newTestSite(t)
+	key := newTestKey(t)
+	u, session := newSession(t, h, "alice", "student")
+
+	junk := `command="rm -rf /" ` + key.authorized + "\nnot a key at all\n" + strings.Repeat("x", 5000)
+	rec := doForm(h, "/settings/keys", session, url.Values{"key": {junk}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("challenge page: status %d", rec.Code)
+	}
+	body := html.UnescapeString(rec.Body.String())
+	m := proofCmdRE.FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("no sign command on the page: %s", body)
+	}
+	if rec := doForm(h, "/settings/keys/verify", session, url.Values{
+		"nonce": {nonceRE.FindString(m[1])}, "signature": {signMessage(t, key, m[1])},
+	}); rec.Header().Get("Location") != "/settings" {
+		t.Fatalf("Location = %q, want /settings", rec.Header().Get("Location"))
+	}
+
+	keys, err := h.DB.ListSSHKeys(t.Context(), u.ID)
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("ListSSHKeys = %v (err %v), want one key", keys, err)
+	}
+	if keys[0].PublicKey != key.authorized {
+		t.Errorf("stored public_key = %q, want the canonical line %q", keys[0].PublicKey, key.authorized)
 	}
 }
