@@ -8,8 +8,6 @@ import (
 	"strings"
 	"time"
 
-	gossh "golang.org/x/crypto/ssh"
-
 	"github.com/ekalinin/anygrade/internal/ident"
 	"github.com/ekalinin/anygrade/internal/ratelimit"
 	"github.com/ekalinin/anygrade/internal/store"
@@ -21,7 +19,6 @@ type inviteData struct {
 	Token      string
 	Login      string
 	Invalid    bool
-	Error      string
 }
 
 // gitURLs are the SPEC §7 suggested setup, shown on activation. The SSH
@@ -90,8 +87,16 @@ func (h *Handler) invitePage(w http.ResponseWriter, r *http.Request) {
 }
 
 // inviteSubmit activates the account: burns the one-shot invite, issues the
-// personal token (shown once), stores an optional SSH key, and logs the
-// browser in (SPEC §8).
+// personal token (shown once), and logs the browser in (SPEC §8).
+//
+// It used to take an optional SSH key too. It no longer does, because a key
+// accepted here could not be proven: the invite proves possession of the
+// invite, not of the private half, so this page would have stayed the one path
+// on which a student could register a classmate's public key and lock them out
+// of it. Folding a sign-and-paste round trip into activation is worse than
+// moving it - the link is one-shot, so a student who fumbles the signature on
+// this page has no second attempt at activating at all. The student lands
+// logged in on the very next page, where settings is one click away.
 func (h *Handler) inviteSubmit(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
 		h.httpError(w, r, "error.cross_origin", http.StatusForbidden)
@@ -107,35 +112,14 @@ func (h *Handler) inviteSubmit(w http.ResponseWriter, r *http.Request) {
 		invalid()
 		return
 	}
-	// Validate before burning the invite, so a mistyped key is still
-	// correctable on the same page.
-	var keyText, fingerprint string
-	if keyText = strings.TrimSpace(r.FormValue("key")); keyText != "" {
-		pk, _, _, _, err := gossh.ParseAuthorizedKey([]byte(keyText))
-		if err != nil {
-			h.renderPage(w, r, "invite", inviteData{
-				CourseName: h.Course.Get().Resolved.Course.Name,
-				Token:      r.PathValue("token"), Login: target.Login,
-				Error: "unparseable_ssh_key",
-			})
-			return
-		}
-		fingerprint = gossh.FingerprintSHA256(pk)
-	}
 	// Burn the invite before any side effect. VerifyInvite only proves the
 	// link was unused when it was read, so two concurrent activations of one
-	// link would both register a key and both rotate the token - and the
-	// second rotation invalidates the token the first student was just shown
-	// (SPEC §8: the link is one-shot).
+	// link would both rotate the token - and the second rotation invalidates
+	// the token the first student was just shown (SPEC §8: the link is
+	// one-shot).
 	if used, err := h.DB.ConsumeInvite(r.Context(), inv.ID, time.Now()); err != nil || !used {
 		invalid()
 		return
-	}
-	if keyText != "" {
-		if _, err := h.DB.AddSSHKey(r.Context(), target.ID, fingerprint, keyText); err != nil {
-			// Duplicate key: not worth failing the activation over.
-			_ = err
-		}
 	}
 	token, err := h.DB.IssueToken(r.Context(), target.ID)
 	if err != nil {
