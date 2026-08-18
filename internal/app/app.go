@@ -200,6 +200,12 @@ func Run(ctx context.Context, opts Options) error {
 	})
 	mux.Handle("/", site)
 	httpSrv := newHTTPServer(opts.HTTPAddr, mux)
+	// No Limit here on purpose (SPEC §14): the failure limiter budgets guessable
+	// credentials, and SSH has none - it authenticates a public-key fingerprint,
+	// and an honest client offers every key in its agent until one matches, so
+	// charging the misses would throttle students and not attackers. The SSH
+	// transport carries its own budgets instead, on handshake concurrency and
+	// handshake/idle time.
 	sshSrv := &gitserver.SSHServer{
 		Repos: repos, Auth: auth, Socket: socket,
 		HostKey: filepath.Join(opts.DataDir, "ssh_host_ed25519_key"),
