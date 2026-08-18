@@ -152,14 +152,24 @@ Students are registered by invite links (`anygrade user invite --login alice`, o
 git clone http://host:8080/git/<login>/course.git
 git remote add upstream http://host:8080/git/course.git
 
-# or over SSH, once an SSH key is added (at activation or in settings)
+# or over SSH, once an SSH key is added on the settings page
 git clone ssh://git@host:2222/<login>/course.git
 git remote add upstream ssh://git@host:2222/course.git
 
 # later: git pull upstream main
 ```
 
-The token is the basic-auth password for git over HTTP and the login credential for the web UI. SSH auth is by key only; the token is not asked for. Teachers push course updates to `/git/course.git` - every push is validated and rejected with the error list if the metadata is broken.
+The token is the basic-auth password for git over HTTP and the login credential for the web UI. SSH auth is by key only; the token is not asked for.
+
+Adding an SSH key takes two steps, because public keys are public: paste the key on the settings page, and the server hands back a one-time challenge to sign with the private half.
+
+```sh
+printf '%s' 'agc_...' | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n anygrade -
+```
+
+Paste the whole `-----BEGIN SSH SIGNATURE-----` block back and the key is registered. The challenge lasts ten minutes and works once. Keys added by a teacher with `anygrade user add-key`, and keys registered by older versions, carry no such proof: they keep working, are labelled unproven on the settings and student pages, and lose the fingerprint to whoever later proves possession of it.
+
+Teachers push course updates to `/git/course.git` - every push is validated and rejected with the error list if the metadata is broken.
 
 Rechecks: a commit message marker `[recheck <task-id>]` (works with an empty commit) or the recheck button on the task page. Student rechecks count against attempts and cooldown; teacher rechecks do not.
 
@@ -212,7 +222,7 @@ Anything else should be served over TLS: either give `serve` a certificate (`--t
 ## Security
 
 - Student code is untrusted: the docker runner (one ephemeral container per submission) applies memory/cpu/pids limits, no network by default, read-only base image, a non-root user, a tmpfs workspace copied into the container instead of a host bind mount, and a hard wall-clock timeout. Serving on a non-loopback address with any task on the local runner refuses to start unless `--allow-local-runner` is passed explicitly.
-- Tokens, invite links and session cookies are stored hashed; SSH is limited to git commands; failed logins are rate limited per client and login across git and the web.
+- Tokens, invite links, session cookies and SSH key challenges are stored hashed; registering an SSH key takes a signed challenge, so nobody can claim a classmate's key; SSH is limited to git commands; failed logins are rate limited per client and login across git and the web.
 - SSH has no guessable credential to rate limit - it authenticates a key fingerprint, and a client offers every key in its agent until one matches - so it is bounded on connection churn instead: how many connections may sit in the handshake at once, overall and per client address, how long each one has to get through it, and how long an established connection may sit idle. Nothing is tunable and nothing needs to be; the ceilings are far above a whole class pushing at a deadline, and a key that authenticates stops counting against them straight away.
 - Role checks on every route; students can only read their own submissions. The check excerpt and the live stream are theirs; the full check log is a teacher-only download, because their code runs beside the hidden tests.
 - CSV export prefixes any cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return with an apostrophe, so a login can never become a spreadsheet formula.
