@@ -207,7 +207,7 @@ anygrade version
 
 `serve --local` runs with a single implicit user and no auth for offline use; it refuses to bind to non-loopback addresses, so the listen addresses default to `127.0.0.1:8080` and `127.0.0.1:2222` in that mode.
 
-Anything else should be served over TLS: either give `serve` a certificate (`--tls-cert` and `--tls-key`, both or neither), or put it behind a reverse proxy that terminates TLS and add `--behind-proxy`. Without one of the two the personal token - which is both the web login credential and the git password - crosses the network in the clear on every push and every login, and `serve` says so at startup. `--behind-proxy` is also what makes anygrade trust `X-Forwarded-Proto` and mark the session cookie `Secure`.
+Anything else should be served over TLS: either give `serve` a certificate (`--tls-cert` and `--tls-key`, both or neither), or put it behind a reverse proxy that terminates TLS and add `--behind-proxy`. Without one of the two the personal token - which is both the web login credential and the git password - crosses the network in the clear on every push and every login, and `serve` says so at startup. `--behind-proxy` is also what makes anygrade trust `X-Forwarded-Proto` and mark the session cookie `Secure`, and what makes the failed-login limiter read `X-Forwarded-For`. Set it whenever there really is a proxy: without it every request arrives from the proxy's address, so the whole course shares one budget and a few failed logins lock everyone out. Leave it off when there is not - both headers are forgeable by anyone who reaches the port.
 
 ## Security
 
