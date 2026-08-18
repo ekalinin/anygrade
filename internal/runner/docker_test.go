@@ -22,6 +22,32 @@ func dockerAvailable() bool {
 	return exec.Command("docker", "version", "--format", "{{.Server.Version}}").Run() == nil
 }
 
+// requireDockerEnv turns a skipped docker test into a failing one. The docker
+// runner is the only sandbox anygrade has (SPEC §14), so a run that quietly
+// skips every test of it is indistinguishable from a run that verified it - and
+// that is how the coverage would disappear: not with a red build, but with a
+// green one after the daemon stops being reachable. CI sets this; a developer
+// without a daemon does not.
+const requireDockerEnv = "ANYGRADE_REQUIRE_DOCKER"
+
+// requireDocker skips the calling test when docker is unavailable, unless the
+// environment demands docker - in which case its absence is the finding.
+func requireDocker(t *testing.T) {
+	t.Helper()
+	if os.Getenv(requireDockerEnv) != "1" {
+		if testing.Short() || !dockerAvailable() {
+			t.Skip("docker not available")
+		}
+		return
+	}
+	if testing.Short() {
+		t.Fatalf("%s=1 with -short: the docker tests cannot be both required and skipped", requireDockerEnv)
+	}
+	if !dockerAvailable() {
+		t.Fatalf("%s=1 but no docker daemon is reachable", requireDockerEnv)
+	}
+}
+
 // dockerWorkspace returns a workspace dir for a docker run. Any location will
 // do: the workspace is copied into the container, never mounted, so the colima
 // restriction on which host dirs reach the VM no longer applies.
@@ -126,9 +152,7 @@ func TestDockerRunArgsWorkspaceIsTmpfs(t *testing.T) {
 }
 
 func TestDockerRunnerEndToEnd(t *testing.T) {
-	if testing.Short() || !dockerAvailable() {
-		t.Skip("docker not available")
-	}
+	requireDocker(t)
 	ws := dockerWorkspace(t)
 	writeFiles(t, ws, map[string]string{
 		"tasks/01/input.txt": "data\n",
@@ -172,9 +196,7 @@ func TestDockerRunnerEndToEnd(t *testing.T) {
 // TestDockerRunnerWorkspaceIsolation pins SPEC §14: /work is a tmpfs, the
 // check does not run as root, and nothing a check writes reaches the host.
 func TestDockerRunnerWorkspaceIsolation(t *testing.T) {
-	if testing.Short() || !dockerAvailable() {
-		t.Skip("docker not available")
-	}
+	requireDocker(t)
 	ws := dockerWorkspace(t)
 	writeFiles(t, ws, map[string]string{"tasks/01/input.txt": "data\n"})
 
@@ -208,9 +230,7 @@ func TestDockerRunnerWorkspaceIsolation(t *testing.T) {
 // asks for the ephemeral workspace to be copied back so the artifacts a check
 // produced can be inspected on the host.
 func TestDockerRunnerExportWorkspace(t *testing.T) {
-	if testing.Short() || !dockerAvailable() {
-		t.Skip("docker not available")
-	}
+	requireDocker(t)
 	ws := dockerWorkspace(t)
 	writeFiles(t, ws, map[string]string{"tasks/01/input.txt": "data\n"})
 
@@ -237,9 +257,7 @@ func TestDockerRunnerExportWorkspace(t *testing.T) {
 // together with the uid. So the checks must still be able to write in their
 // task dir, read the hidden tests, and fail to modify them.
 func TestDockerRunnerAssembledWorkspace(t *testing.T) {
-	if testing.Short() || !dockerAvailable() {
-		t.Skip("docker not available")
-	}
+	requireDocker(t)
 	course := t.TempDir()
 	writeFiles(t, course, map[string]string{"tasks/01/main.sh": "echo main\n"})
 	hidden := t.TempDir()
@@ -284,9 +302,7 @@ func TestDockerRunnerAssembledWorkspace(t *testing.T) {
 // so this is an infrastructure error - retried, no attempt consumed (SPEC §13)
 // - and not a check the student failed.
 func TestDockerRunnerContainerGone(t *testing.T) {
-	if testing.Short() || !dockerAvailable() {
-		t.Skip("docker not available")
-	}
+	requireDocker(t)
 	job := Job{
 		WorkspaceDir: dockerWorkspace(t),
 		Spec:         dockerSpec(time.Minute),
@@ -301,9 +317,7 @@ func TestDockerRunnerContainerGone(t *testing.T) {
 }
 
 func TestDockerRunnerTimeout(t *testing.T) {
-	if testing.Short() || !dockerAvailable() {
-		t.Skip("docker not available")
-	}
+	requireDocker(t)
 	ws := dockerWorkspace(t)
 	r := &DockerRunner{}
 	job := Job{

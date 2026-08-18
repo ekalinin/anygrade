@@ -27,9 +27,19 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      # build + vet + gofmt + unit tests. The docker runner tests skip
-      # themselves when no daemon is reachable and use alpine:3 when there is.
+      # build + vet + gofmt + unit tests, the docker runner tests included:
+      # they run against the daemon on the runner, using alpine:3. Those tests
+      # skip themselves when no daemon is reachable, which is right on a
+      # developer machine and wrong here - the docker runner is the only
+      # sandbox anygrade has, so losing its coverage must not look like a
+      # passing build. The variable turns that skip into a failure.
       - run: make check
+        env:
+          ANYGRADE_REQUIRE_DOCKER: "1"
       # End-to-end suite: spawns the real binary and drives CLI, HTTP and git.
       # Needs the git binary (preinstalled on the runner), no docker.
       - run: make e2e
+      # Reachability-based dependency scan: it fails only on vulnerabilities
+      # the code actually calls, so an advisory in a module we merely require
+      # does not turn the build red.
+      - run: make vulncheck
