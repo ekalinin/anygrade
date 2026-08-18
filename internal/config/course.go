@@ -41,10 +41,16 @@ type Defaults struct {
 }
 
 // WorkspaceSpec lists extra repo-relative paths exported into the check
-// workspace in addition to the task directory (e.g. a course-root go.mod).
+// workspace in addition to the task directory (e.g. a course-root go.mod),
+// and bounds the student-controlled part of the workspace.
 // Course-level and task-level lists are unioned.
 type WorkspaceSpec struct {
 	Include []string `yaml:"include"`
+	// MaxFileSize / MaxTotalSize cap one overlaid solution file and the whole
+	// overlay after decompression: the push limit only bounds the compressed
+	// pack, so a highly compressible blob passes it and expands afterwards.
+	MaxFileSize  *ByteSize `yaml:"max_file_size"`
+	MaxTotalSize *ByteSize `yaml:"max_total_size"`
 }
 
 // DeadlineDefaults holds only the penalty policy; soft/hard timestamps are
@@ -65,6 +71,9 @@ type RunnerSpec struct {
 	// LogExcerpt is the per-check log tail kept in the DB and shown in the UI
 	// (SPEC §13); the full log always stays on disk.
 	LogExcerpt *ByteSize `yaml:"log_excerpt"`
+	// LogMax caps the full on-disk log of one check. Check output is untrusted,
+	// so it must not be able to fill the host disk (SPEC §14).
+	LogMax *ByteSize `yaml:"log_max"`
 }
 
 // Limits is a mergeable attempt/cooldown configuration. MaxAttempts is a

@@ -235,6 +235,13 @@ func (q *Queue) process(ctx context.Context, sub store.Submission) {
 
 	ws, err := runner.Assemble(ctx, p.Assembly)
 	if err != nil {
+		// The submitted content itself broke the workspace contract (symlinked
+		// or oversized solution file): retrying it can only fail again, and the
+		// teacher needs to see why.
+		if te, ok := errors.AsType[*runner.TamperError](err); ok {
+			q.terminal(sub, te.Error())
+			return
+		}
 		q.fail(ctx, sub, err)
 		return
 	}

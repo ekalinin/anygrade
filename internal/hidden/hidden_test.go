@@ -3,6 +3,7 @@ package hidden
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ekalinin/anygrade/internal/config"
+	"github.com/ekalinin/anygrade/internal/runner"
 )
 
 // fileAllowEnv permits file:// remotes in the cache's fetches (the test
@@ -28,6 +30,18 @@ func requireGit(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
+}
+
+// srcFile reads one file of a source whole: the tests assert on content, while
+// the workspace overlay streams it under a size limit (runner.Source.Open).
+func srcFile(ctx context.Context, src runner.Source, name string) ([]byte, bool, error) {
+	rc, ok, err := src.Open(ctx, name)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	return data, true, err
 }
 
 func runGit(t *testing.T, dir string, args ...string) string {
@@ -112,7 +126,7 @@ func TestSourceSubdirOverlay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, ok, err := src.File(t.Context(), "hidden_check.sh")
+	data, ok, err := srcFile(t.Context(), src, "hidden_check.sh")
 	if err != nil || !ok || string(data) != "echo v1\n" {
 		t.Fatalf("File: %q %v %v", data, ok, err)
 	}
@@ -160,7 +174,7 @@ func TestOfflineWarmFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal("warm cache must survive a dead remote:", err)
 	}
-	if _, ok, _ := src.File(t.Context(), "hidden_check.sh"); !ok {
+	if _, ok, _ := srcFile(t.Context(), src, "hidden_check.sh"); !ok {
 		t.Fatal("fallback source lost the content")
 	}
 }
@@ -208,7 +222,7 @@ func TestForcePushPicksNewCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if data, _, _ := src.File(t.Context(), "hidden_check.sh"); string(data) != "echo v1\n" {
+	if data, _, _ := srcFile(t.Context(), src, "hidden_check.sh"); string(data) != "echo v1\n" {
 		t.Fatalf("v1 content: %q", data)
 	}
 
@@ -223,7 +237,7 @@ func TestForcePushPicksNewCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if data, _, _ := src.File(t.Context(), "hidden_check.sh"); string(data) != "echo v2\n" {
+	if data, _, _ := srcFile(t.Context(), src, "hidden_check.sh"); string(data) != "echo v2\n" {
 		t.Fatalf("after force push: %q", data)
 	}
 }
@@ -244,7 +258,7 @@ func TestConcurrentSameURL(t *testing.T) {
 				errs[i] = err
 				return
 			}
-			data, _, err := src.File(context.Background(), "hidden_check.sh")
+			data, _, err := srcFile(context.Background(), src, "hidden_check.sh")
 			contents[i], errs[i] = string(data), err
 		})
 	}

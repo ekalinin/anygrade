@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ekalinin/anygrade/internal/config"
@@ -78,6 +79,38 @@ func TestRunAllNonGateFailureContinues(t *testing.T) {
 	}
 	if !outcomes[1].Passed || outcomes[1].Skipped {
 		t.Errorf("advanced must still run after a non-gate failure: %+v", outcomes[1])
+	}
+}
+
+// TestLogFileNameInjective: check names that sanitize to the same stem must
+// still get their own log file, otherwise two checks silently overwrite each
+// other's output (and the web layer downloads the wrong one).
+func TestLogFileNameInjective(t *testing.T) {
+	names := []string{
+		"a/b", "a b", "a_b", "a\tb", "A_B", "a-b", "a~b", "..", ".hidden",
+		"", "build", "go test ./...", strings.Repeat("x", 200), strings.Repeat("x", 201),
+	}
+	seen := map[string]string{}
+	for _, n := range names {
+		got := logFileName(n)
+		// macOS is case-insensitive by default: two names that differ only in
+		// case would still share one file there.
+		key := strings.ToLower(got)
+		if prev, dup := seen[key]; dup {
+			t.Errorf("%q and %q both map to %q", prev, n, got)
+			continue
+		}
+		seen[key] = n
+		if strings.ContainsAny(got, "/ \t") || len(got) > 255 {
+			t.Errorf("%q maps to an unusable file name %q", n, got)
+		}
+		if got != logFileName(n) {
+			t.Errorf("%q: mapping is not deterministic", n)
+		}
+	}
+	// A name that needs no escaping keeps its spelling: log files stay readable.
+	if got := logFileName("build"); got != "build.log" {
+		t.Errorf("safe name got mangled: %q", got)
 	}
 }
 

@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ekalinin/anygrade/internal/config"
@@ -49,19 +51,75 @@ func (r *DockerRunner) Run(ctx context.Context, job Job) ([]Outcome, error) {
 	return runAll(ctx, job, s)
 }
 
-// userArg resolves the container --user value. An explicit User wins.
-//
-// The default is the uid:gid of the anygrade process on every platform:
-// student code must not run as root (SPEC §14), and the workspace is seeded
-// with `docker cp`, which keeps the uid of the host files - so the container
-// user has to be the one that assembled the workspace. Nothing is bind-mounted
-// any more, so there is no platform fork here (the old macOS exception existed
-// only because colima's virtiofs remaps bind mounts to root:root).
+// nobodyUID/nobodyGID are the fallback container credentials. 65534 is
+// nobody:nogroup in every mainstream base image; the container never needs a
+// resolvable account, only a non-zero id.
+const nobodyUID, nobodyGID = 65534, 65534
+
+// userArg resolves the container --user value and warns once when the root
+// fallback kicks in - an operator has to be able to see it in the server log.
 func (r *DockerRunner) userArg() string {
-	if r.User != "" {
-		return r.User
+	u, fellBack := containerUser(r.User, os.Getuid(), os.Getgid())
+	if fellBack {
+		warnRootFallback(u)
 	}
-	return fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid())
+	return u
+}
+
+// containerUser picks the uid:gid the checks run as. An explicit User wins,
+// but never root.
+//
+// The default is the uid:gid of the anygrade process on every platform: the
+// workspace is seeded with `docker cp`, which keeps the uid of the host files,
+// so the container user has to be the one that assembled the workspace.
+// Nothing is bind-mounted any more, so there is no platform fork here (the old
+// macOS exception existed only because colima's virtiofs remaps bind mounts to
+// root:root).
+//
+// An anygrade running as root is the one case where that default is wrong:
+// SPEC §14 requires student code to run non-root, and `--user 0:0` is exactly
+// what it forbids. Falling back to a fixed unprivileged id is safer than
+// refusing to run - refusing would turn every submission of a root deployment
+// into a terminal error - and the seeded workspace is chowned to it (see
+// dockerSession.ensure), so the checks can still write.
+func containerUser(explicit string, uid, gid int) (user string, fellBack bool) {
+	fallback := fmt.Sprintf("%d:%d", nobodyUID, nobodyGID)
+	if explicit != "" {
+		if u, _, ok := parseUserArg(explicit); ok && u == 0 {
+			return fallback, true
+		}
+		return explicit, false
+	}
+	if uid == 0 || gid == 0 {
+		return fallback, true
+	}
+	return fmt.Sprintf("%d:%d", uid, gid), false
+}
+
+// parseUserArg splits a numeric "uid:gid" (or bare "uid") value; ok=false for
+// name-based values, which only the image can resolve.
+func parseUserArg(user string) (uid, gid int, ok bool) {
+	u, g, hasGID := strings.Cut(user, ":")
+	uid, err := strconv.Atoi(u)
+	if err != nil {
+		return 0, 0, false
+	}
+	gid = uid
+	if hasGID {
+		if gid, err = strconv.Atoi(g); err != nil {
+			return 0, 0, false
+		}
+	}
+	return uid, gid, true
+}
+
+var rootFallbackOnce sync.Once
+
+func warnRootFallback(user string) {
+	rootFallbackOnce.Do(func() {
+		slog.Warn("student containers must not run as root (SPEC §14): falling back to an unprivileged user",
+			"user", user)
+	})
 }
 
 // dockerSession owns the container of one submission. All checks are exec'd
@@ -152,6 +210,16 @@ func (s *dockerSession) ensure(ctx context.Context) error {
 		return infraErr("container_create", fmt.Errorf("docker run failed: %s", lastLine(out)))
 	}
 	s.name = name
+	// A root anygrade assembles a root-owned workspace, but the container runs
+	// as the unprivileged fallback user (see containerUser), so hand the files
+	// over first - `docker cp` keeps their uid.
+	if os.Getuid() == 0 {
+		if uid, gid, ok := parseUserArg(s.r.userArg()); ok {
+			if err := chownTree(s.job.WorkspaceDir, uid, gid); err != nil {
+				return infraErr("workspace", err)
+			}
+		}
+	}
 	// `docker cp` keeps the uid of the host files, which is why the container
 	// runs as the process that assembled the workspace (see userArg).
 	// "<dir>/." copies the contents of the workspace, not the directory itself.
@@ -200,7 +268,7 @@ func (s *dockerSession) alive() bool {
 }
 
 func (s *dockerSession) execCheck(ctx context.Context, job Job, c config.Check, logPath string) (Outcome, error) {
-	log, err := openCheckLog(logPath, s.r.Mirror, job.Spec.LogExcerpt)
+	log, err := openCheckLog(logPath, c.Name, s.r.Mirror, job.Spec.LogExcerpt, job.Spec.LogMax)
 	if err != nil {
 		return Outcome{}, infraErr("workspace", err)
 	}

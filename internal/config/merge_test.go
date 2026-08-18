@@ -21,6 +21,40 @@ func TestLogExcerptInheritance(t *testing.T) {
 	}
 }
 
+// TestUntrustedOutputLimitsInheritance pins the bounds on everything untrusted
+// code produces: the full check log on disk and the decompressed student
+// overlay. Unset means the built-in default, and both layers can override.
+func TestUntrustedOutputLimitsInheritance(t *testing.T) {
+	r := Resolve(&Course{}, &Task{})
+	if r.Runner.LogMax != DefaultLogMax {
+		t.Errorf("builtin log_max: got %d, want %d", r.Runner.LogMax, DefaultLogMax)
+	}
+	if r.Workspace.MaxFileSize != DefaultOverlayFile || r.Workspace.MaxTotalSize != DefaultOverlayTotal {
+		t.Errorf("builtin overlay bounds: %+v", r.Workspace)
+	}
+
+	course := &Course{Defaults: Defaults{
+		Runner:    RunnerSpec{LogMax: new(ByteSize(1 << 20))},
+		Workspace: WorkspaceSpec{MaxFileSize: new(ByteSize(1 << 20)), MaxTotalSize: new(ByteSize(2 << 20))},
+	}}
+	r = Resolve(course, &Task{})
+	if r.Runner.LogMax != 1<<20 || r.Workspace.MaxFileSize != 1<<20 || r.Workspace.MaxTotalSize != 2<<20 {
+		t.Errorf("course defaults: runner=%+v workspace=%+v", r.Runner, r.Workspace)
+	}
+
+	task := &Task{
+		Runner:    RunnerSpec{LogMax: new(ByteSize(4 << 20))},
+		Workspace: WorkspaceSpec{MaxFileSize: new(ByteSize(3 << 20))},
+	}
+	r = Resolve(course, task)
+	if r.Runner.LogMax != 4<<20 || r.Workspace.MaxFileSize != 3<<20 {
+		t.Errorf("task override: runner=%+v workspace=%+v", r.Runner, r.Workspace)
+	}
+	if r.Workspace.MaxTotalSize != 2<<20 {
+		t.Errorf("unset task field must inherit the course default: %+v", r.Workspace)
+	}
+}
+
 // TestRunnerInheritsUnsetFields verifies deep, field-by-field merge: a task that
 // overrides only runner.image inherits type/timeout/memory/cpus/network from the
 // course defaults (SPEC §4.2).

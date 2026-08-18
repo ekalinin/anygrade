@@ -12,6 +12,15 @@ import (
 // here rather than in runner because runner imports config, not the reverse.
 const DefaultLogExcerpt = 64 << 10
 
+// DefaultLogMax bounds the full on-disk log of one check, DefaultOverlayFile
+// and DefaultOverlayTotal the decompressed size of the student overlay. All
+// three exist because the data they bound is produced by untrusted code.
+const (
+	DefaultLogMax       = 10 << 20
+	DefaultOverlayFile  = 10 << 20
+	DefaultOverlayTotal = 64 << 20
+)
+
 func builtinRunner() ResolvedRunner {
 	return ResolvedRunner{
 		Type:       "docker",
@@ -21,6 +30,7 @@ func builtinRunner() ResolvedRunner {
 		CPUs:       1,
 		Network:    "none",
 		LogExcerpt: DefaultLogExcerpt,
+		LogMax:     DefaultLogMax,
 	}
 }
 
@@ -66,7 +76,8 @@ func Resolve(c *Course, t *Task) ResolvedTask {
 }
 
 // mergeWorkspace unions course-level and task-level include lists (course
-// first, order stable, paths cleaned, duplicates removed).
+// first, order stable, paths cleaned, duplicates removed). The overlay size
+// bounds are overlaid field by field like every other spec.
 func mergeWorkspace(course, task WorkspaceSpec) ResolvedWorkspace {
 	seen := map[string]bool{}
 	var include []string
@@ -78,7 +89,20 @@ func mergeWorkspace(course, task WorkspaceSpec) ResolvedWorkspace {
 		seen[clean] = true
 		include = append(include, clean)
 	}
-	return ResolvedWorkspace{Include: include}
+	w := ResolvedWorkspace{
+		Include:      include,
+		MaxFileSize:  DefaultOverlayFile,
+		MaxTotalSize: DefaultOverlayTotal,
+	}
+	for _, over := range []WorkspaceSpec{course, task} {
+		if over.MaxFileSize != nil {
+			w.MaxFileSize = over.MaxFileSize.Bytes()
+		}
+		if over.MaxTotalSize != nil {
+			w.MaxTotalSize = over.MaxTotalSize.Bytes()
+		}
+	}
+	return w
 }
 
 // mergeRunner overlays the non-nil fields of over onto base.
@@ -103,6 +127,9 @@ func mergeRunner(base ResolvedRunner, over RunnerSpec) ResolvedRunner {
 	}
 	if over.LogExcerpt != nil {
 		base.LogExcerpt = over.LogExcerpt.Bytes()
+	}
+	if over.LogMax != nil {
+		base.LogMax = over.LogMax.Bytes()
 	}
 	return base
 }

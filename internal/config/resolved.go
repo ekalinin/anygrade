@@ -48,9 +48,12 @@ type ResolvedTask struct {
 }
 
 // ResolvedWorkspace is the merged set of extra paths exported into the check
-// workspace alongside the task directory.
+// workspace alongside the task directory, plus the size bounds of the
+// student-controlled overlay.
 type ResolvedWorkspace struct {
-	Include []string
+	Include      []string
+	MaxFileSize  int64
+	MaxTotalSize int64
 }
 
 // ResolvedRunner is a concrete runner configuration (all defaults applied).
@@ -62,6 +65,7 @@ type ResolvedRunner struct {
 	CPUs       float64
 	Network    string
 	LogExcerpt int64
+	LogMax     int64
 }
 
 // ResolvedLimits is a concrete attempt/cooldown configuration.

@@ -1,6 +1,7 @@
 package gitserver
 
 import (
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -139,6 +140,77 @@ func TestGitSourceFile(t *testing.T) {
 	// Broken commit must be an error, not a silent miss.
 	bad := GitSource{Dir: bare, Commit: strings.Repeat("0", 40)}
 	if _, ok, err := bad.File(t.Context(), "go.mod"); ok || err == nil {
+		t.Fatalf("bad commit: ok=%v err=%v", ok, err)
+	}
+}
+
+// TestGitSourceExportSkipsSymlink: a symlink restored into the workspace would
+// be followed by every later write - the solution-file overlay above all - so
+// the entry is dropped instead. The rest of the tree still exports: one stray
+// link must not take a whole course down (SPEC §6.1).
+func TestGitSourceExportSkipsSymlink(t *testing.T) {
+	requireGit(t)
+	work, bare, _ := newCourseFixture(t)
+	if err := os.Symlink("/etc/passwd", filepath.Join(work, "tasks", "01-intro", "secrets")); err != nil {
+		t.Fatal(err)
+	}
+	runSrc(t, work, "add", "-A")
+	runSrc(t, work, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "link")
+	runSrc(t, work, "push", "-q", bare, "main")
+	head := runSrc(t, work, "rev-parse", "HEAD")
+
+	dst := filepath.Join(t.TempDir(), "ws")
+	if err := (GitSource{Dir: bare, Commit: head}).Export(t.Context(), "tasks/01-intro", dst); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(dst, "secrets")); !os.IsNotExist(err) {
+		t.Errorf("the symlink was materialized anyway (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "main.go")); err != nil {
+		t.Errorf("the rest of the task must still be exported: %v", err)
+	}
+}
+
+// TestGitSourceOpen: the overlay streams solution blobs, so Open must keep
+// File's semantics (missing path and directory read as absent, a broken commit
+// is an error) and must survive a reader that stops early at its size limit.
+func TestGitSourceOpen(t *testing.T) {
+	requireGit(t)
+	_, bare, head := newCourseFixture(t)
+	gs := GitSource{Dir: bare, Commit: head}
+
+	rc, ok, err := gs.Open(t.Context(), "tasks/01-intro/main.go")
+	if err != nil || !ok {
+		t.Fatalf("Open: ok=%v err=%v", ok, err)
+	}
+	data, err := io.ReadAll(rc)
+	if err != nil || string(data) != "package main\n" {
+		t.Fatalf("read: %q %v", data, err)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatalf("close after a full read: %v", err)
+	}
+
+	// Stopping short (the caller hit its byte budget) must not hang or error.
+	rc, _, err = gs.Open(t.Context(), "tasks/01-intro/main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.CopyN(io.Discard, rc, 4); err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatalf("close after a partial read: %v", err)
+	}
+
+	if _, ok, err := gs.Open(t.Context(), "tasks/01-intro/ghost.go"); ok || err != nil {
+		t.Fatalf("missing file: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := gs.Open(t.Context(), "tasks/01-intro"); ok || err != nil {
+		t.Fatalf("dir as file: ok=%v err=%v", ok, err)
+	}
+	bad := GitSource{Dir: bare, Commit: strings.Repeat("0", 40)}
+	if _, ok, err := bad.Open(t.Context(), "go.mod"); ok || err == nil {
 		t.Fatalf("bad commit: ok=%v err=%v", ok, err)
 	}
 }
