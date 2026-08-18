@@ -142,15 +142,41 @@ func (h *HTTPHandler) serviceRPC(w http.ResponseWriter, r *http.Request, svc, di
 		body = gz
 	}
 
+	// The cap is ours to enforce so the rejection is ours to word (SPEC §13).
+	// Only a push is capped; a clone streams a pack of any size out.
+	out := io.Writer(w)
+	var guard *oversizeReader
+	var held *heldWriter
+	limit := h.Repos.MaxInputSize()
+	if svc == "git-receive-pack" {
+		guard = newOversizeReader(body, limit)
+		body = guard
+		held = &heldWriter{w: w}
+		out = held
+	}
+
 	w.Header().Set("Content-Type", "application/x-"+svc+"-result")
 	w.Header().Set("Cache-Control", "no-cache")
 
 	cmd := exec.CommandContext(r.Context(), "git", gitSub(svc), "--stateless-rpc", dir)
 	cmd.Env = env
 	cmd.Stdin = body
-	cmd.Stdout = w
+	cmd.Stdout = out
 	cmd.Stderr = io.Discard
 	_ = cmd.Run() // protocol errors are reported in-band to the git client
+
+	if guard != nil && guard.hit && held.held() {
+		// receive-pack died on the truncated stdin but the client is still
+		// uploading. Cutting the connection under it makes git retry the whole
+		// push instead of reading the answer, so the remainder is read and
+		// thrown away first - none of it is ever unpacked or stored.
+		_, _ = io.Copy(io.Discard, r.Body)
+		writeOversizeReport(w, limit)
+		return
+	}
+	if held != nil {
+		_ = held.flush()
+	}
 }
 
 // authenticate resolves the request identity, writing the 401/500 itself

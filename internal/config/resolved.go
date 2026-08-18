@@ -22,6 +22,8 @@ type ResolvedCourse struct {
 	Registration  Registration
 	Leaderboard   Leaderboard
 	ScoringPolicy string
+	// MaxPushSize caps one git push in bytes (SPEC §13); always > 0.
+	MaxPushSize int64
 	// Timezone is the location the UI renders timestamps in (SPEC §13);
 	// never nil - an unset or unloadable name resolves to UTC, and Validate
 	// reports the latter as an error.

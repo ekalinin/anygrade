@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -35,6 +36,11 @@ var recheckRe = regexp.MustCompile(`\[recheck ([A-Za-z0-9._-]+)\]`)
 // the socket (the hook client itself gives up after 30s).
 const handleTimeout = 20 * time.Second
 
+// maxRequestBytes bounds one hook request. The payload is a ref-update list
+// and a few env strings; anything larger is not a hook, and reading it
+// unbounded would let a single connection grow the server's heap at will.
+const maxRequestBytes = 1 << 20
+
 // Server is the unix-socket intake listener: the server counterpart of the
 // `anygrade hook` client. It owns diff→Admit→enqueue and teacher-push
 // validation; gitserver only ever sees the socket path.
@@ -45,6 +51,13 @@ type Server struct {
 	Course  *Holder
 	BaseURL string       // submission link prefix in push output; "" = no links
 	Log     *slog.Logger // server log for ref bookkeeping failures; nil = discard
+
+	// Safety re-applies the SPEC §14 serve gate to a course snapshot before it
+	// goes live, so a teacher push cannot turn on the unsandboxed runner on a
+	// publicly bound server. The gate depends on the bind addresses and the
+	// serve flags, which only the composition root knows, so it is injected
+	// rather than imported. nil = no gate (CLI paths, tests).
+	Safety func(*config.Resolved) error
 
 	mu        sync.Mutex             // guards pushLocks
 	pushLocks map[string]*sync.Mutex // per-student drain serialization
@@ -83,6 +96,15 @@ func (s *Server) ListenAndServe(ctx context.Context, socket string) error {
 	if err != nil {
 		return err
 	}
+	// net.Listen leaves the socket world-connectable (srwxr-xr-x), and the data
+	// dir around it is 0755: without this any local account could speak the
+	// hook protocol and forge a push on behalf of any student (SPEC §14). The
+	// mode is narrowed before the first Accept, and allowPeer covers the
+	// platforms that do not enforce socket permissions at all.
+	if err := os.Chmod(socket, 0o700); err != nil {
+		l.Close()
+		return err
+	}
 	done := make(chan struct{})
 	go func() {
 		select {
@@ -107,16 +129,45 @@ func (s *Server) ListenAndServe(ctx context.Context, socket string) error {
 
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
+	if !s.allowPeer(conn) {
+		return
+	}
 	_ = conn.SetDeadline(time.Now().Add(handleTimeout))
 	hctx, cancel := context.WithTimeout(ctx, handleTimeout)
 	defer cancel()
 
 	var req hookproto.Request
-	if err := json.NewDecoder(conn).Decode(&req); err != nil {
+	if err := json.NewDecoder(io.LimitReader(conn, maxRequestBytes)).Decode(&req); err != nil {
 		return
 	}
 	resp := s.dispatch(hctx, req)
 	_ = json.NewEncoder(conn).Encode(resp)
+}
+
+// allowPeer accepts a hook connection only from the uid the server itself runs
+// as. Every legitimate client is this binary re-executed by our own
+// receive-pack, so nothing else has business here: the request names the repo
+// to charge and carries the quarantine object dirs to read, and both are
+// trusted outright. Where peer credentials are not available the socket mode
+// is the only guard and the connection is let through.
+func (s *Server) allowPeer(conn net.Conn) bool {
+	uc, ok := conn.(*net.UnixConn)
+	if !ok {
+		return true // in-process test transports
+	}
+	uid, supported, err := peerUID(uc)
+	if err != nil {
+		s.log().Error("hook peer credentials unavailable; connection refused", "err", err)
+		return false
+	}
+	if !supported {
+		return true
+	}
+	if uid != os.Getuid() {
+		s.log().Error("hook connection from another user refused", "uid", uid)
+		return false
+	}
+	return true
 }
 
 func (s *Server) dispatch(ctx context.Context, req hookproto.Request) hookproto.Response {
@@ -168,7 +219,7 @@ func (s *Server) validateCourse(ctx context.Context, req hookproto.Request) hook
 		if u.New == zeroSHA {
 			return hookproto.Response{Lines: []string{"anygrade: refusing to delete the default branch"}, ExitCode: 1}
 		}
-		_, diags, err := LoadCourseAt(ctx, courseDir, u.New, quarantineEnv(req))
+		course, diags, err := LoadCourseAt(ctx, courseDir, u.New, quarantineEnv(req))
 		if err != nil {
 			return hookproto.Response{Lines: []string{"anygrade: validation failed: " + err.Error()}, ExitCode: 1}
 		}
@@ -181,8 +232,26 @@ func (s *Server) validateCourse(ctx context.Context, req hookproto.Request) hook
 			}
 			return hookproto.Response{Lines: lines, ExitCode: 1}
 		}
+		// The schema can be flawless and the metadata still be unservable by
+		// this process: §14 is a property of how the server was started, so it
+		// has to be re-checked against every snapshot, not only the one loaded
+		// at startup.
+		if err := s.safe(course); err != nil {
+			return hookproto.Response{
+				Lines:    []string{"anygrade: course metadata rejected: " + err.Error()},
+				ExitCode: 1,
+			}
+		}
 	}
 	return hookproto.Response{}
+}
+
+// safe applies the injected SPEC §14 serve gate to a loaded snapshot.
+func (s *Server) safe(course *Course) error {
+	if s.Safety == nil || course == nil {
+		return nil
+	}
+	return s.Safety(course.Resolved)
 }
 
 // courseUpdated reloads metadata after an accepted teacher push (validation
@@ -192,7 +261,21 @@ func (s *Server) courseUpdated(ctx context.Context) hookproto.Response {
 	if err != nil || config.HasErrors(diags) {
 		return hookproto.Response{Lines: []string{"anygrade: metadata reload failed; previous version stays active"}}
 	}
+	// Second gate, deliberately not a duplicate of the pre-receive one: a push
+	// that bypassed the hook (direct write to the mirror, a repo whose hook is
+	// gone) reaches this point with nothing checked, and refusing the swap is
+	// the last place where the running server can keep the metadata it was
+	// vetted for.
+	if err := s.safe(course); err != nil {
+		s.log().Error("course metadata refused by the serve gate; previous version stays active", "err", err)
+		return hookproto.Response{Lines: []string{
+			"anygrade: course metadata rejected: " + err.Error() + "; previous version stays active",
+		}}
+	}
 	s.Course.Set(course)
+	if err := s.Repos.SetMaxInputSize(ctx, course.Resolved.Course.MaxPushSize); err != nil {
+		s.log().Error("max_push_size not applied to the course mirror", "err", err)
+	}
 	return hookproto.Response{Lines: []string{
 		fmt.Sprintf("anygrade: course metadata reloaded (%d tasks)", len(course.Resolved.Tasks)),
 	}}
@@ -233,8 +316,12 @@ func (s *Server) processPush(ctx context.Context, req hookproto.Request) hookpro
 			if _, err := s.DB.RecordPush(ctx, store.NewPush{UserID: user.ID, Ref: u.Ref,
 				OldSHA: u.Old, NewSHA: u.New, ReceivedAt: now}); err != nil {
 				s.log().Error("push not recorded", "repo", dir, "commit", u.New, "err", err)
+				// The next push's recovery scan folds this range's *content*
+				// back in, but not its [recheck] markers: the marker scan is
+				// deliberately confined to a push's own range (see gradePush),
+				// so an unrecorded marker is the one thing that is really lost.
 				lines = append(lines, "anygrade: push not recorded: "+err.Error()+
-					"; the next push re-detects these changes")
+					"; the next push re-detects these changes, but a [recheck] marker in this one must be repeated")
 				continue
 			}
 			recorded = true
@@ -350,7 +437,11 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir string,
 	if err != nil && from != emptyTree {
 		// The replaced tip is gone (gc after a force push): self-heal by
 		// re-detecting everything instead of failing. The empty tree already
-		// covers whatever the recovery scan below would have added.
+		// covers whatever the recovery scan below would have added. Logged
+		// because the fallback re-detects tasks the student never touched, and
+		// the teacher otherwise has no way to tell that apart from real work.
+		s.log().Warn("diff base unreadable; falling back to the empty tree, every task is re-detected",
+			"push", p.ID, "repo", dir, "from", from, "err", err)
 		from = emptyTree
 		paths, err = changedPaths(ctx, dir, emptyTree, p.NewSHA)
 	}

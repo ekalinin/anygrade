@@ -12,7 +12,17 @@ type Course struct {
 	Registration Registration `yaml:"registration"`
 	Leaderboard  Leaderboard  `yaml:"leaderboard"`
 	Scoring      Scoring      `yaml:"scoring"`
+	Limits       CourseLimits `yaml:"limits"`
 	Defaults     Defaults     `yaml:"defaults"`
+}
+
+// CourseLimits are the instance-wide limits (SPEC §13). They sit next to
+// `defaults:` rather than inside it because they describe the git server, not
+// a task, and therefore never take part in the per-task defaults inheritance
+// that `defaults.limits` drives.
+type CourseLimits struct {
+	// MaxPushSize caps one git push in bytes; unset = DefaultMaxPushSize.
+	MaxPushSize *ByteSize `yaml:"max_push_size"`
 }
 
 // Registration configures how students get accounts (SPEC §8).

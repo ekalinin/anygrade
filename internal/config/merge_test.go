@@ -149,3 +149,21 @@ func TestCourseDefaultsOverrideBuiltin(t *testing.T) {
 		t.Errorf("type: got %q, want builtin docker", r.Runner.Type)
 	}
 }
+
+// TestMaxPushSizeResolution: `limits.max_push_size` is course-wide, so it is
+// resolved once next to the other course-level scalars and keeps the SPEC §13
+// default of 50 MB when unset or non-positive.
+func TestMaxPushSizeResolution(t *testing.T) {
+	if got := resolveCourse(&Course{}).MaxPushSize; got != DefaultMaxPushSize {
+		t.Errorf("unset: got %d, want %d", got, DefaultMaxPushSize)
+	}
+	c := &Course{Limits: CourseLimits{MaxPushSize: new(ByteSize(200 << 20))}}
+	if got := resolveCourse(c).MaxPushSize; got != 200<<20 {
+		t.Errorf("configured: got %d, want %d", got, 200<<20)
+	}
+	// Disabling the cap is not an option course.yaml gets to take.
+	zero := &Course{Limits: CourseLimits{MaxPushSize: new(ByteSize(0))}}
+	if got := resolveCourse(zero).MaxPushSize; got != DefaultMaxPushSize {
+		t.Errorf("zero: got %d, want the default %d", got, DefaultMaxPushSize)
+	}
+}

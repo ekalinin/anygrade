@@ -33,6 +33,11 @@ import (
 // returns is a retryable infra failure. Messages are already student-safe.
 var ErrConfig = errors.New("hidden tests configuration error")
 
+// errUnavailable is the single student-visible wording every hidden-tests
+// failure collapses to: nothing about the URL, the cache directory, or the
+// configured path may reach submissions.worker_note (SPEC §14).
+var errUnavailable = errors.New("hidden tests temporarily unavailable")
+
 // Cache resolves `hidden_tests: source: git` specs into runner.Source
 // overlays. Fetches to one URL are serialized and TTL-coalesced; different
 // URLs proceed in parallel. It never touches the DB and is safe for
@@ -87,9 +92,14 @@ func (c *Cache) Source(ctx context.Context, spec config.HiddenTests) (runner.Sou
 			return nil, fmt.Errorf("%w: configured path is missing in the hidden repo", ErrConfig)
 		}
 	}
-	return subdirSource{
-		inner: gitserver.GitSource{Dir: dir, Commit: sha, Env: c.Env},
-		sub:   sub,
+	// Wrapped: a failed export names the cache directory and echoes git's
+	// stderr, and that error is what ends up in worker_note (SPEC §14).
+	return scrubbed{
+		inner: subdirSource{
+			inner: gitserver.GitSource{Dir: dir, Commit: sha, Env: c.Env},
+			sub:   sub,
+		},
+		log: c.logger(),
 	}, nil
 }
 
@@ -110,10 +120,12 @@ func (c *Cache) resolve(ctx context.Context, dir string, spec config.HiddenTests
 		return e.sha, nil
 	}
 
+	// Unconditional: the cache holds the hidden tests themselves, and a cache
+	// created by an older install is 0755 until something narrows it.
+	if err := c.ensureCacheDir(dir); err != nil {
+		return "", c.infra("create hidden cache", spec, err, "")
+	}
 	if _, err := os.Stat(filepath.Join(dir, "HEAD")); err != nil {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return "", c.infra("create hidden cache", spec, err, "")
-		}
 		if _, stderr, err := c.git(ctx, dir, nil, "init", "--bare", "--quiet"); err != nil {
 			return "", c.infra("init hidden cache", spec, err, stderr)
 		}
@@ -154,7 +166,24 @@ func (c *Cache) resolve(ctx context.Context, dir string, spec config.HiddenTests
 func (c *Cache) infra(op string, spec config.HiddenTests, err error, stderr string) error {
 	c.logger().Error("hidden tests: "+op,
 		"url", spec.URL, "ref", spec.Ref, "err", err, "stderr", stderr)
-	return errors.New("hidden tests temporarily unavailable")
+	return errUnavailable
+}
+
+// ensureCacheDir creates the per-URL mirror directory and narrows it, and the
+// cache root above it, to owner-only. Hidden tests must not be readable by
+// other accounts on the host any more than the students' repos are; what git
+// then creates inside the mirror keeps git's own modes, which the 0700 root
+// makes unreachable anyway.
+func (c *Cache) ensureCacheDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	for _, p := range []string{c.Dir, dir} {
+		if err := os.Chmod(p, 0o700); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *Cache) markFresh(key, sha string) {

@@ -2,12 +2,14 @@ package intake
 
 import (
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/ekalinin/anygrade/internal/gitserver"
+	"github.com/ekalinin/anygrade/internal/hidden"
 	"github.com/ekalinin/anygrade/internal/queue"
 	"github.com/ekalinin/anygrade/internal/store"
 )
@@ -18,6 +20,7 @@ func newPrep(t *testing.T, s *Server) *Prep {
 	return &Prep{
 		Repos: s.Repos, Users: s.DB, Course: s.Course,
 		DataDir: s.Repos.DataDir,
+		Log:     slog.New(slog.DiscardHandler),
 	}
 }
 
@@ -150,5 +153,60 @@ func TestPrepareUsesOneCourseSnapshot(t *testing.T) {
 	}
 	if want := s.Course.Get().Head; src.Commit != want {
 		t.Errorf("authoritative commit = %s, want the snapshot head %s", src.Commit, want)
+	}
+}
+
+// TestPrepareLocalHiddenTransientErrorIsRetryable: an unreadable hidden path is
+// not a wrong one. Terminally failing every in-flight submission over a mount
+// that blinked leaves the teacher re-running them by hand (SPEC §13).
+func TestPrepareLocalHiddenTransientErrorIsRetryable(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	s, _, courseSrc, user := newIntakeFixture(t)
+	parent := t.TempDir()
+	path := filepath.Join(parent, "hidden")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	setTaskHidden(t, s, courseSrc, "hidden_tests:\n  source: local\n  path: "+path+"\n")
+	if err := os.Chmod(parent, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+
+	head := git(t, s.Repos.StudentDir("alice"), "rev-parse", "HEAD")
+	_, err := newPrep(t, s).Prepare(t.Context(), store.Submission{
+		ID: 1, UserID: user.ID, TaskID: "t1", CommitSHA: head,
+	})
+	if err == nil {
+		t.Fatal("an unreadable hidden-tests path must still fail the submission")
+	}
+	if errors.Is(err, queue.ErrTerminal) {
+		t.Errorf("an unreadable path must stay retryable, got terminal: %v", err)
+	}
+	if strings.Contains(err.Error(), path) {
+		t.Errorf("error text leaks the path: %s", err)
+	}
+}
+
+// TestPrepareLocalHiddenOutsideAllowedRoots: with the operator's allowlist set,
+// a course.yaml pointing anywhere else reads nothing - and says nothing about
+// where it pointed.
+func TestPrepareLocalHiddenOutsideAllowedRoots(t *testing.T) {
+	s, _, courseSrc, user := newIntakeFixture(t)
+	outside := t.TempDir()
+	setTaskHidden(t, s, courseSrc, "hidden_tests:\n  source: local\n  path: "+outside+"\n")
+	t.Setenv(hidden.LocalRootsEnv, t.TempDir())
+
+	head := git(t, s.Repos.StudentDir("alice"), "rev-parse", "HEAD")
+	_, err := newPrep(t, s).Prepare(t.Context(), store.Submission{
+		ID: 1, UserID: user.ID, TaskID: "t1", CommitSHA: head,
+	})
+	if !errors.Is(err, queue.ErrTerminal) {
+		t.Fatalf("a path outside the allowlist must be terminal, got %v", err)
+	}
+	if got := err.Error(); got != "hidden tests unavailable for this task" {
+		t.Errorf("message %q leaks detail or differs from the git source's", got)
 	}
 }
