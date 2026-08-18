@@ -62,7 +62,10 @@ func TestDockerUserArg(t *testing.T) {
 		{name: "explicit bare root is refused", explicit: "0", uid: 501, gid: 20, want: nobody, fellBack: true},
 		{name: "process uid by default", uid: 501, gid: 20, want: "501:20"},
 		{name: "root process falls back", uid: 0, gid: 0, want: nobody, fellBack: true},
-		{name: "root group falls back", uid: 501, gid: 0, want: nobody, fellBack: true},
+		// Only the root half is replaced: the process still owns the workspace
+		// it assembled, and without root it cannot chown that to another uid.
+		{name: "root group falls back", uid: 501, gid: 0, want: fmt.Sprintf("501:%d", nobodyGID), fellBack: true},
+		{name: "root uid keeps a usable group", uid: 0, gid: 20, want: fmt.Sprintf("%d:20", nobodyUID), fellBack: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

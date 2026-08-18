@@ -1,6 +1,7 @@
 package gitserver
 
 import (
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -340,5 +341,31 @@ func TestTamperNotesMissingSolutionFile(t *testing.T) {
 	}
 	if !slices.Equal(notes, want) {
 		t.Errorf("notes = %v, want %v", notes, want)
+	}
+}
+
+// TestGitSourceFileLimit: the teacher code view is the last path that buffers a
+// blob whole, and max_push_size bounds only the compressed pack - so a
+// well-compressing blob gets past the push and expands here. An oversize file
+// must be refused as oversize, not as missing: the file is there, and a 404
+// would send the teacher looking for a bug in the listing.
+func TestGitSourceFileLimit(t *testing.T) {
+	requireGit(t)
+	_, bare, head := newCourseFixture(t)
+	gs := GitSource{Dir: bare, Commit: head}
+	const path = "tasks/01-intro/main.go"
+
+	data, ok, err := gs.file(t.Context(), path, 4)
+	if !errors.Is(err, ErrBlobTooLarge) || !ok || data != nil {
+		t.Fatalf("over the limit: data=%q ok=%v err=%v, want ok with ErrBlobTooLarge", data, ok, err)
+	}
+	// The same read under a limit that fits is untouched.
+	data, ok, err = gs.file(t.Context(), path, 1<<20)
+	if err != nil || !ok || string(data) != "package main\n" {
+		t.Fatalf("under the limit: data=%q ok=%v err=%v", data, ok, err)
+	}
+	// A missing path still reads as absent rather than as oversize.
+	if _, ok, err := gs.file(t.Context(), "tasks/01-intro/nope.go", 4); ok || err != nil {
+		t.Fatalf("missing path: ok=%v err=%v", ok, err)
 	}
 }

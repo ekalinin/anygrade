@@ -171,3 +171,48 @@ func TestNilLimiterNeverBlocks(t *testing.T) {
 	rv.Success()
 	rv.Release()
 }
+
+// TestClientAddr pins both halves of the --behind-proxy decision: without the
+// opt-in a forged header must not name the bucket, with it every forwarded
+// client must get its own instead of sharing the proxy's.
+func TestClientAddr(t *testing.T) {
+	tests := []struct {
+		name       string
+		remoteAddr string
+		forwarded  string
+		trust      bool
+		want       string
+	}{
+		{"no proxy", "203.0.113.7:5555", "", false, "203.0.113.7"},
+		{"forged header ignored", "203.0.113.7:5555", "1.2.3.4", false, "203.0.113.7"},
+		{"trusted proxy", "10.0.0.1:443", "198.51.100.9", true, "198.51.100.9"},
+		// Only the rightmost entry was appended by our own proxy; the rest is
+		// whatever the client sent.
+		{"client-supplied prefix", "10.0.0.1:443", "1.2.3.4, 198.51.100.9", true, "198.51.100.9"},
+		{"empty header falls back", "10.0.0.1:443", "", true, "10.0.0.1"},
+		{"blank header falls back", "10.0.0.1:443", "   ", true, "10.0.0.1"},
+		{"addr without port", "203.0.113.7", "", false, "203.0.113.7"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ClientAddr(tt.remoteAddr, tt.forwarded, tt.trust); got != tt.want {
+				t.Errorf("ClientAddr(%q, %q, %v) = %q, want %q",
+					tt.remoteAddr, tt.forwarded, tt.trust, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestClientAddrSeparatesForwardedBudgets is the regression the per-IP budget
+// created: behind a proxy every request arrives from one address, so without
+// the header one student's failed logins would exhaust the budget for all.
+func TestClientAddrSeparatesForwardedBudgets(t *testing.T) {
+	l := New(3, time.Minute)
+	for range 20 {
+		l.Fail(AuthKey(ClientAddr("10.0.0.1:443", "198.51.100.9", true), "alice"))
+	}
+	other := AuthKey(ClientAddr("10.0.0.1:443", "198.51.100.10", true), "bob")
+	if l.Blocked(other) {
+		t.Fatal("a second client behind the same proxy shares alice's budget")
+	}
+}

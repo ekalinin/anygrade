@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -60,6 +61,17 @@ func HasErrors(diags []Diagnostic) bool {
 // running check and space in every submission row.
 const maxSaneLogExcerpt = 1 << 20
 
+// minSanePushSize is the point below which limits.max_push_size only earns a
+// warning: a cap under it rejects an ordinary first push, which carries the
+// whole course template, so the course would be unusable rather than guarded.
+const minSanePushSize = 1 << 20
+
+// hiddenLocalRootsEnv duplicates hidden.LocalRootsEnv by name only: config is
+// imported by the runner, which the hidden package imports in turn, so the
+// constant cannot be shared without a cycle. It is used for a warning, never
+// for enforcement - that lives on the server, where the variable is set.
+const hiddenLocalRootsEnv = "ANYGRADE_HIDDEN_LOCAL_ROOTS"
+
 var (
 	validRunnerTypes  = map[string]bool{"docker": true, "local": true}
 	validNetworks     = map[string]bool{"none": true, "bridge": true, "host": true}
@@ -101,6 +113,17 @@ func Validate(r *Resolved) []Diagnostic {
 	}
 	if len(r.Tasks) == 0 {
 		add(SevError, courseFile, "tasks_dir", "no task.yaml found under %q", c.TasksDir)
+	}
+	// Checked on the raw value: resolution falls back to the default for
+	// anything non-positive, so the teacher would otherwise never learn that
+	// what they wrote was ignored.
+	if mp := r.rawCourse.Limits.MaxPushSize; mp != nil {
+		switch b := mp.Bytes(); {
+		case b <= 0:
+			add(SevError, courseFile, "limits.max_push_size", "must be > 0; omit the key for the %d MB default", DefaultMaxPushSize>>20)
+		case b < minSanePushSize:
+			add(SevWarning, courseFile, "limits.max_push_size", "%d bytes rejects an ordinary push, which carries the whole course template", b)
+		}
 	}
 
 	seenIDs := map[string]string{} // id -> first file that used it
@@ -146,6 +169,13 @@ func validateTask(t *ResolvedTask, add func(Severity, string, string, string, ..
 		// in the DB row; the full log is on disk either way.
 		add(SevWarning, f, "runner.log_excerpt", "%d bytes is kept in memory per check and stored in the database", t.Runner.LogExcerpt)
 	}
+	if t.Runner.LogMax <= 0 {
+		add(SevError, f, "runner.log_max", "must be > 0")
+	} else if t.Runner.LogMax < t.Runner.LogExcerpt {
+		// The excerpt is taken from the file the cap truncates, so an excerpt
+		// larger than the cap is a size the UI can never show.
+		add(SevWarning, f, "runner.log_max", "the on-disk log is capped below runner.log_excerpt (%d < %d)", t.Runner.LogMax, t.Runner.LogExcerpt)
+	}
 	// Memory/cpu limits are docker-only (SPEC §14); warn when a local-runner
 	// task sets them explicitly so they don't look enforced.
 	if t.Runner.Type == "local" && t.raw != nil {
@@ -180,8 +210,15 @@ func validateTask(t *ResolvedTask, add func(Severity, string, string, string, ..
 			add(SevError, f, field, "%q must not escape the task directory", sf)
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(t.Dir, clean)); err != nil {
+		// Lstat, not Stat: the workspace is materialized as a plain tree, so a
+		// symlink is skipped there and the file would simply be absent at
+		// grading time. Following the link here would report it as present.
+		st, err := os.Lstat(filepath.Join(t.Dir, clean))
+		switch {
+		case err != nil:
 			add(SevError, f, field, "listed file %q does not exist in the task directory", sf)
+		case st.Mode()&fs.ModeSymlink != 0:
+			add(SevError, f, field, "%q is a symlink; the workspace is a plain tree, so it would be missing when the checks run", sf)
 		}
 	}
 
@@ -242,8 +279,14 @@ func validateWorkspace(t *ResolvedTask, add func(Severity, string, string, strin
 			add(SevError, f, field, "%q must not escape the course repo", inc)
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(root, clean)); err != nil {
+		st, err := os.Lstat(filepath.Join(root, clean))
+		if err != nil {
 			add(SevError, f, field, "listed path %q does not exist in the course repo", inc)
+			continue
+		}
+		// See solution_files: a symlink is not exported into the workspace.
+		if st.Mode()&fs.ModeSymlink != 0 {
+			add(SevError, f, field, "%q is a symlink; the workspace is a plain tree, so it would be missing when the checks run", inc)
 			continue
 		}
 		if t.file != "" && taskDirRel != "." {
@@ -251,6 +294,20 @@ func validateWorkspace(t *ResolvedTask, add func(Severity, string, string, strin
 				add(SevWarning, f, field, "%q is already exported automatically", inc)
 			}
 		}
+	}
+
+	if t.Workspace.MaxFileSize <= 0 {
+		add(SevError, f, "workspace.max_file_size", "must be > 0")
+	}
+	if t.Workspace.MaxTotalSize <= 0 {
+		add(SevError, f, "workspace.max_total_size", "must be > 0")
+	}
+	if t.Workspace.MaxFileSize > 0 && t.Workspace.MaxTotalSize > 0 &&
+		t.Workspace.MaxTotalSize < t.Workspace.MaxFileSize {
+		// The total is checked as the overlay is written, so a total below the
+		// per-file cap means the per-file one can never be reached.
+		add(SevError, f, "workspace.max_total_size", "must be >= workspace.max_file_size (%d < %d)",
+			t.Workspace.MaxTotalSize, t.Workspace.MaxFileSize)
 	}
 }
 
@@ -347,8 +404,39 @@ func validateHidden(t *ResolvedTask, add func(Severity, string, string, string, 
 			} else if !st.IsDir() {
 				add(SevWarning, f, "hidden_tests.path", "%q is not a directory", h.Path)
 			}
+			// Only when the variable is set here: validate usually runs on the
+			// course author's machine, where its absence says nothing about the
+			// server. A warning either way - enforcement is the server's.
+			if roots := os.Getenv(hiddenLocalRootsEnv); strings.TrimSpace(roots) != "" && !pathUnderRoots(h.Path, roots) {
+				add(SevWarning, f, "hidden_tests.path", "%q is outside %s; a server with this list will refuse to read it", h.Path, hiddenLocalRootsEnv)
+			}
 		}
 	}
+}
+
+// pathUnderRoots mirrors the server's containment test closely enough to warn
+// about a path it would refuse. Relative roots are ignored there, so they are
+// ignored here too; symlinks are not resolved, because the link this machine
+// sees is not the one the server has.
+func pathUnderRoots(path, roots string) bool {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return true // nothing useful to say about a path we cannot resolve
+	}
+	for root := range strings.SplitSeq(roots, ":") {
+		root = strings.TrimSpace(root)
+		if root == "" || !filepath.IsAbs(root) {
+			continue
+		}
+		rel, err := filepath.Rel(filepath.Clean(root), abs)
+		if err != nil {
+			continue
+		}
+		if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // urlHasCredentials reports whether a hidden-tests URL carries userinfo that

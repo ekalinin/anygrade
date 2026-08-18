@@ -61,7 +61,7 @@ func TestLocalRootsEscapeAttempts(t *testing.T) {
 	}
 
 	for _, path := range []string{link, filepath.Join(allowed, "..")} {
-		if err := checkLocalRoots(path, allowed); err == nil {
+		if err := checkLocalRoots(path, allowed, discardLog()); err == nil {
 			t.Errorf("checkLocalRoots(%q, %q) = nil, want a rejection", path, allowed)
 		}
 	}
@@ -191,4 +191,41 @@ func TestSourcesAreScrubbed(t *testing.T) {
 			t.Errorf("%s source is %T, want scrubbed", name, src)
 		}
 	}
+}
+
+// discardLog is a logger whose output no test needs to read.
+func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// TestLocalRootsIgnoresRelativeRoots: a relative entry must not be resolved
+// against the working directory, or the allowlist would mean something
+// different depending on how the service was started.
+func TestLocalRootsIgnoresRelativeRoots(t *testing.T) {
+	allowed := t.TempDir()
+	inside := filepath.Join(allowed, "tests")
+	if err := os.MkdirAll(inside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// A relative root is dropped, so a path it would otherwise have covered
+	// stays rejected.
+	rel, err := filepath.Rel(mustGetwd(t), inside)
+	if err != nil {
+		t.Skip("no relative path from the working directory:", err)
+	}
+	if err := checkLocalRoots(inside, rel, discardLog()); err == nil {
+		t.Errorf("checkLocalRoots accepted a path via the relative root %q", rel)
+	}
+	// Dropping it leaves the absolute entries of the same list working.
+	if err := checkLocalRoots(inside, rel+":"+allowed, discardLog()); err != nil {
+		t.Errorf("a relative root disabled the absolute one: %v", err)
+	}
+}
+
+func mustGetwd(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wd
 }

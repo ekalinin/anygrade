@@ -54,6 +54,27 @@ func (s *DB) UserByFingerprint(ctx context.Context, fingerprint string) (User, b
 	return u, true, nil
 }
 
+// KeyHolder implements UserStore: the owner of a fingerprint whatever their
+// state. Authentication must keep using UserByFingerprint - a disabled account
+// stays disabled - but the squatting report has to name a holder even when the
+// squatter has been deactivated, which is precisely the case a teacher needs to
+// see: the victim is locked out of their own key and nothing says why.
+func (s *DB) KeyHolder(ctx context.Context, fingerprint string) (User, bool, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT users.id, users.login, users.display_name, users.role, users.state, users.created_at
+		FROM ssh_keys JOIN users ON users.id = ssh_keys.user_id
+		WHERE ssh_keys.fingerprint = ?`,
+		fingerprint)
+	u, err := scanUser(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, false, nil
+	}
+	if err != nil {
+		return User{}, false, err
+	}
+	return u, true, nil
+}
+
 // DeleteSSHKey implements UserStore; scoping to userID prevents cross-user
 // deletes from a forged form.
 //

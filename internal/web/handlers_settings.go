@@ -77,10 +77,12 @@ func (h *Handler) addOwnKey(w http.ResponseWriter, r *http.Request) {
 // follow-up work; until then the event names both accounts, so a teacher can
 // see who holds the key and remove it from that student's page.
 func (h *Handler) reportDuplicateKey(r *http.Request, actor store.User, fingerprint string) string {
-	holder, ok, err := h.DB.UserByFingerprint(r.Context(), fingerprint)
+	// KeyHolder, not UserByFingerprint: a squatter whose account was disabled
+	// since still holds the fingerprint, and that is the case a teacher most
+	// needs told - the victim is refused their own key with nothing on record.
+	holder, ok, err := h.DB.KeyHolder(r.Context(), fingerprint)
 	if err != nil || !ok || holder.ID == actor.ID {
-		// Own key re-added, or the holder is deactivated and no longer
-		// resolvable: nothing to report beyond the plain duplicate.
+		// Own key re-added: a typo, not an incident.
 		return "key_already_registered"
 	}
 	// Target is the holder: the teacher UI lists a student's keys with a delete

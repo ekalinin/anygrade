@@ -23,6 +23,33 @@ func AuthKey(remoteAddr, login string) string {
 	return host + "|" + login
 }
 
+// ClientAddr picks the address whose budget an attempt is charged to.
+//
+// trustForwarded is the operator's --behind-proxy opt-in, and both answers are
+// wrong without it. Ignoring the header when a proxy really is in front puts
+// every client in the proxy's single per-IP bucket, so a few failed logins lock
+// out the whole course. Reading it when no proxy is in front lets anyone who
+// can reach the port name their own bucket and take a fresh budget per request
+// - the exact bypass the per-IP budget exists to close.
+//
+// The rightmost entry is the one our own proxy appended, i.e. the address it
+// actually saw; everything to its left came from the client and is forgeable.
+func ClientAddr(remoteAddr, forwarded string, trustForwarded bool) string {
+	if trustForwarded {
+		if i := strings.LastIndex(forwarded, ","); i >= 0 {
+			forwarded = forwarded[i+1:]
+		}
+		if host := strings.TrimSpace(forwarded); host != "" {
+			return host
+		}
+	}
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return remoteAddr
+	}
+	return host
+}
+
 const (
 	// ipFactor sets the per-IP budget as a multiple of the per-key one. The
 	// login half of a key is attacker-controlled, so without a second budget

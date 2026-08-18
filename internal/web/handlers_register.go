@@ -218,7 +218,7 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	// and belongs on the same failure budget as the login form. The key's login
 	// half is a constant: the attacker picks the submitted login freely, and a
 	// budget per (IP, attacker-chosen login) would be no budget at all.
-	rv, allowed := h.Limit.Reserve(ratelimit.AuthKey(r.RemoteAddr, registerLimitKey))
+	rv, allowed := h.Limit.Reserve(ratelimit.AuthKey(h.clientAddr(r), registerLimitKey))
 	if !allowed {
 		w.WriteHeader(http.StatusTooManyRequests)
 		h.renderPage(w, r, "register", registerData{

@@ -69,6 +69,9 @@ type UserStore interface {
 	ListSSHKeys(ctx context.Context, userID int64) ([]SSHKey, error)
 	// UserByFingerprint resolves an SSH key fingerprint to its ACTIVE user.
 	UserByFingerprint(ctx context.Context, fingerprint string) (User, bool, error)
+	// KeyHolder resolves a fingerprint to its owner whatever their state. It
+	// is for reporting a squatted key, never for authentication.
+	KeyHolder(ctx context.Context, fingerprint string) (User, bool, error)
 	// DeleteSSHKey removes one key, scoped to its owner and pinned to the
 	// fingerprint the caller saw; ok=false when nothing matched.
 	DeleteSSHKey(ctx context.Context, userID, keyID int64, fingerprint string) (bool, error)

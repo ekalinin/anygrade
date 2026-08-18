@@ -112,3 +112,36 @@ func TestOwnDuplicateSSHKeyIsNotAudited(t *testing.T) {
 		}
 	}
 }
+
+// TestDuplicateSSHKeyReportsDisabledHolder is the case a state-filtered lookup
+// silently dropped: the squatter's account is disabled, so the victim is still
+// refused their own key while nothing at all reaches the teacher.
+func TestDuplicateSSHKeyReportsDisabledHolder(t *testing.T) {
+	h, _ := newTestSite(t)
+	key := authorizedKey(t)
+
+	squatter, squatterSession := newSession(t, h, "mallory", "student")
+	victim, victimSession := newSession(t, h, "alice", "student")
+
+	if rec := doForm(h, "/settings/keys", squatterSession, url.Values{"key": {key}}); rec.Code != http.StatusSeeOther {
+		t.Fatalf("first registration: status %d", rec.Code)
+	}
+	if err := h.DB.SetUserState(t.Context(), squatter.Login, "disabled"); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := doForm(h, "/settings/keys", victimSession, url.Values{"key": {key}})
+	if want := "/settings?flash=key_registered_elsewhere"; rec.Header().Get("Location") != want {
+		t.Fatalf("Location = %q, want %q", rec.Header().Get("Location"), want)
+	}
+	events, err := h.DB.ListEventsByTarget(t.Context(), squatter.Login, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range events {
+		if e.Kind == "key.duplicate" && strings.Contains(e.Detail, victim.Login) {
+			return
+		}
+	}
+	t.Fatalf("no key.duplicate event against the disabled holder %q: %+v", squatter.Login, events)
+}

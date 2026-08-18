@@ -91,7 +91,17 @@ func containerUser(explicit string, uid, gid int) (user string, fellBack bool) {
 		return explicit, false
 	}
 	if uid == 0 || gid == 0 {
-		return fallback, true
+		// Replace only the offending half. A process that is merely in group 0
+		// still owns the workspace it assembled, and swapping its uid out too
+		// would hand the container a directory it cannot read - with no way to
+		// fix that, since chowning to another uid needs root.
+		if uid == 0 {
+			uid = nobodyUID
+		}
+		if gid == 0 {
+			gid = nobodyGID
+		}
+		return fmt.Sprintf("%d:%d", uid, gid), true
 	}
 	return fmt.Sprintf("%d:%d", uid, gid), false
 }
@@ -210,14 +220,15 @@ func (s *dockerSession) ensure(ctx context.Context) error {
 		return infraErr("container_create", fmt.Errorf("docker run failed: %s", lastLine(out)))
 	}
 	s.name = name
-	// A root anygrade assembles a root-owned workspace, but the container runs
-	// as the unprivileged fallback user (see containerUser), so hand the files
-	// over first - `docker cp` keeps their uid.
-	if os.Getuid() == 0 {
-		if uid, gid, ok := parseUserArg(s.r.userArg()); ok {
-			if err := chownTree(s.job.WorkspaceDir, uid, gid); err != nil {
-				return infraErr("workspace", err)
-			}
+	// The workspace is assembled by the anygrade process and is owner-only, so
+	// the container must either run as its owner or be handed the files first -
+	// `docker cp` keeps their uid. Trigger on the uid actually differing rather
+	// than on "anygrade is root": the fallback has more than one cause, and the
+	// two conditions drifting apart is how a container ends up with a workspace
+	// it cannot read.
+	if uid, gid, ok := parseUserArg(s.r.userArg()); ok && uid != os.Getuid() {
+		if err := chownTree(s.job.WorkspaceDir, uid, gid); err != nil {
+			return infraErr("workspace", err)
 		}
 	}
 	// `docker cp` keeps the uid of the host files, which is why the container

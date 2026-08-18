@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"errors"
 	"mime"
 	"net/http"
 	"slices"
@@ -14,6 +15,11 @@ import (
 // codeMaxInline caps inlined file size; bigger files download instead.
 const codeMaxInline = 256 << 10
 
+// ErrFileTooLarge is what a file reader returns for a file that exists but is
+// too large to hold in memory. web never imports gitserver, so the composition
+// root maps the git-side error onto this one.
+var ErrFileTooLarge = errors.New("file too large to read")
+
 type codeData struct {
 	CourseName string
 	User       userView
@@ -25,6 +31,9 @@ type codeData struct {
 	Content string
 	Binary  bool
 	TooBig  bool
+	// Oversize is TooBig's harder cousin: the file is past what the server will
+	// read at all, so unlike TooBig there is no download to offer.
+	Oversize bool
 }
 
 // loadCodeView resolves {login}+{id} and lists the submitted commit's files
@@ -84,12 +93,18 @@ func (h *Handler) codeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	content, found, err := h.ReadStudentFile(r.Context(), data.Student, data.Sub.CommitSHA, path)
-	if err != nil || !found {
+	switch {
+	case errors.Is(err, ErrFileTooLarge):
+		// The file is there; saying "not found" would send the teacher looking
+		// for a bug in the listing instead of at the file's size.
+		data.Oversize = true
+	case err != nil || !found:
 		http.NotFound(w, r)
 		return
 	}
 	data.Path = path
 	switch {
+	case data.Oversize:
 	case len(content) > codeMaxInline:
 		data.TooBig = true
 	case bytes.IndexByte(content[:min(len(content), 8<<10)], 0) >= 0:
@@ -98,6 +113,10 @@ func (h *Handler) codeFile(w http.ResponseWriter, r *http.Request) {
 		data.Content = string(content)
 	}
 	if r.URL.Query().Get("download") == "1" {
+		if data.Oversize {
+			h.httpError(w, r, "code.too_large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		name := path[strings.LastIndexByte(path, '/')+1:]
 		w.Header().Set("Content-Type", "application/octet-stream")
 		// The name comes out of the student's commit, so it is arbitrary by

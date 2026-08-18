@@ -166,13 +166,13 @@ func Run(ctx context.Context, opts Options) error {
 		Recheck: ic,
 		Cancel:  q,
 		ReadCourseFile: func(ctx context.Context, commit, relPath string) ([]byte, bool, error) {
-			return gitserver.GitSource{Dir: repos.CourseDir(), Commit: commit}.File(ctx, relPath)
+			return webFile(gitserver.GitSource{Dir: repos.CourseDir(), Commit: commit}.File(ctx, relPath))
 		},
 		ListStudentFiles: func(ctx context.Context, login, commit, relDir string) ([]string, error) {
 			return gitserver.GitSource{Dir: repos.StudentDir(login), Commit: commit}.List(ctx, relDir)
 		},
 		ReadStudentFile: func(ctx context.Context, login, commit, relPath string) ([]byte, bool, error) {
-			return gitserver.GitSource{Dir: repos.StudentDir(login), Commit: commit}.File(ctx, relPath)
+			return webFile(gitserver.GitSource{Dir: repos.StudentDir(login), Commit: commit}.File(ctx, relPath))
 		},
 		// SPEC §7: the personal repo is created at activation. web only asks;
 		// reporting a failure is this side's job, because the caller must not
@@ -194,7 +194,10 @@ func Run(ctx context.Context, opts Options) error {
 		Alias:       gradebook.NewAliaser(aliasSecret),
 	})
 	mux := http.NewServeMux()
-	mux.Handle("/git/", &gitserver.HTTPHandler{Repos: repos, Auth: auth, Socket: socket, Local: localID, Limit: limit})
+	mux.Handle("/git/", &gitserver.HTTPHandler{
+		Repos: repos, Auth: auth, Socket: socket, Local: localID,
+		Limit: limit, BehindProxy: opts.BehindProxy,
+	})
 	mux.Handle("/", site)
 	httpSrv := newHTTPServer(opts.HTTPAddr, mux)
 	sshSrv := &gitserver.SSHServer{

@@ -444,3 +444,150 @@ func diagStrings(diags []Diagnostic) []string {
 	}
 	return out
 }
+
+// hasFieldWarning reports whether diags carries a SevWarning for the field.
+func hasFieldWarning(diags []Diagnostic, field string) bool {
+	for _, d := range diags {
+		if d.Severity == SevWarning && d.Field == field {
+			return true
+		}
+	}
+	return false
+}
+
+// taskWithDir builds a minimal valid task rooted at dir.
+func taskWithDir(dir string) *Task {
+	return &Task{
+		Dir: dir, ID: "w", Name: "W", Score: 100,
+		SolutionFiles: []string{"main.go"},
+		Runner:        RunnerSpec{Type: new("local")},
+		Checks:        []Check{{Name: "test", Weight: 100, Run: "true"}},
+	}
+}
+
+func mainGoDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestValidateSizeLimits covers the keys the hardening work added. None of
+// them is load-bearing for safety - the runner falls back to its built-in
+// default for anything non-positive - so this is about telling the teacher
+// that what they wrote was ignored.
+func TestValidateSizeLimits(t *testing.T) {
+	dir := mainGoDir(t)
+
+	task := taskWithDir(dir)
+	task.Runner.LogMax = new(ByteSize(0))
+	if !hasFieldError(validateOneTask(task), "runner.log_max") {
+		t.Error("runner.log_max = 0 is not an error")
+	}
+
+	// An excerpt bigger than the file it is taken from is a size the UI can
+	// never show.
+	task = taskWithDir(dir)
+	task.Runner.LogExcerpt = new(ByteSize(64 << 10))
+	task.Runner.LogMax = new(ByteSize(1 << 10))
+	if !hasFieldWarning(validateOneTask(task), "runner.log_max") {
+		t.Error("log_max below log_excerpt earns no warning")
+	}
+
+	task = taskWithDir(dir)
+	task.Workspace.MaxFileSize = new(ByteSize(0))
+	if !hasFieldError(validateOneTask(task), "workspace.max_file_size") {
+		t.Error("workspace.max_file_size = 0 is not an error")
+	}
+
+	task = taskWithDir(dir)
+	task.Workspace.MaxTotalSize = new(ByteSize(0))
+	if !hasFieldError(validateOneTask(task), "workspace.max_total_size") {
+		t.Error("workspace.max_total_size = 0 is not an error")
+	}
+
+	// A total below the per-file cap means no single file can ever be overlaid.
+	task = taskWithDir(dir)
+	task.Workspace.MaxFileSize = new(ByteSize(10 << 20))
+	task.Workspace.MaxTotalSize = new(ByteSize(1 << 20))
+	if !hasFieldError(validateOneTask(task), "workspace.max_total_size") {
+		t.Error("max_total_size below max_file_size is not an error")
+	}
+
+	// The inherited defaults must stay clean.
+	if diags := validateOneTask(taskWithDir(dir)); len(diags) > 0 {
+		t.Errorf("defaults are not clean: %v", diagStrings(diags))
+	}
+}
+
+// TestValidateMaxPushSize: resolution silently falls back to the default for a
+// non-positive value, so validation is the only place a teacher finds out.
+func TestValidateMaxPushSize(t *testing.T) {
+	dir := mainGoDir(t)
+	build := func(size *ByteSize) []Diagnostic {
+		rt := Resolve(&Course{}, taskWithDir(dir))
+		rt.file = "task.yaml"
+		return Validate(&Resolved{
+			Course:    ResolvedCourse{Name: "C", TasksDir: "tasks", Registration: Registration{Mode: "invite"}, ScoringPolicy: "best"},
+			rawCourse: &Course{Registration: Registration{Mode: "invite"}, Scoring: Scoring{Policy: "best"}, Limits: CourseLimits{MaxPushSize: size}},
+			Tasks:     []ResolvedTask{rt},
+		})
+	}
+	if !hasFieldError(build(new(ByteSize(0))), "limits.max_push_size") {
+		t.Error("max_push_size = 0 is not an error")
+	}
+	if !hasFieldWarning(build(new(ByteSize(4<<10))), "limits.max_push_size") {
+		t.Error("a cap far below a normal push earns no warning")
+	}
+	if diags := build(new(ByteSize(50 << 20))); len(diags) > 0 {
+		t.Errorf("a sane cap is not clean: %v", diagStrings(diags))
+	}
+}
+
+// TestValidateRefusesSymlinkedPaths: the workspace is materialized as a plain
+// tree, so a symlink is skipped there and the file is simply absent when the
+// checks run. os.Stat followed the link and reported it present.
+func TestValidateRefusesSymlinkedPaths(t *testing.T) {
+	dir := mainGoDir(t)
+	if err := os.Symlink(filepath.Join(dir, "main.go"), filepath.Join(dir, "link.go")); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+
+	task := taskWithDir(dir)
+	task.SolutionFiles = []string{"link.go"}
+	if !hasFieldError(validateOneTask(task), "solution_files[0]") {
+		t.Error("a symlinked solution file is accepted")
+	}
+
+	// workspace.include is resolved against the repo root, which for a task at
+	// the repo root is the task dir itself.
+	task = taskWithDir(dir)
+	task.Workspace.Include = []string{"link.go"}
+	if !hasFieldError(validateOneTask(task), "workspace.include[0]") {
+		t.Error("a symlinked workspace.include path is accepted")
+	}
+}
+
+// TestValidateHiddenLocalRoots warns only when the validating process has the
+// allowlist, since validate usually runs somewhere that is not the server.
+func TestValidateHiddenLocalRoots(t *testing.T) {
+	dir := mainGoDir(t)
+	hidden := t.TempDir()
+	task := taskWithDir(dir)
+	task.HiddenTests = &HiddenTests{Source: "local", Path: hidden}
+
+	t.Setenv(hiddenLocalRootsEnv, "")
+	if hasFieldWarning(validateOneTask(task), "hidden_tests.path") {
+		t.Error("warned about the allowlist with the variable unset")
+	}
+	t.Setenv(hiddenLocalRootsEnv, t.TempDir())
+	if !hasFieldWarning(validateOneTask(task), "hidden_tests.path") {
+		t.Error("a path outside every root earns no warning")
+	}
+	t.Setenv(hiddenLocalRootsEnv, hidden)
+	if hasFieldWarning(validateOneTask(task), "hidden_tests.path") {
+		t.Error("warned about a path inside an allowed root")
+	}
+}

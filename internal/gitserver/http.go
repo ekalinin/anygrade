@@ -56,6 +56,17 @@ type HTTPHandler struct {
 	// Limit, when non-nil, throttles failed basic-auth attempts (shared with
 	// the web login by the composition root).
 	Limit *ratelimit.Limiter
+	// BehindProxy mirrors the serve flag: only then is X-Forwarded-For read.
+	BehindProxy bool
+}
+
+// clientAddr is the address the failure budget is charged to. Behind a reverse
+// proxy every request arrives from the proxy, so without the header the whole
+// course shares one per-IP budget and a handful of failed logins locks everyone
+// out; the header is forgeable by anyone who reaches the port, so it is read
+// only when the operator has said a proxy is there.
+func (h *HTTPHandler) clientAddr(r *http.Request) string {
+	return ratelimit.ClientAddr(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.BehindProxy)
 }
 
 func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -187,27 +198,30 @@ func (h *HTTPHandler) authenticate(w http.ResponseWriter, r *http.Request) (Iden
 	}
 	login, token, ok := r.BasicAuth()
 	if ok {
-		key := ratelimit.AuthKey(r.RemoteAddr, login)
-		if h.Limit != nil && h.Limit.Blocked(key) {
+		// Reserve, not Blocked: the slot is held from here until the outcome is
+		// known, so a burst of simultaneous requests cannot all pass the budget
+		// check while the first failure is still being recorded. The web login
+		// shares this limiter, so both sides have to hold the budget the same
+		// way or the weaker one is the side an attacker uses.
+		key := ratelimit.AuthKey(h.clientAddr(r), login)
+		rv, allowed := h.Limit.Reserve(key)
+		if !allowed {
 			http.Error(w, "too many failed attempts, try again later", http.StatusTooManyRequests)
 			return Identity{}, false
 		}
+		defer rv.Release()
 		id, valid, err := h.Auth.ByToken(r.Context(), login, token)
 		if err != nil {
 			http.Error(w, "auth failed", http.StatusInternalServerError)
 			return Identity{}, false
 		}
 		if valid {
-			if h.Limit != nil {
-				h.Limit.Clear(key)
-			}
+			rv.Success()
 			return id, true
 		}
 		// Only real credential mismatches count; the credential-less probe
 		// that precedes every git basic-auth exchange does not.
-		if h.Limit != nil {
-			h.Limit.Fail(key)
-		}
+		rv.Fail()
 	}
 	w.Header().Set("WWW-Authenticate", `Basic realm="anygrade"`)
 	http.Error(w, "authentication required", http.StatusUnauthorized)

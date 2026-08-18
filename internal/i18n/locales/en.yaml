@@ -175,6 +175,7 @@ code.all_files: "← all files"
 code.binary: "Binary file."
 code.download: "Download"
 code.too_big: "File is larger than 256 KB."
+code.too_large: "File is too large for the server to read; clone the repository to see it."
 code.no_files: "No files under the task directory at this commit."
 
 # leaderboard.html
