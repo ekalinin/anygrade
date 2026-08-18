@@ -42,7 +42,7 @@ func LocalSource(path string, log *slog.Logger) (runner.Source, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	if err := checkLocalRoots(path, os.Getenv(LocalRootsEnv)); err != nil {
+	if err := checkLocalRoots(path, os.Getenv(LocalRootsEnv), log); err != nil {
 		log.Error("hidden tests: local path rejected", "path", path, "err", err)
 		return nil, fmt.Errorf("%w: configured path is not allowed", ErrConfig)
 	}
@@ -64,13 +64,22 @@ func LocalSource(path string, log *slog.Logger) (runner.Source, error) {
 
 // checkLocalRoots reports whether path resolves inside one of the colon-
 // separated roots. An empty list allows everything (see LocalRootsEnv).
-func checkLocalRoots(path, roots string) error {
+//
+// A relative root is ignored rather than resolved: resolving it against the
+// working directory would make the allowlist depend on how the service happened
+// to be started, which is the ambiguity an allowlist exists to remove. Dropping
+// it can only narrow the list, and a list that ends up empty denies everything.
+func checkLocalRoots(path, roots string, log *slog.Logger) error {
 	if strings.TrimSpace(roots) == "" {
 		return nil
 	}
 	abs := resolve(path)
 	for root := range strings.SplitSeq(roots, ":") {
 		if root = strings.TrimSpace(root); root == "" {
+			continue
+		}
+		if !filepath.IsAbs(root) {
+			log.Error("hidden tests: ignoring a relative root, "+LocalRootsEnv+" takes absolute paths", "root", root)
 			continue
 		}
 		rel, err := filepath.Rel(resolve(root), abs)
