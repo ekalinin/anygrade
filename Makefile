@@ -1,4 +1,4 @@
-.PHONY: build test test-short vet fmt check binary e2e release-check release-snapshot landing-build landing-serve landing-og
+.PHONY: build test test-short vet fmt check binary e2e vulncheck release-check release-snapshot landing-build landing-serve landing-og
 
 # Build metadata stamped into the binary (internal/version). A release build
 # gets these from goreleaser instead; here they describe the working copy.
@@ -32,6 +32,16 @@ binary:
 
 e2e:
 	go test -tags e2e ./e2e -count=1 -timeout 600s
+
+# Reachability-based vulnerability scan: it reports what the code actually
+# calls, so a finding here is work rather than an advisory. Pinned rather than
+# @latest so a scanner release cannot turn a green build red on its own, and
+# installed on demand rather than added to go.mod - it is not a build
+# dependency and the module graph is deliberately small.
+GOVULNCHECK_VERSION ?= v1.6.0
+
+vulncheck:
+	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 # Validate .goreleaser.yaml without building anything.
 release-check:
