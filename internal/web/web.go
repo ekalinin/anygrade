@@ -93,6 +93,7 @@ func New(h *Handler) http.Handler {
 	mux.Handle("GET /settings", h.requireAuth(h.settingsPage))
 	mux.Handle("POST /settings/token", h.requireAuth(h.regenToken))
 	mux.Handle("POST /settings/keys", h.requireAuth(h.addOwnKey))
+	mux.Handle("POST /settings/keys/verify", h.requireAuth(h.proveOwnKey))
 	mux.Handle("POST /settings/keys/{id}/delete", h.requireAuth(h.delOwnKey))
 
 	// Teacher only.

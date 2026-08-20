@@ -181,6 +181,18 @@ func userResetToken(args []string) error {
 	return nil
 }
 
+// userAddKey is the teacher's out-of-band path for a student who cannot use
+// the settings page, and the one registration that carries no proof of
+// possession (SPEC §8).
+//
+// It stays unproven on purpose. Requiring a signature here would protect
+// nothing: whoever runs this command already holds the data dir, and can
+// `user add` an account or `reset-token` their way into any existing one, so
+// the trust in the key is the teacher's trust in however they received it. The
+// threat proof of possession answers is student against student, and students
+// do not reach the CLI. What the command must not become is a quiet bypass, so
+// the key is recorded as unproven - visible as such on the student's page, and
+// losable to whoever later proves possession of that fingerprint.
 func userAddKey(args []string) error {
 	fs := flag.NewFlagSet("user add-key", flag.ContinueOnError)
 	login := fs.String("login", "", "user login")
@@ -213,11 +225,25 @@ func userAddKey(args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := db.AddSSHKey(ctx, u.ID, fingerprint, strings.TrimSpace(*key)); err != nil {
+	// Name the current holder instead of surfacing a UNIQUE constraint: a
+	// contested fingerprint is exactly the case a teacher has to resolve, and
+	// the raw SQLite text says nothing about who to talk to.
+	if holder, held, herr := db.KeyHolder(ctx, fingerprint); herr == nil && held {
+		return fmt.Errorf("fingerprint %s is already registered to %s; remove it from that student's page first",
+			fingerprint, holder.Login)
+	}
+	// Store the re-marshalled key, not the pasted text: ParseAuthorizedKey reads
+	// the first line and ignores the rest, and it accepts authorized_keys
+	// options in front of the key, so the argument may hold far more than the
+	// key its fingerprint was taken from.
+	if _, err := db.AddSSHKey(ctx, u.ID, fingerprint,
+		strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pk)))); err != nil {
 		return err
 	}
 
 	fmt.Printf("key %s added for %s\n", fingerprint, u.Login)
+	fmt.Println("recorded without proof of possession: it is shown as unproven,")
+	fmt.Println("and whoever proves possession of this fingerprint can take it over")
 	return nil
 }
 
@@ -275,7 +301,8 @@ func userInvite(args []string) error {
 	}
 
 	fmt.Printf("expires: %s\n", expiresAt.Format(time.RFC3339))
-	fmt.Println("the link is one-shot; it lets the student set up a token and SSH key")
+	fmt.Println("the link is one-shot; it lets the student set up a token")
+	fmt.Println("SSH keys are added afterwards in settings, against a signed challenge")
 	return nil
 }
 

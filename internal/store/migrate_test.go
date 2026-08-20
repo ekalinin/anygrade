@@ -84,6 +84,61 @@ func TestMigrateSessionsAndTokens(t *testing.T) {
 	}
 }
 
+// TestMigrateGrandfathersSSHKeys: keys registered before proof of possession
+// existed keep authenticating across the upgrade. Invalidating them would lock
+// a running course out of SSH over a hole that is denial of service only, and
+// already detected and audited (SPEC §8); they are marked unproven instead.
+func TestMigrateGrandfathersSSHKeys(t *testing.T) {
+	dir := t.TempDir()
+	seedPre0007DB(t, dir)
+
+	db, err := Open(t.Context(), dir)
+	if err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	keys, err := db.ListSSHKeys(t.Context(), 1)
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("ListSSHKeys = %v (err %v), want the pre-existing key", keys, err)
+	}
+	if keys[0].VerifiedAt != nil {
+		t.Errorf("verified_at = %v, want nil: nobody ever proved this key", keys[0].VerifiedAt)
+	}
+	got, ok, err := db.UserByFingerprint(t.Context(), "SHA256:legacy")
+	if err != nil || !ok || got.Login != "bob" {
+		t.Fatalf("the legacy key no longer authenticates: %+v ok=%v err=%v", got, ok, err)
+	}
+	// And the owner can prove it afterwards, upgrading the row in place.
+	if _, displaced, perr := db.AddProvenSSHKey(t.Context(), 1, "SHA256:legacy", "ssh-ed25519 LEGACY b"); perr != nil || displaced != nil {
+		t.Fatalf("proving a legacy key: displaced=%+v err=%v", displaced, perr)
+	}
+}
+
+// seedPre0007DB writes a database as the version before 0007 left it, with one
+// SSH key registered under the old first-come-first-served rule.
+func seedPre0007DB(t *testing.T, dir string) {
+	t.Helper()
+	raw, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "anygrade.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+
+	for _, name := range migrationsBefore(t, 7) {
+		content, cerr := migrationsFS.ReadFile("migrations/" + name)
+		if cerr != nil {
+			t.Fatal(cerr)
+		}
+		exec(t, raw, string(content))
+	}
+	exec(t, raw, `PRAGMA user_version = 6`)
+	exec(t, raw, `INSERT INTO users (id, login, display_name, role, created_at)
+		VALUES (1, 'bob', 'Bob', 'student', '2026-01-01T00:00:00.000000000Z')`)
+	exec(t, raw, `INSERT INTO ssh_keys (id, user_id, fingerprint, public_key, created_at)
+		VALUES (1, 1, 'SHA256:legacy', 'ssh-ed25519 LEGACY b', '2026-01-01T00:00:00.000000000Z')`)
+}
+
 // seedLegacyDB writes a database as the version before 0006 left it: every
 // earlier migration applied, the matching user_version, and rows only that
 // schema could hold.
@@ -95,7 +150,7 @@ func seedLegacyDB(t *testing.T, dir string) {
 	}
 	defer raw.Close()
 
-	for _, name := range legacyMigrations(t) {
+	for _, name := range migrationsBefore(t, 6) {
 		content, err := migrationsFS.ReadFile("migrations/" + name)
 		if err != nil {
 			t.Fatal(err)
@@ -114,8 +169,8 @@ func seedLegacyDB(t *testing.T, dir string) {
 		        '2026-01-02T00:00:00.000000000Z', '2099-01-01T00:00:00.000000000Z')`)
 }
 
-// legacyMigrations lists every migration before 0006, in order.
-func legacyMigrations(t *testing.T) []string {
+// migrationsBefore lists every migration numbered below n, in order.
+func migrationsBefore(t *testing.T, n int) []string {
 	t.Helper()
 	entries, err := migrationsFS.ReadDir("migrations")
 	if err != nil {
@@ -123,7 +178,7 @@ func legacyMigrations(t *testing.T) []string {
 	}
 	var names []string
 	for _, e := range entries {
-		if migrationNumber(t, e.Name()) < 6 {
+		if migrationNumber(t, e.Name()) < n {
 			names = append(names, e.Name())
 		}
 	}

@@ -133,7 +133,7 @@ func withTime(t any, f func(time.Time) string) string {
 var pageNames = []string{
 	"login", "dashboard", "task", "submission",
 	"matrix", "queue", "students", "student", "code",
-	"leaderboard", "settings", "invite", "register", "token_once", "audit",
+	"leaderboard", "settings", "key_challenge", "invite", "register", "token_once", "audit",
 }
 
 // pages maps locale -> page name -> parsed template set (base + partials + the

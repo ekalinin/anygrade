@@ -15,9 +15,8 @@ var tokenRE = regexp.MustCompile(`ag_[0-9a-f]{64}`)
 
 // TestInviteActivatesOnce: one invite link, several simultaneous activations.
 // VerifyInvite only proves the link was unused when it was read, so without an
-// atomic consume every request got through: each stored an SSH key and rotated
-// the token, and the last rotation killed the token the first student had
-// already been shown - on a teacher invite, a stranger's key on the account
+// atomic consume every request got through: each rotated the token, and the
+// last rotation killed the token the first student had already been shown
 // (SPEC §8: the link is one-shot).
 func TestInviteActivatesOnce(t *testing.T) {
 	h, _ := newTestSite(t)
@@ -71,10 +70,13 @@ func TestInviteActivatesOnce(t *testing.T) {
 	}
 }
 
-// TestInviteKeepsLinkOnBadKey: an unparseable SSH key is a correctable typo,
-// so it must not burn the invite - validation happens before the consume.
-func TestInviteKeepsLinkOnBadKey(t *testing.T) {
+// TestInviteIgnoresPostedKey pins the decision in SPEC §8: activation no
+// longer registers SSH keys at all. The invite proves possession of the
+// invite, not of a private key, so a key accepted here would have stayed the
+// one path on which a student could claim a classmate's public key.
+func TestInviteIgnoresPostedKey(t *testing.T) {
 	h, _ := newTestSite(t)
+	h.SSHAddr = ":2222" // so the page renders its SSH section at all
 	target, err := h.DB.CreateUser(t.Context(), "carol", "Carol", "student")
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -85,17 +87,19 @@ func TestInviteKeepsLinkOnBadKey(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/invite/inv-tok",
-		strings.NewReader(url.Values{"key": {"not-a-key"}}.Encode()))
+		strings.NewReader(url.Values{"key": {newTestKey(t).authorized}}.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	New(h).ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || tokenRE.MatchString(rec.Body.String()) {
-		t.Fatalf("bad key must not activate: status %d", rec.Code)
-	}
 
-	if _, ok, err := h.DB.VerifyInvite(t.Context(), "inv-tok"); err != nil || !ok {
-		t.Fatalf("the invite must still be usable: ok=%v err=%v", ok, err)
+	// The account still activates - the key field is simply not a thing here.
+	if rec.Code != http.StatusOK || !tokenRE.MatchString(rec.Body.String()) {
+		t.Fatalf("activation failed: status %d", rec.Code)
 	}
 	if keys, err := h.DB.ListSSHKeys(t.Context(), target.ID); err != nil || len(keys) != 0 {
-		t.Fatalf("keys = %v (err %v), want none", keys, err)
+		t.Fatalf("activation registered a key: %v (err %v)", keys, err)
+	}
+	// The page tells the student where keys are added instead.
+	if !strings.Contains(rec.Body.String(), "/settings") {
+		t.Errorf("the token page does not point at settings:\n%s", rec.Body.String())
 	}
 }

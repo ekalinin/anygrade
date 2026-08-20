@@ -3,7 +3,9 @@
 package e2e
 
 import (
+	"bytes"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -259,9 +261,7 @@ func testInviteAndSSH(t *testing.T, e *env) {
 	}
 
 	e.bobClient = newClient(t)
-	resp, body := postForm(t, e.bobClient, e.baseURL+"/invite/"+invTok, url.Values{
-		"key": {string(pub)},
-	})
+	resp, body := postForm(t, e.bobClient, e.baseURL+"/invite/"+invTok, url.Values{})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("activate invite: status %d, body:\n%s", resp.StatusCode, body)
 	}
@@ -271,6 +271,55 @@ func testInviteAndSSH(t *testing.T, e *env) {
 	}
 	e.bobToken = tok
 	e.bobKey = keyPath
+
+	// Activation no longer takes an SSH key: bob registers it in settings and
+	// proves possession by signing the server's challenge with his own
+	// ssh-keygen, exactly as a student would (SPEC §8).
+	resp, body = postForm(t, e.bobClient, e.baseURL+"/settings/keys", url.Values{
+		"key": {string(pub)},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("key challenge: status %d, body:\n%s", resp.StatusCode, body)
+	}
+	// Read the command off the page and sign exactly what it prints - the line
+	// names bob and his fingerprint, not just an opaque nonce.
+	m := reProofCmd.FindStringSubmatch(html.UnescapeString(body))
+	if m == nil {
+		t.Fatalf("challenge page missing the sign command:\n%s", body)
+	}
+	message := m[1]
+	nonce := reChallenge.FindString(message)
+	if nonce == "" {
+		t.Fatalf("the printed message carries no nonce: %q", message)
+	}
+	if !strings.Contains(message, "user=bob") {
+		t.Fatalf("the signed line does not name the account: %q", message)
+	}
+	signature := signChallenge(t, keyPath, message)
+
+	// A signature over somebody else's challenge is not a proof.
+	resp, _ = postForm(t, e.bobClient, e.baseURL+"/settings/keys/verify", url.Values{
+		"nonce": {nonce}, "signature": {signChallenge(t, keyPath, message+"x")},
+	})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("bad proof: status %d, want 422", resp.StatusCode)
+	}
+
+	resp, body = postForm(t, e.bobClient, e.baseURL+"/settings/keys/verify", url.Values{
+		"nonce": {nonce}, "signature": {signature},
+	})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/settings" {
+		t.Fatalf("proof: status %d location %q, body:\n%s",
+			resp.StatusCode, resp.Header.Get("Location"), body)
+	}
+
+	// The nonce is single-use: replaying the very same pair registers nothing.
+	resp, _ = postForm(t, e.bobClient, e.baseURL+"/settings/keys/verify", url.Values{
+		"nonce": {nonce}, "signature": {signature},
+	})
+	if got := resp.Header.Get("Location"); got != "/settings?flash=key_challenge_expired" {
+		t.Fatalf("replayed proof: location %q", got)
+	}
 
 	e.bobDir = filepath.Join(e.root, "bob")
 	sshEnv := []string{"GIT_SSH_COMMAND=ssh -i " + keyPath +
@@ -296,6 +345,22 @@ func testInviteAndSSH(t *testing.T, e *env) {
 	if got := scores["bob"]["greet"]; got != "50" {
 		t.Fatalf("bob/greet: got %q, want 50 (proves the hidden-tests overlay ran)", got)
 	}
+}
+
+// signChallenge is the command the challenge page tells the student to run.
+// The e2e suite deliberately uses the real ssh-keygen here: the server verifies
+// the SSHSIG in pure Go, and this is what keeps that parser honest against the
+// client students actually have.
+func signChallenge(t *testing.T, keyPath, message string) string {
+	t.Helper()
+	cmd := exec.Command("ssh-keygen", "-Y", "sign", "-f", keyPath, "-n", "anygrade", "-")
+	cmd.Stdin = strings.NewReader(message)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("ssh-keygen -Y sign: %v", err)
+	}
+	return stdout.String()
 }
 
 // genKey generates a fresh, passphrase-less ed25519 key pair at path.

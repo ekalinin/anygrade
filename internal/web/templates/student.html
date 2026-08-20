@@ -82,6 +82,7 @@
 <h2>{{t "common.ssh_keys"}}</h2>
 {{if .Keys}}
 <ul>{{range .Keys}}<li><code>{{.Fingerprint}}</code> <span class="hint">{{t "common.added"}} {{fmtTime .CreatedAt}}</span>
+  {{if not .VerifiedAt}}<span class="hint" title="{{t "common.unproven_hint"}}">{{t "common.unproven"}}</span>{{end}}
   <form method="post" action="/students/{{$login}}/keys/{{.ID}}/delete" class="inline"><input type="hidden" name="fingerprint" value="{{.Fingerprint}}"><button type="submit" class="linklike">{{t "settings.remove"}}</button></form>
 </li>{{end}}</ul>
 {{else}}<p class="hint">{{t "common.no_keys"}}</p>{{end}}
