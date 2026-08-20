@@ -167,10 +167,10 @@ func (s *DB) FinishSubmission(ctx context.Context, id int64, res SubmissionResul
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO check_results
 			  (submission_id, name, passed, exit_code, duration_ms, weight,
-			   skipped, timed_out, log_excerpt)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			   skipped, timed_out, log_excerpt, build_failed)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			id, c.Name, c.Passed, c.ExitCode, c.Duration.Milliseconds(),
-			c.Weight, c.Skipped, c.TimedOut, c.LogExcerpt); err != nil {
+			c.Weight, c.Skipped, c.TimedOut, c.LogExcerpt, c.BuildFailed); err != nil {
 			return err
 		}
 	}
@@ -298,7 +298,8 @@ func (s *DB) GetSubmission(ctx context.Context, id int64) (Submission, []CheckRo
 		return Submission{}, nil, err
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT name, passed, exit_code, duration_ms, weight, skipped, timed_out, log_excerpt
+		SELECT name, passed, exit_code, duration_ms, weight, skipped, timed_out,
+		       log_excerpt, build_failed
 		FROM check_results WHERE submission_id = ? ORDER BY id ASC`, id)
 	if err != nil {
 		return Submission{}, nil, err
@@ -309,7 +310,7 @@ func (s *DB) GetSubmission(ctx context.Context, id int64) (Submission, []CheckRo
 		var c CheckRow
 		var durMS int64
 		if err := rows.Scan(&c.Name, &c.Passed, &c.ExitCode, &durMS, &c.Weight,
-			&c.Skipped, &c.TimedOut, &c.LogExcerpt); err != nil {
+			&c.Skipped, &c.TimedOut, &c.LogExcerpt, &c.BuildFailed); err != nil {
 			return Submission{}, nil, err
 		}
 		c.Duration = time.Duration(durMS) * time.Millisecond
