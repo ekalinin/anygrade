@@ -43,5 +43,22 @@ type Check struct {
 	Name     string `yaml:"name"`
 	Required bool   `yaml:"required"` // gate: failure stops the run, scores 0
 	Weight   int    `yaml:"weight"`
-	Run      string `yaml:"run"`
+	// Build is the optional first phase of a check. Every build phase of the
+	// task runs before the hidden tests are removed from the workspace, so it
+	// is the only place a compiler ever sees them; the run phase executes
+	// afterwards, with the hidden sources gone (SPEC §6.1). Its output is
+	// teacher-only, because it is the phase that reads them (SPEC §14).
+	Build string `yaml:"build"`
+	Run   string `yaml:"run"`
+}
+
+// HasBuildPhase reports whether any check of the list declares a build phase,
+// which is what turns the hidden-test boundary on for the whole task.
+func HasBuildPhase(checks []Check) bool {
+	for _, c := range checks {
+		if c.Build != "" {
+			return true
+		}
+	}
+	return false
 }
