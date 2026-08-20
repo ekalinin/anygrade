@@ -152,16 +152,32 @@ checks:
     run: go test -run 'TestAdvanced' ./...
 ```
 
+A check may be split into two phases, which is what keeps a compiled language's hidden tests off the disk while the student's code runs (§6.1):
+
+```yaml
+checks:
+  - name: basic
+    weight: 60
+    build: go test -c -o $ANYGRADE_ARTIFACTS/basic.test ./...
+    run: $ANYGRADE_ARTIFACTS/basic.test -test.run 'TestBasic'
+```
+
 Semantics:
 
 - Timestamps are RFC 3339 with explicit offsets.
 - Checks run in order. A check passes iff its command exits 0.
-- `required: true` checks are gates: on failure the remaining checks are skipped and the raw score is 0.
+- `build:` is an optional first phase of a check; `run:` is always required. A two-phase check passes iff **both** phases exit 0, and a build failure is that check's failure like any other.
+- All build phases of a task run first, in check order; then the hidden-test sources are removed from the workspace; then all run phases, in check order (§6.1). A task whose checks all declare only `run:` skips the first two steps entirely and behaves exactly as it did before build phases existed, hidden tests included.
+- `$ANYGRADE_ARTIFACTS` is a directory at the workspace root, exported to both phases as an absolute path. It is the one thing the removal is guaranteed not to touch, so it is where a build phase leaves what its run phase executes.
+- Each phase gets the full `runner.timeout`: a phase is one command, and the timeout has always been one command's wall clock. A check with both phases can therefore occupy twice it. The duration the check reports is the sum of its phases - a check that takes 40s to compile and 2s to run is not a 2s check.
+- `required: true` checks are gates: on failure the remaining checks are skipped and the raw score is 0. With two phases the rule is unchanged - the run stops at the first failed gate - and it applies whichever phase the gate failed in. A gate that fails at build time skips the builds and the runs of every later check; a gate that fails at run time skips the runs of every later check even though their builds already happened. That wasted build work is accepted deliberately: reordering the phases to avoid it would put student code back on disk beside the hidden tests. Checks *before* the failed gate keep both of their phases and report a real result.
+- The build phase's output is **teacher-only** (§14). A check that fails there records no excerpt at all; the student is told that the build failed and nothing more.
 - Weights are normalized over the non-gate checks: raw score = score × (sum of passed weights / sum of all weights). A single check with any weight therefore behaves as all-or-nothing.
 - Weights must be `>= 0`. Because they are normalized, a negative one pushes the raw score outside `0..score` - weights 60 and -40 score 300 out of 100 - so `validate` rejects a negative weight on a non-gate check. Weight 0 stays legal and is what gates carry.
 - `workspace.include` (course defaults and per-task `workspace:` block, unioned) lists extra repo-relative paths - files or directories - exported into the check workspace alongside the task directory. Needed when tasks share build files, e.g. a course-root `go.mod`. Paths must exist and must not escape the repo.
 - `hidden_tests.url` must not embed credentials: they come from the environment (§11). With `source: local` the `path` is an absolute path on the machine that runs the checks, which is why `validate` only warns - never errors - when it is relative or absent locally: a course repo is usually validated somewhere other than the grading server.
 - `anygrade validate` verifies all metadata (unknown fields, missing files in `solution_files`, symlinked entries in `solution_files`/`workspace.include`, deadline ordering, duplicate task ids, negative check weights, non-positive size limits, credentials embedded in a hidden-tests url) and is also run at server startup; startup fails on invalid metadata. Warnings are reported by `validate` alone; they never fail a startup or a teacher push.
+- Two validate warnings cover the build phase, and only those two, because they are the only patterns that are reliably worth reporting. A task that configures hidden tests and has *some* checks with a build phase gets one warning per check without one, since a single `build:` anywhere turns the boundary on for the whole task and a run-only check will not find the hidden tests any more - and it fails as a wrong answer rather than as an error. A `build:` identical to its own `run:` gets the other. What `validate` deliberately does **not** try to detect is a build command that executes the solution instead of only compiling it (`go test ./...` where `go test -c` was meant): the command is an arbitrary shell line, possibly a `make` target, so any pattern match would be wrong often enough to teach course authors to ignore warnings. That one is documentation's job.
 
 ## 5. Architecture
 
@@ -202,10 +218,11 @@ Default `./.anygrade` next to the course repo (must be gitignored), overridable 
     students/<login>.git # bare per-student repos
   hidden/<hash>/         # cached clones of hidden-test repos, 0700
   logs/<submission-id>/  # raw check output, 0700
+    build/               # build-phase output, teacher-only (§14)
   workspaces/            # ephemeral check workspaces, 0700
 ```
 
-A submission's log dir holds one file per check, named after the check: a name that is already file-name safe keeps its spelling (`build.log`), anything else - uppercase included, since macOS is case-insensitive by default - is sanitized and tagged with a hash of the original (`Build~<hash>.log`), so two checks of one task can never write to the same file.
+A submission's log dir holds one file per check, named after the check: a name that is already file-name safe keeps its spelling (`build.log`), anything else - uppercase included, since macOS is case-insensitive by default - is sanitized and tagged with a hash of the original (`Build~<hash>.log`), so two checks of one task can never write to the same file. Build-phase output goes to `logs/<submission-id>/build/<same file name>`. A subdirectory rather than a suffixed name for two reasons: the names stay injective for free (a check `x` and a check `x.build` would otherwise fight over `x.build.log`), and the teacher-only rule becomes structural - everything student-facing reads the log dir itself and never descends into it (§14).
 
 ## 6. Submission flow
 
@@ -244,8 +261,23 @@ For each submission the worker builds a clean workspace:
 
 1. Export the task directory from the course repo at its current head (the authoritative version - templates, open tests, build files, `task.yaml`), plus any `workspace.include` paths (shared build files such as a course-root `go.mod`), mirroring the repo-relative layout.
 2. Copy only `solution_files` from the student's submitted commit on top, without following symlinks and within `workspace.max_file_size` / `max_total_size`.
-3. If hidden tests are configured, sync the source (git: fetch into the cache, use last successful cache if the remote is unreachable; local: read the path) and copy them on top, read-only.
-4. Run checks inside this workspace.
+3. If hidden tests are configured, sync the source (git: fetch into the cache, use last successful cache if the remote is unreachable; local: read the path) and copy them on top, read-only. Record exactly which paths were written.
+4. Run checks inside this workspace. When the task declares at least one `build:` phase (§4.3), that run is split by the hidden-test boundary:
+   1. every build phase, in check order;
+   2. remove the hidden-test files - precisely the paths recorded in step 3, never a glob over the task dir, which cannot tell a hidden test from an open one - and the directories they came in, if those are left empty;
+   3. every run phase, in check order.
+
+   A task with no build phase runs its checks as it always has, hidden tests in place: that is how hidden tests are executed when there is nothing to compile.
+
+The boundary is a real change in kind for a compiled language, and it is worth stating what it is and is not:
+
+- What it guarantees is that **the hidden test sources are not on the filesystem while the student's code executes**. `go test -c` compiles the hidden tests together with the solution and never runs it; by the time the resulting binary executes, the sources it was built from are gone.
+- It is not secrecy against a determined attacker. The compiled artifact still carries test names, string literals and line numbers, and a process can read its own `/proc/self/exe`. Recovering the tests becomes reverse engineering rather than `cat`.
+- It buys nothing for an interpreted language. There the test source has to be on disk at the moment the student's code runs, so removing it before the run phase would remove the test itself. Such a course keeps the §14 model: the sandbox is the boundary, not the filesystem.
+- A `build:` command that actually executes the solution - `go test -run X ./...` instead of `go test -c` - defeats the boundary entirely, because the student's code then runs while the sources are still there. Nothing detects that (§4.3); it is the course author's contract.
+- The removal itself is performed against the assembled tree through an `os.Root` anchored at the workspace, so a symlink planted along one of those paths is refused rather than followed. A refusal fails the whole run, which is the safe direction: the alternative is running student code with the sources still in place.
+- The docker runner applies the boundary by replacing the container. Its workspace is a tmpfs inside the container, so a removal on the host would prove nothing about what the run phases see: the artifacts are copied out, the container and its tmpfs are destroyed, the sources are removed from the host copy, and the run phases get a fresh container seeded from what is left. Deleting the files inside the running container instead would be cheaper and weaker - it leaves the daemon's word for it and needs an `rm` in the image.
+- A hidden file that shadowed a task file of the same path leaves that path absent after the removal, not restored to the authoritative version. Hidden tests are meant to add files, not to replace them.
 
 Consequences:
 
@@ -254,6 +286,7 @@ Consequences:
 - Symlinks are never materialized. Both the course-repo export and the copy from a working copy skip them with a log line, so a workspace is always a plain tree.
 - The size limits bound the decompressed overlay, which `max_push_size` - a limit on the compressed pack - cannot. A submission whose solution file is a symlink, escapes the workspace, or exceeds either limit fails terminally, with the reason in the worker note; it is not retried.
 - Hidden tests are copied in with their write bits stripped, so one check cannot rewrite the tests the next check runs against. This is not an isolation boundary: the checks run as the owner of those files (§14).
+- `$ANYGRADE_ARTIFACTS` (`.anygrade-artifacts` at the workspace root) is created with the workspace and exported to every phase, whether or not the task uses build phases. It sits outside the task directory so a task's own build never walks into it, and its leading dot keeps it out of Go's package patterns even for a task that is the repo root itself.
 
 ## 7. Git server
 
@@ -355,7 +388,7 @@ anygrade user    add|list|remove|reset-token|add-key|invite ...
 anygrade export  scores --format csv
 ```
 
-- `check` with no arguments detects tasks changed against upstream/HEAD; with arguments checks the named tasks. It uses the same runner code path as the server (docker or local per metadata) but never fetches hidden tests unless they are locally available - it is the student self-check and course-authoring tool.
+- `check` with no arguments detects tasks changed against upstream/HEAD; with arguments checks the named tasks. It uses the same runner code path as the server (docker or local per metadata) but never fetches hidden tests unless they are locally available - it is the student self-check and course-authoring tool. Build phases run there exactly as they do on the server, boundary included, so a course author gets the real behavior of a two-phase check on the machine they are authoring it on; usually there is simply nothing to remove. Nothing is teacher-only locally: both phases print their log paths, since the author owns the whole tree either way.
 - `check --runner local` overrides the per-task runner for students without docker; it runs task code unsandboxed on the host, which is acceptable at the self-check trust level (own machine, own code). No `--allow-local-runner` gate applies here - that gate is only for a non-loopback server.
 - `--tls-cert` and `--tls-key` are required together and make the web/git HTTP listener serve HTTPS. `--behind-proxy` trusts `X-Forwarded-Proto` from a proxy that terminates TLS instead, and is also what makes the failure limiter read `X-Forwarded-For`: without it every request behind a proxy shares one client address, and a few failed logins would exhaust the per-IP budget for the whole course. Both headers are forgeable by anyone who reaches the port, which is why neither is read without the flag. Without one of the two the token travels in the clear (§14).
 - Secrets (hidden-tests repo credentials) come from the environment (`ANYGRADE_HIDDEN_GIT_TOKEN`) or standard git credential helpers, never from the course repo; `validate` enforces that rule by rejecting a `hidden_tests.url` with credentials embedded in it.
@@ -374,7 +407,7 @@ SQLite tables:
 - `sessions` (id_hash, user_id, token_hash, created_at, expires_at) - web sessions; the cookie value is stored hashed, like tokens and invites, so the table is not a set of usable cookies. A hash cannot be derived from the values already stored, so the migration that introduced it empties the table: an upgrade signs everybody out once
 - `pushes` (id, user_id, ref, old_sha, new_sha, received_at, processed_at) - the intake log: every accepted push to a graded branch, recorded on arrival and graded afterwards, so a push is an event with its own boundaries and arrival time rather than a ref position
 - `submissions` (id, user_id, task_id, commit_sha, received_at, attempt_no, counts, status: queued|running|done|infra_error|rejected_deadline|rejected_limit, raw_score, penalty_percent, final_score, log_dir, worker_note, retries, retry_at, started_at, canceled_at)
-- `check_results` (submission_id, name, passed, exit_code, duration_ms, weight, skipped, timed_out, log_excerpt)
+- `check_results` (submission_id, name, passed, exit_code, duration_ms, weight, skipped, timed_out, log_excerpt, build_failed) - `build_failed` says the check never reached its run phase, which is why `log_excerpt` is empty: the build phase's output is teacher-only (§14), so the row carries the fact and the UI renders a localized explanation, rather than storing a message
 - `score_overrides` (user_id, task_id, score, comment, teacher_id, created_at)
 - `events` (audit log: user/teacher actions)
 
@@ -389,13 +422,14 @@ Task definitions are not mirrored into the DB; metadata is always read from the 
 - Server restart: `running` submissions are requeued and rerun from scratch; check runs must therefore be idempotent (fresh workspace each time).
 - Docker daemon down / image pull failure / hidden repo unreachable with no cache: submission gets `infra_error`, does not consume an attempt, is automatically retried with backoff, and is surfaced in the teacher queue view.
 - Teacher cancel is final: it stops the run whichever moment it arrives in, and a retry already in flight never re-arms the canceled submission.
-- Check timeout: the container/process is killed, the check fails with a `timed out after 5m` note; remaining checks still run unless the timed-out check was a gate.
+- Check timeout: the container/process is killed, the check fails with a `timed out after 5m` note; remaining checks still run unless the timed-out check was a gate. The timeout is per phase (§4.3), so a two-phase check that hangs in its build phase is killed there and never reaches its run phase, and the docker container's own lifetime is sized by the number of phases rather than the number of checks.
 - Push touching only non-task files: accepted, no submissions, informational push message.
 - Task deleted or renamed in the course repo: pending submissions for unknown task ids fail with a clear error; historical results remain visible.
 - Student pushes a branch other than the default: accepted and stored, but only default-branch pushes create submissions (stated in the push output).
 - Clock and timezones: all comparisons in UTC on the server clock; deadlines carry explicit offsets; UI renders in the course timezone.
 - `max_push_size` (course-wide, default 50 MB) guards against giant blobs. The server stops reading the pack itself, on top of git's own `receive.maxInputSize`, and the rejection is anygrade's own message: it names the limit and says how to recover (drop the large files from the commit and push again). A teacher pushing a new value gets it applied without a restart.
-- Very long logs: the on-disk log is capped at `runner.log_max` (default 10 MB per check) and ends with an explicit truncation marker; the excerpt in the DB/UI (default 64 KB per check) carries the same marker. A log the server could not write does not fail the check - the excerpt says the full log is missing. The full log is a teacher-only download (§14).
+- Very long logs: the on-disk log is capped at `runner.log_max` (default 10 MB per check) and ends with an explicit truncation marker; the excerpt in the DB/UI (default 64 KB per check) carries the same marker. A log the server could not write does not fail the check - the excerpt says the full log is missing. The full log is a teacher-only download (§14); so is the build phase's, which is a separate download of the same check.
+- A check that failed in its build phase: no excerpt is stored - the phase's output is teacher-only - and no run-phase log file exists at all, so there is nothing for the live stream to tail either. The submission page says the check failed while being built and why the output is not there; the teacher gets the build log next to the ordinary one.
 
 ## 14. Security considerations
 
@@ -410,7 +444,9 @@ Hidden tests are confidential against the network and the UI, not against the co
 
 - They never enter student-visible repos, push output, or the student-visible parts of the UI, and every hidden-tests failure a student can see is scrubbed to a fixed message.
 - Check logs are shown to students as produced by their tests - the stored excerpt and the live stream - while the raw full-log download is teacher-only, because student code runs beside the hidden tests.
-- Within a single check run the sandbox is the boundary, not the filesystem. Hidden tests are placed read-only, but they sit in the same workspace as the solution and run under the same uid, because the compiler or interpreter has to read them; a student who deliberately dumps them into their own output reads them back through the excerpt and the live stream. Course authors are advised to keep hidden-test sources out of error output. A course whose hidden tests must stay secret against a determined student needs a per-check execution boundary that anygrade does not implement today (§16).
+- A build phase's log is teacher-only in full, not merely as a download: it is the phase that compiles against the hidden tests, so a compiler quoting a hidden source line lands in it. No excerpt of it is stored, the live stream does not tail it (it lives in a subdirectory of the log dir, §5.1), and a check that failed there reaches the student as the bare fact that the build failed. The cost is real - a student whose own code does not compile is told nothing about why - so a course that wants compile errors visible keeps a run-only gate over the student's own code (`go build ./...`, which does not compile `_test.go` files and therefore cannot quote a hidden one) and puts only the hidden-test compilation in a build phase.
+- With build phases the filesystem *is* a boundary for the run phase: the hidden sources are removed from the workspace before any run phase starts (§6.1), so a solution that dumps files finds nothing to dump. What that buys, exactly, is that the sources are not on disk while the student's code executes - not secrecy against a determined student, since the compiled artifact still carries test names, string literals and line numbers, and a process can read its own executable. It is reverse engineering instead of `cat`, and it is worth having for that reason alone.
+- Without build phases - and always, for an interpreted language, where the test source must be present at run time - the sandbox is the boundary, not the filesystem. Hidden tests are placed read-only, but they sit in the same workspace as the solution and run under the same uid, because the compiler or interpreter has to read them; a student who deliberately dumps them into their own output reads them back through the excerpt and the live stream. Course authors are advised to keep hidden-test sources out of error output.
 
 Credentials and transport:
 
@@ -437,6 +473,7 @@ The web UI enforces role checks on every route; students can only read their own
 | Git protocol impl | System `git` binary | Battle-tested protocol handling (Gitea approach); adds a host dependency that is almost always present |
 | Task detection | Diff against last processed commit + explicit `[recheck]` | Zero extra student actions; explicit marker covers re-runs and edge cases |
 | Anti-cheat | Restore authoritative files, allowlist solution files | Pushes are never rejected; tampering is simply ineffective and logged |
+| Hidden-test secrecy | Optional `build:` phase, then remove the sources before any `run:` | Closes the compiled-language case exactly - the sources are off disk while student code runs - and nothing else: worth nothing for an interpreted language, and it costs the student the build phase's output |
 | Course updates | Student pulls from upstream | Standard git flow; conflicts resolved by the code owner, server never merges |
 | Feedback | Async: push output + UI with SSE | Immediate acknowledgement without hanging pushes on long test runs |
 | Scoring | Weighted check groups | Partial credit without per-test output parsing; one group degrades to all-or-nothing |
@@ -447,7 +484,6 @@ The web UI enforces role checks on every route; students can only read their own
 ## 16. Future work
 
 - Plagiarism detection (or an export hook for MOSS/JPlag).
-- A per-check execution boundary between the solution and the hidden tests, so a course can keep them secret from a determined student (§14).
 - Per-test-case parsers (`go test -json`, JUnit XML, TAP) for finer UI detail and proportional scoring.
 - TA role with limited teacher rights.
 - JSON API as a stable contract for scripts and bots.
