@@ -186,11 +186,19 @@ func (s *dockerSession) runArgs(name string) []string {
 }
 
 // lifetime bounds how long the container waits for checks: enough for every
-// check to hit its own timeout, plus slack for the docker round trips. Bounded
+// phase to hit its own timeout, plus slack for the docker round trips. Bounded
 // on purpose - an anygrade that is killed mid-run must not leak a container
-// (and its tmpfs) forever.
+// (and its tmpfs) forever. Phases, not checks: a check with a build phase is
+// two commands with a full timeout each (see runAll).
 func (s *dockerSession) lifetime() time.Duration {
-	return time.Duration(max(len(s.job.Checks), 1))*s.job.Spec.Timeout + 5*time.Minute
+	phases := 0
+	for _, c := range s.job.Checks {
+		if c.Build != "" {
+			phases++
+		}
+		phases++
+	}
+	return time.Duration(max(phases, 1))*s.job.Spec.Timeout + 5*time.Minute
 }
 
 // ensureImage checks the image is present, pulling it if not. Front-loading
@@ -263,9 +271,36 @@ func (s *dockerSession) close(export bool) {
 // copyOut copies the container's /work onto the host workspace. Best effort:
 // the workspace is a debugging aid (`--keep`) and a snapshot carried across a
 // timeout, never a source of check results.
-func (s *dockerSession) copyOut(ctx context.Context) {
-	_ = exec.CommandContext(ctx, "docker", "cp",
-		s.name+":"+containerWorkdir+"/.", s.job.WorkspaceDir).Run()
+func (s *dockerSession) copyOut(ctx context.Context) { _ = s.exportWork(ctx) }
+
+// exportWork is copyOut for the one caller that cannot shrug the failure off:
+// the boundary, which is about to destroy the container the artifacts live in.
+func (s *dockerSession) exportWork(ctx context.Context) error {
+	out, err := exec.CommandContext(ctx, "docker", "cp",
+		s.name+":"+containerWorkdir+"/.", s.job.WorkspaceDir).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("export workspace: %v: %s", err, lastLine(out))
+	}
+	return nil
+}
+
+// dropHiddenTests implements checkExecutor. The workspace the run phases will
+// see is the container's tmpfs, not the host tree, so the boundary is applied
+// by taking the container down: the build artifacts come out first, the
+// container and its tmpfs go, the hidden sources are removed from the host
+// copy, and the next phase gets a fresh container seeded from what is left
+// (ensure is lazy exactly for this). Deleting the files inside the running
+// container instead would be cheaper and weaker - it leaves the daemon's word
+// for it, it needs an `rm` in the image, and the host tree would still hold
+// them for the re-seed that follows any timeout.
+func (s *dockerSession) dropHiddenTests(ctx context.Context, job Job) error {
+	if s.name != "" {
+		if err := s.exportWork(ctx); err != nil {
+			return infraErr("workspace", err)
+		}
+		s.close(false)
+	}
+	return dropHiddenTests(job)
 }
 
 // alive reports whether the container is still running. Used to tell a failed
@@ -278,7 +313,7 @@ func (s *dockerSession) alive() bool {
 	return err == nil && strings.TrimSpace(string(out)) == "true"
 }
 
-func (s *dockerSession) execCheck(ctx context.Context, job Job, c config.Check, logPath string) (Outcome, error) {
+func (s *dockerSession) execCheck(ctx context.Context, job Job, c config.Check, command, logPath string) (Outcome, error) {
 	log, err := openCheckLog(logPath, c.Name, s.r.Mirror, job.Spec.LogExcerpt, job.Spec.LogMax)
 	if err != nil {
 		return Outcome{}, infraErr("workspace", err)
@@ -293,7 +328,10 @@ func (s *dockerSession) execCheck(ctx context.Context, job Job, c config.Check, 
 	defer cancel()
 
 	cmd := exec.CommandContext(cctx, "docker", "exec",
-		"-w", path.Join(containerWorkdir, job.TaskRelDir), s.name, "sh", "-c", c.Run)
+		"-w", path.Join(containerWorkdir, job.TaskRelDir),
+		// Both phases agree on where a build may leave what a run executes.
+		"-e", artifactsEnv+"="+path.Join(containerWorkdir, artifactsDir),
+		s.name, "sh", "-c", command)
 	cmd.Stdout = log
 	cmd.Stderr = log
 

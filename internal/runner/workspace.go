@@ -90,6 +90,21 @@ var errOverLimit = errors.New("size limit exceeded")
 // 0700 data dir it lives in.
 const workspaceDirMode = 0o700
 
+const (
+	// artifactsDir is the one place a build phase can leave something for its
+	// run phase to execute: the boundary removes hidden-test sources by path,
+	// so everything else in the workspace survives it, and this directory is
+	// what the two phases are told to agree on.
+	//
+	// It sits at the workspace root, not in the task dir, so a task's own build
+	// (`go test ./...`, `make`) never walks into it; the leading dot keeps it
+	// out of Go's package patterns even for a task that *is* the repo root.
+	artifactsDir = ".anygrade-artifacts"
+	// artifactsEnv exports it to both phases as an absolute path, because the
+	// two runners put the workspace in different places (host dir vs /work).
+	artifactsEnv = "ANYGRADE_ARTIFACTS"
+)
+
 // Assembly describes how to build one check workspace (SPEC §6.1).
 type Assembly struct {
 	Dest       string              // workspace root; created if absent
@@ -122,6 +137,13 @@ type Workspace struct {
 	// TamperNotes will list student modifications outside solution_files once
 	// the server-side git source lands (M4); always empty in check mode.
 	TamperNotes []string
+	// HiddenPaths/HiddenDirs are exactly what the hidden-tests overlay wrote,
+	// relative to Root and slash-separated. The runner removes them between
+	// the build and the run phases (SPEC §6.1), which is why they are recorded
+	// here rather than rediscovered by a glob: only assembly knows which of the
+	// files in the task dir came from the hidden source.
+	HiddenPaths []string
+	HiddenDirs  []string
 }
 
 // Close removes the workspace from disk.
@@ -150,6 +172,13 @@ func assemble(ctx context.Context, a Assembly) (*Workspace, error) {
 	if err := os.MkdirAll(a.Dest, workspaceDirMode); err != nil {
 		return nil, infraErr("workspace", err)
 	}
+	// Created before the student overlay, not after: a solution file that
+	// claims this exact path then fails as "not a regular file" - a terminal
+	// tamper error naming the path - instead of making the directory creation
+	// fail as an infrastructure fault the queue would keep retrying.
+	if err := os.MkdirAll(filepath.Join(a.Dest, artifactsDir), workspaceDirMode); err != nil {
+		return nil, infraErr("workspace", err)
+	}
 	taskDst := filepath.Join(a.Dest, filepath.FromSlash(a.TaskRelDir))
 
 	// 1. Authoritative task dir + shared includes.
@@ -171,8 +200,10 @@ func assemble(ctx context.Context, a Assembly) (*Workspace, error) {
 	}
 
 	// 3. Hidden tests overlay the task dir.
+	var hiddenFiles, hiddenDirs []string
 	if a.Hidden != nil {
-		if err := overlayHidden(ctx, a, taskDst); err != nil {
+		var err error
+		if hiddenFiles, hiddenDirs, err = overlayHidden(ctx, a, taskDst); err != nil {
 			return nil, err
 		}
 	}
@@ -182,7 +213,10 @@ func assemble(ctx context.Context, a Assembly) (*Workspace, error) {
 			return nil, infraErr("workspace", err)
 		}
 	}
-	return &Workspace{Root: a.Dest, TaskDir: taskDst}, nil
+	return &Workspace{
+		Root: a.Dest, TaskDir: taskDst,
+		HiddenPaths: hiddenFiles, HiddenDirs: hiddenDirs,
+	}, nil
 }
 
 // overlayStudent copies the declared solution_files from the student's commit
@@ -327,17 +361,92 @@ func mkdirAllNoFollow(root *os.Root, dir string) error {
 // Read-only is not an isolation boundary - the checks run as the owner of these
 // files and can chmod them back - but it does stop a check from rewriting the
 // tests the next check runs against without going out of its way.
-func overlayHidden(ctx context.Context, a Assembly, taskDst string) error {
+// It also reports what it wrote, workspace-relative: the boundary between the
+// build and the run phases removes exactly these paths (SPEC §6.1), and the
+// staging directory is the only place where they are still distinguishable
+// from the task files they land among.
+func overlayHidden(ctx context.Context, a Assembly, taskDst string) (files, dirs []string, err error) {
 	stage := a.Dest + ".hidden"
 	defer os.RemoveAll(stage)
 	if err := os.MkdirAll(stage, workspaceDirMode); err != nil {
-		return infraErr("workspace", err)
+		return nil, nil, infraErr("workspace", err)
 	}
 	if err := a.Hidden.Export(ctx, "", stage); err != nil {
-		return infraErr("workspace", fmt.Errorf("overlay hidden tests: %w", err))
+		return nil, nil, infraErr("workspace", fmt.Errorf("overlay hidden tests: %w", err))
 	}
 	if err := copyTree(ctx, stage, taskDst, true); err != nil {
-		return infraErr("workspace", fmt.Errorf("overlay hidden tests: %w", err))
+		return nil, nil, infraErr("workspace", fmt.Errorf("overlay hidden tests: %w", err))
+	}
+	files, dirs, err = listTree(stage, a.TaskRelDir)
+	if err != nil {
+		// Not knowing what was copied in is not a smaller problem than failing
+		// to copy it: the boundary could not be applied afterwards.
+		return nil, nil, infraErr("workspace", fmt.Errorf("overlay hidden tests: %w", err))
+	}
+	return files, dirs, nil
+}
+
+// listTree walks the hidden staging tree and returns the paths copyTree wrote,
+// prefixed with the task's own repo-relative directory so they address the
+// assembled workspace. Symlinks are left out for the same reason copyTree
+// skips them: nothing was written for them.
+func listTree(stage, prefix string) (files, dirs []string, err error) {
+	err = filepath.WalkDir(stage, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(stage, p)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil // the task dir itself is not the overlay's to remove
+		}
+		full := path.Join(prefix, filepath.ToSlash(rel))
+		switch {
+		case d.IsDir():
+			dirs = append(dirs, full)
+		case d.Type()&fs.ModeSymlink != 0: // skipped by copyTree
+		default:
+			files = append(files, full)
+		}
+		return nil
+	})
+	return files, dirs, err
+}
+
+// dropHiddenTests removes the hidden-test sources from an assembled workspace:
+// the execution boundary of SPEC §6.1, applied on the host tree that every
+// runner ultimately reads from.
+//
+// Every removal goes through an os.Root anchored at the workspace, so a
+// symlink planted along one of these paths is refused rather than followed.
+// Nothing should be able to plant one - a build phase is the teacher's command
+// and it is supposed to compile rather than execute - but this runs as the
+// anygrade process over a tree a check has already written to, and following a
+// link out of it would delete somewhere else on the host. A refusal fails the
+// whole run, which is the correct direction: the alternative is executing
+// student code with the hidden sources still in place.
+func dropHiddenTests(job Job) error {
+	root, err := os.OpenRoot(job.WorkspaceDir)
+	if err != nil {
+		return infraErr("workspace", err)
+	}
+	defer root.Close()
+	for _, rel := range job.HiddenPaths {
+		// RemoveAll, not Remove: a build phase may have replaced the file with
+		// a directory, and it has to go either way. The path is exact, so the
+		// recursion is bounded by what the overlay itself put there.
+		if err := root.RemoveAll(filepath.FromSlash(rel)); err != nil {
+			return infraErr("workspace", fmt.Errorf("remove hidden test %q: %w", rel, err))
+		}
+	}
+	// Deepest first, so a nested tree collapses in one pass. Failures are
+	// ignored on purpose: a directory that is not empty holds something the
+	// overlay did not write, and the sources - the thing being removed - are
+	// already gone.
+	for i := len(job.HiddenDirs) - 1; i >= 0; i-- {
+		_ = root.Remove(filepath.FromSlash(job.HiddenDirs[i]))
 	}
 	return nil
 }

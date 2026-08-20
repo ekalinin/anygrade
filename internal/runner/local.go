@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
@@ -25,7 +26,13 @@ func (r *LocalRunner) Run(ctx context.Context, job Job) ([]Outcome, error) {
 	return runAll(ctx, job, r)
 }
 
-func (r *LocalRunner) execCheck(ctx context.Context, job Job, c config.Check, logPath string) (Outcome, error) {
+// dropHiddenTests implements checkExecutor: the local runner executes in the
+// host workspace itself, so removing the files there is the whole boundary.
+func (r *LocalRunner) dropHiddenTests(_ context.Context, job Job) error {
+	return dropHiddenTests(job)
+}
+
+func (r *LocalRunner) execCheck(ctx context.Context, job Job, c config.Check, command, logPath string) (Outcome, error) {
 	log, err := openCheckLog(logPath, c.Name, r.Mirror, job.Spec.LogExcerpt, job.Spec.LogMax)
 	if err != nil {
 		return Outcome{}, infraErr("workspace", err)
@@ -35,8 +42,10 @@ func (r *LocalRunner) execCheck(ctx context.Context, job Job, c config.Check, lo
 	cctx, cancel := context.WithTimeout(ctx, job.Spec.Timeout)
 	defer cancel()
 
-	cmd := exec.Command("sh", "-c", c.Run)
+	cmd := exec.Command("sh", "-c", command)
 	cmd.Dir = filepath.Join(job.WorkspaceDir, filepath.FromSlash(job.TaskRelDir))
+	// Both phases agree on where a build may leave what a run executes.
+	cmd.Env = append(os.Environ(), artifactsEnv+"="+filepath.Join(job.WorkspaceDir, artifactsDir))
 	cmd.Stdout = log
 	cmd.Stderr = log
 	// Own process group so a timeout kills the whole tree, not just sh.

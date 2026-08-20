@@ -10,20 +10,32 @@ import (
 	"github.com/ekalinin/anygrade/internal/config"
 )
 
-// fakeExecutor passes/fails checks by name.
+// fakeExecutor passes/fails phases by command; ran records the phases in the
+// order the driver asked for them, which is what the two-phase order is about.
 type fakeExecutor struct {
-	fail map[string]bool
-	ran  []string
+	fail    map[string]bool // keyed by the command the phase runs
+	ran     []string        // "<check>" for a run phase, "<check>:build" for a build one
+	dropped int
 }
 
-func (f *fakeExecutor) execCheck(_ context.Context, _ Job, c config.Check, logPath string) (Outcome, error) {
-	f.ran = append(f.ran, c.Name)
-	passed := !f.fail[c.Name]
+func (f *fakeExecutor) execCheck(_ context.Context, _ Job, c config.Check, cmd, logPath string) (Outcome, error) {
+	label := c.Name
+	if cmd == c.Build {
+		label += ":build"
+	}
+	f.ran = append(f.ran, label)
+	passed := !f.fail[cmd]
 	exit := 0
 	if !passed {
 		exit = 1
 	}
 	return Outcome{Name: c.Name, Passed: passed, ExitCode: exit, LogPath: logPath}, nil
+}
+
+func (f *fakeExecutor) dropHiddenTests(context.Context, Job) error {
+	f.ran = append(f.ran, "<boundary>")
+	f.dropped++
+	return nil
 }
 
 func testJob(t *testing.T, checks []config.Check) Job {
@@ -38,12 +50,12 @@ func testJob(t *testing.T, checks []config.Check) Job {
 
 func TestRunAllGateShortCircuit(t *testing.T) {
 	checks := []config.Check{
-		{Name: "build", Required: true, Run: "true"},
-		{Name: "vet", Required: true, Run: "true"},
-		{Name: "basic", Weight: 60, Run: "true"},
-		{Name: "advanced", Weight: 40, Run: "true"},
+		{Name: "build", Required: true, Run: "run-build"},
+		{Name: "vet", Required: true, Run: "run-vet"},
+		{Name: "basic", Weight: 60, Run: "run-basic"},
+		{Name: "advanced", Weight: 40, Run: "run-advanced"},
 	}
-	ex := &fakeExecutor{fail: map[string]bool{"vet": true}}
+	ex := &fakeExecutor{fail: map[string]bool{"run-vet": true}}
 	outcomes, err := runAll(t.Context(), testJob(t, checks), ex)
 	if err != nil {
 		t.Fatal(err)
@@ -66,10 +78,10 @@ func TestRunAllGateShortCircuit(t *testing.T) {
 
 func TestRunAllNonGateFailureContinues(t *testing.T) {
 	checks := []config.Check{
-		{Name: "basic", Weight: 60, Run: "true"},
-		{Name: "advanced", Weight: 40, Run: "true"},
+		{Name: "basic", Weight: 60, Run: "run-basic"},
+		{Name: "advanced", Weight: 40, Run: "run-advanced"},
 	}
-	ex := &fakeExecutor{fail: map[string]bool{"basic": true}}
+	ex := &fakeExecutor{fail: map[string]bool{"run-basic": true}}
 	outcomes, err := runAll(t.Context(), testJob(t, checks), ex)
 	if err != nil {
 		t.Fatal(err)

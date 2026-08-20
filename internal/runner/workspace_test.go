@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -361,5 +362,114 @@ func TestAssembleOverlayLimits(t *testing.T) {
 	defer ws.Close()
 	if got := readFile(t, filepath.Join(ws.TaskDir, "b.txt")); got != strings.Repeat("b", 100) {
 		t.Errorf("b.txt = %q", got)
+	}
+}
+
+// TestAssembleRecordsHiddenPaths: the boundary removes what the hidden overlay
+// wrote, so assembly has to report it exactly - by path, never by a glob over
+// the task dir, which cannot tell a hidden test from an open one.
+func TestAssembleRecordsHiddenPaths(t *testing.T) {
+	repo := t.TempDir()
+	writeFiles(t, repo, map[string]string{
+		"tasks/01/main.go":      "package main\n",
+		"tasks/01/main_test.go": "package main // open test, stays\n",
+	})
+	hidden := t.TempDir()
+	writeFiles(t, hidden, map[string]string{
+		"hidden_test.go":         "package main\n",
+		"cases/extra_test.go":    "package main\n",
+		"cases/data/fixture.txt": "1\n",
+	})
+
+	ws, err := Assemble(t.Context(), Assembly{
+		Dest:          filepath.Join(t.TempDir(), "ws"),
+		Task:          config.ResolvedTask{SolutionFiles: []string{"main.go"}},
+		TaskRelDir:    "tasks/01",
+		Authoritative: WorkingCopySource{Root: repo},
+		Hidden:        WorkingCopySource{Root: hidden},
+		RunAsUID:      -1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+
+	wantFiles := []string{
+		"tasks/01/cases/data/fixture.txt",
+		"tasks/01/cases/extra_test.go",
+		"tasks/01/hidden_test.go",
+	}
+	got := slices.Clone(ws.HiddenPaths)
+	slices.Sort(got)
+	if !slices.Equal(got, wantFiles) {
+		t.Errorf("HiddenPaths: got %v, want %v", got, wantFiles)
+	}
+	wantDirs := []string{"tasks/01/cases", "tasks/01/cases/data"}
+	gotDirs := slices.Clone(ws.HiddenDirs)
+	slices.Sort(gotDirs)
+	if !slices.Equal(gotDirs, wantDirs) {
+		t.Errorf("HiddenDirs: got %v, want %v", gotDirs, wantDirs)
+	}
+
+	// And removing them leaves the task's own files alone - including the open
+	// test, which a glob for "*_test.go" would have taken with it.
+	job := Job{WorkspaceDir: ws.Root, HiddenPaths: ws.HiddenPaths, HiddenDirs: ws.HiddenDirs}
+	if err := dropHiddenTests(job); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range append(wantFiles, wantDirs...) {
+		if _, err := os.Lstat(filepath.Join(ws.Root, filepath.FromSlash(rel))); !os.IsNotExist(err) {
+			t.Errorf("%s survived the boundary: %v", rel, err)
+		}
+	}
+	for _, rel := range []string{"tasks/01/main.go", "tasks/01/main_test.go"} {
+		if _, err := os.Stat(filepath.Join(ws.Root, filepath.FromSlash(rel))); err != nil {
+			t.Errorf("%s must not be removed: %v", rel, err)
+		}
+	}
+}
+
+// TestDropHiddenTestsRefusesSymlink: the boundary writes into a tree a build
+// phase has already touched. A symlinked path component would make the removal
+// delete somewhere else on the host, as the anygrade process, so it is refused
+// - and refusing fails the run, which is the safe direction: the alternative is
+// executing student code with the hidden sources still in place.
+func TestDropHiddenTestsRefusesSymlink(t *testing.T) {
+	ws := t.TempDir()
+	outside := t.TempDir()
+	writeFiles(t, outside, map[string]string{"hidden_test.txt": "secret\n"})
+	if err := os.Symlink(outside, filepath.Join(ws, "cases")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	err := dropHiddenTests(Job{WorkspaceDir: ws, HiddenPaths: []string{"cases/hidden_test.txt"}})
+	if _, ok := errors.AsType[*InfraError](err); !ok {
+		t.Fatalf("want an InfraError, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "hidden_test.txt")); err != nil {
+		t.Errorf("the removal followed the symlink out of the workspace: %v", err)
+	}
+}
+
+// TestAssembleArtifactsDirIsNotOverwritable: $ANYGRADE_ARTIFACTS is created
+// before the student's overlay, so a solution file claiming that exact path is
+// a terminal tamper error naming it - not an infrastructure failure the queue
+// would keep retrying.
+func TestAssembleArtifactsDirIsNotOverwritable(t *testing.T) {
+	repo := t.TempDir()
+	writeFiles(t, repo, map[string]string{"main.sh": "echo main\n"})
+	student := t.TempDir()
+	writeFiles(t, student, map[string]string{artifactsDir: "student content\n"})
+
+	_, err := Assemble(t.Context(), Assembly{
+		Dest:          filepath.Join(t.TempDir(), "ws"),
+		Task:          config.ResolvedTask{SolutionFiles: []string{artifactsDir}},
+		TaskRelDir:    "",
+		Authoritative: WorkingCopySource{Root: repo},
+		Student:       WorkingCopySource{Root: student},
+		RunAsUID:      -1,
+	})
+	if _, ok := errors.AsType[*TamperError](err); !ok {
+		t.Fatalf("want a TamperError, got %v", err)
 	}
 }
