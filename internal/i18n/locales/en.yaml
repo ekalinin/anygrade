@@ -140,6 +140,8 @@ sub.output: "output"
 sub.waiting: "Waiting for a worker…"
 sub.no_results: "No check results recorded."
 sub.logs_teacher_only: "The output above is the excerpt your checks produced; full logs are available to teachers."
+sub.build_log: "build log"
+sub.build_failed: "this check failed while it was being built. That phase compiles against the hidden tests, so its output goes to your teacher only."
 
 # matrix.html
 matrix.title: "Matrix"

@@ -30,8 +30,13 @@ type submissionData struct {
 	// CanDownloadLogs gates the raw full-log download to teachers (SPEC §14:
 	// students see the log as their tests produced it, teachers see it whole).
 	CanDownloadLogs bool
-	Running         bool
-	Rejected        bool
+	// BuildChecks names the checks that currently declare a build phase, so
+	// the teacher gets its (teacher-only) log even when the build succeeded.
+	// A row's own BuildFailed covers the history the metadata has moved on
+	// from.
+	BuildChecks map[string]bool
+	Running     bool
+	Rejected    bool
 	// Flash carries a recheck warning from the redirect that landed here
 	// (submissionURL); the fragment renderer leaves it empty.
 	Flash string
@@ -70,8 +75,10 @@ func (h *Handler) submissionData(sub store.Submission, checks []store.CheckRow, 
 	if task, _, ok := h.Course.Get().Task(sub.TaskID); ok {
 		data.TaskName = task.Name
 		data.TaskScore = task.Score
+		data.BuildChecks = make(map[string]bool, len(task.Checks))
 		for i, c := range task.Checks {
 			data.Panes = append(data.Panes, logPane{Index: i, Name: c.Name})
+			data.BuildChecks[c.Name] = c.Build != ""
 		}
 	} else {
 		data.TaskName = sub.TaskID // task deleted: history stays visible (SPEC §13)
@@ -109,7 +116,8 @@ func (h *Handler) submissionFragment(w http.ResponseWriter, r *http.Request) {
 }
 
 // submissionLog downloads one full check log from disk (SPEC §13: the DB holds
-// only the excerpt).
+// only the excerpt). `?phase=build` asks for the build phase's log instead of
+// the run phase's.
 //
 // Teachers only (SPEC §14: "check logs are shown to students as produced by
 // their tests; teachers see full logs"). Student code runs under the same UID
@@ -117,6 +125,11 @@ func (h *Handler) submissionFragment(w http.ResponseWriter, r *http.Request) {
 // and print them; handing their own author the raw log would turn that into an
 // exfiltration channel. The stored excerpt and the live stream stay with the
 // student - both are bounded by the task's `runner.log_excerpt`.
+//
+// The build phase is the stricter case: it is the phase that compiles against
+// the hidden tests, so a compiler quoting a hidden source line lands in its
+// log. Nothing of it reaches the student anywhere - no excerpt is stored and
+// the live stream does not tail it - and this route is the only way to read it.
 //
 // The check name is validated by membership in this submission's results, not
 // by shape: metadata only requires a name to be non-empty and unique within the
@@ -137,8 +150,15 @@ func (h *Handler) submissionLog(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	name := runner.LogFileName(check)
-	f, err := os.Open(filepath.Join(intake.SubmissionLogDir(h.DataDir, sub.ID), name))
+	// The file keeps the check's ordinary name inside the build subdirectory;
+	// only the name offered for download is disambiguated, so a teacher who
+	// saves both phases of one check ends up with two files.
+	dir, file := intake.SubmissionLogDir(h.DataDir, sub.ID), runner.LogFileName(check)
+	name := file
+	if r.URL.Query().Get("phase") == "build" {
+		dir, name = runner.BuildLogDir(dir), "build-"+file
+	}
+	f, err := os.Open(filepath.Join(dir, file))
 	if err != nil {
 		http.NotFound(w, r)
 		return
