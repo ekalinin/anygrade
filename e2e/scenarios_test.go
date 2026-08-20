@@ -29,6 +29,14 @@ func testValidate(t *testing.T, e *env) {
 	if !strings.Contains(out, "OK: course is valid") {
 		t.Fatalf("validate: missing success line:\n%s", out)
 	}
+	// The greet task mixes a two-phase check with a run-only one and configures
+	// hidden tests, so the run-only one executes after the boundary removed
+	// them. Harmless here - it only reads the open template - but it is exactly
+	// the shape that silently mis-grades, so it is reported as a warning and
+	// does not fail the course.
+	if !strings.Contains(out, "runs after the hidden tests are removed") {
+		t.Fatalf("validate: missing the run-only-beside-a-build-phase warning:\n%s", out)
+	}
 }
 
 // 2. teacher login: the web login form accepts the token from `user add`.
@@ -680,3 +688,47 @@ func testTamperNotes(t *testing.T, e *env) {
 
 // regexpRejected matches either push-rejection phrasing intake.go uses.
 var regexpRejected = regexp.MustCompile(`push rejected|validation failed`)
+
+// 10. hidden-tests boundary: the greet task's hidden check is two phases
+// (SPEC §6.1). The build phase runs the hidden test and stamps an artifact;
+// the run phase asserts the artifact survived and the hidden source did not.
+// bob's greet submission already scored 50 in the previous scenario, which is
+// only reachable if both phases passed - so what is left to prove is where the
+// output of the phase that read the hidden tests ended up.
+func testHiddenTestsBoundary(t *testing.T, e *env) {
+	logURL := func(check, query string) string {
+		return fmt.Sprintf("%s/submissions/%d/logs/%s%s", e.baseURL, e.bobGreetSubID, check, query)
+	}
+
+	// The teacher, and only the teacher, can read the build phase.
+	status, body := get(t, e.profClient, logURL("hidden", "?phase=build"))
+	if status != http.StatusOK {
+		t.Fatalf("teacher GET build log: status %d, body:\n%s", status, body)
+	}
+	if !strings.Contains(body, hiddenSecret) {
+		t.Fatalf("build log does not carry the hidden test output:\n%s", body)
+	}
+	if status, _ := get(t, e.bobClient, logURL("hidden", "?phase=build")); status != http.StatusNotFound {
+		t.Fatalf("the student read the build log: status %d", status)
+	}
+
+	// The run phase happened after the removal, so even the teacher's copy of
+	// it carries nothing of the hidden tests.
+	status, body = get(t, e.profClient, logURL("hidden", ""))
+	if status != http.StatusOK {
+		t.Fatalf("teacher GET run log: status %d", status)
+	}
+	if strings.Contains(body, hiddenSecret) {
+		t.Fatalf("the run phase saw the hidden tests:\n%s", body)
+	}
+
+	// And the student's own page - excerpts, live panes, download links - has
+	// no trace of the phase that did.
+	status, body = get(t, e.bobClient, fmt.Sprintf("%s/submissions/%d", e.baseURL, e.bobGreetSubID))
+	if status != http.StatusOK {
+		t.Fatalf("student GET submission: status %d", status)
+	}
+	if strings.Contains(body, hiddenSecret) || strings.Contains(body, "phase=build") {
+		t.Fatalf("the student page leaks the build phase:\n%s", body)
+	}
+}

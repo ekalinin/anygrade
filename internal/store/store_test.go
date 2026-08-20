@@ -390,6 +390,9 @@ func TestFinishSubmissionPersistsScoresAndChecks(t *testing.T) {
 			{Name: "build", Passed: true, Weight: 0, Duration: 120 * time.Millisecond},
 			{Name: "basic", Passed: true, Weight: 60, Duration: 300 * time.Millisecond},
 			{Name: "advanced", Passed: false, ExitCode: 1, Weight: 40, LogExcerpt: "boom"},
+			// Failed in its build phase: that phase's output is teacher-only,
+			// so the row carries the fact and an empty excerpt on purpose.
+			{Name: "compiled", Passed: false, ExitCode: 2, Weight: 20, BuildFailed: true},
 		},
 	})
 	if err != nil {
@@ -404,8 +407,16 @@ func TestFinishSubmissionPersistsScoresAndChecks(t *testing.T) {
 		*got.PenaltyPercent != 10 || *got.FinalScore != 54 {
 		t.Errorf("submission: %+v", got)
 	}
-	if len(checks) != 3 || checks[2].LogExcerpt != "boom" || checks[1].Duration != 300*time.Millisecond {
+	if len(checks) != 4 || checks[2].LogExcerpt != "boom" || checks[1].Duration != 300*time.Millisecond {
 		t.Errorf("checks: %+v", checks)
+	}
+	if !checks[3].BuildFailed || checks[3].LogExcerpt != "" {
+		t.Errorf("a build failure must round-trip without an excerpt: %+v", checks[3])
+	}
+	for _, c := range checks[:3] {
+		if c.BuildFailed {
+			t.Errorf("%s: build_failed defaults to false: %+v", c.Name, c)
+		}
 	}
 }
 

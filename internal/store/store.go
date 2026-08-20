@@ -200,6 +200,11 @@ type CheckRow struct {
 	Skipped    bool
 	TimedOut   bool
 	LogExcerpt string
+	// BuildFailed marks a check that never reached its run phase because its
+	// build phase failed. That phase's output is teacher-only (SPEC §14), so
+	// LogExcerpt is empty by design rather than by accident, and the UI needs
+	// the fact to say so.
+	BuildFailed bool
 }
 
 // SubmissionResult is the terminal outcome written by a worker.

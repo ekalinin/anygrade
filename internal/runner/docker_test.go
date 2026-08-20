@@ -310,7 +310,7 @@ func TestDockerRunnerContainerGone(t *testing.T) {
 	}
 	// A session that believes it owns a container which does not exist.
 	s := &dockerSession{r: &DockerRunner{}, job: job, name: "ag-gone-" + randHex(6)}
-	_, err := s.execCheck(t.Context(), job, job.Checks[0], filepath.Join(t.TempDir(), "x.log"))
+	_, err := s.execCheck(t.Context(), job, job.Checks[0], job.Checks[0].Run, filepath.Join(t.TempDir(), "x.log"))
 	if infra, ok := errors.AsType[*InfraError](err); !ok || infra.Op != "runner_exec" {
 		t.Fatalf("want InfraError(runner_exec), got %v", err)
 	}
@@ -349,5 +349,54 @@ func TestDockerRunnerTimeout(t *testing.T) {
 	// follow get a fresh one - with the workspace they had built up so far.
 	if !outcomes[2].Passed || !strings.Contains(outcomes[2].LogExcerpt, "kept") {
 		t.Errorf("after must run in a fresh container over the same workspace: %+v", outcomes[2])
+	}
+}
+
+// TestDockerRunnerHiddenTestBoundary is the boundary in the runner that
+// actually sandboxes anything. The docker workspace is a tmpfs inside the
+// container, not the host tree, so removing the files on the host proves
+// nothing on its own: the boundary takes the container down with its tmpfs and
+// seeds a fresh one from the cleaned host copy. What has to survive that is
+// $ANYGRADE_ARTIFACTS, because it is the only thing the run phase has left to
+// execute.
+func TestDockerRunnerHiddenTestBoundary(t *testing.T) {
+	requireDocker(t)
+	const secret = "hidden-expectations-42"
+	ws := assembleWithHidden(t, secret)
+
+	job := Job{
+		WorkspaceDir: ws.Root,
+		TaskRelDir:   "tasks/01",
+		Spec:         dockerSpec(time.Minute),
+		Checks: []config.Check{{
+			Name:   "boundary",
+			Weight: 1,
+			Build:  `cat hidden_test.txt > "$ANYGRADE_ARTIFACTS/compiled"; cat hidden_test.txt`,
+			Run: `cat "$ANYGRADE_ARTIFACTS/compiled"; ` +
+				`if [ -e hidden_test.txt ]; then echo LEAKED; else echo GONE; fi`,
+		}},
+		LogDir:      filepath.Join(t.TempDir(), "logs"),
+		HiddenPaths: ws.HiddenPaths,
+		HiddenDirs:  ws.HiddenDirs,
+	}
+	outcomes, err := (&DockerRunner{}).Run(t.Context(), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := outcomes[0]
+	if !o.Passed {
+		t.Fatalf("boundary check failed: %+v excerpt=%q", o, o.LogExcerpt)
+	}
+	if strings.Contains(o.LogExcerpt, "LEAKED") {
+		t.Errorf("the hidden test source was still in the container when the run phase started: %q", o.LogExcerpt)
+	}
+	if !strings.Contains(o.LogExcerpt, "GONE") {
+		t.Errorf("run phase did not report on the hidden test: %q", o.LogExcerpt)
+	}
+	if !strings.Contains(o.LogExcerpt, secret) {
+		t.Errorf("the build artifact did not survive the container swap: %q", o.LogExcerpt)
+	}
+	if got := readFile(t, buildLogPath(job.LogDir, "boundary")); !strings.Contains(got, secret) {
+		t.Errorf("the build phase should have read the hidden test: %q", got)
 	}
 }

@@ -591,3 +591,137 @@ func TestValidateHiddenLocalRoots(t *testing.T) {
 		t.Error("warned about a path inside an allowed root")
 	}
 }
+
+// buildPhaseCourse wraps one task into the Resolved shape Validate expects.
+func buildPhaseCourse(t *testing.T, task *Task) *Resolved {
+	t.Helper()
+	rt := Resolve(&Course{}, task)
+	rt.file = "task.yaml"
+	return &Resolved{
+		Course:    ResolvedCourse{Name: "C", TasksDir: "tasks", Registration: Registration{Mode: "invite"}, ScoringPolicy: "best"},
+		rawCourse: &Course{Registration: Registration{Mode: "invite"}, Scoring: Scoring{Policy: "best"}},
+		Tasks:     []ResolvedTask{rt},
+	}
+}
+
+// TestValidateBuildPhaseWarnings covers the two things a two-phase task can get
+// silently wrong. Both are warnings, not errors: neither pattern is always a
+// bug, and validate also runs on every teacher push, where an error rejects it.
+func TestValidateBuildPhaseWarnings(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base := func(checks []Check, hidden *HiddenTests) *Task {
+		return &Task{
+			Dir: dir, ID: "w", Name: "W", Score: 100,
+			SolutionFiles: []string{"main.go"},
+			Runner:        RunnerSpec{Type: new("local")}, // local needs no image
+			HiddenTests:   hidden,
+			Checks:        checks,
+		}
+	}
+	hidden := &HiddenTests{Source: "local", Path: "/srv/hidden/w"}
+
+	tests := []struct {
+		name   string
+		task   *Task
+		want   string
+		absent bool
+	}{{
+		name: "run-only check beside a build phase loses the hidden tests",
+		task: base([]Check{
+			{Name: "compiled", Weight: 1, Build: "go test -c -o $ANYGRADE_ARTIFACTS/w.test ./...", Run: "$ANYGRADE_ARTIFACTS/w.test"},
+			{Name: "open", Weight: 1, Run: "go test ./..."},
+		}, hidden),
+		want: "runs after the hidden tests are removed",
+	}, {
+		// Every check is two-phase: nothing is left behind by the boundary.
+		name: "all checks build",
+		task: base([]Check{
+			{Name: "compiled", Weight: 1, Build: "go test -c -o $ANYGRADE_ARTIFACTS/w.test ./...", Run: "$ANYGRADE_ARTIFACTS/w.test"},
+		}, hidden),
+		want: "runs after the hidden tests are removed", absent: true,
+	}, {
+		// No hidden tests: the boundary removes nothing, so a run-only check
+		// beside a build phase loses nothing either.
+		name: "no hidden tests",
+		task: base([]Check{
+			{Name: "compiled", Weight: 1, Build: "go test -c -o $ANYGRADE_ARTIFACTS/w.test ./...", Run: "$ANYGRADE_ARTIFACTS/w.test"},
+			{Name: "open", Weight: 1, Run: "go test ./..."},
+		}, nil),
+		want: "runs after the hidden tests are removed", absent: true,
+	}, {
+		name: "build repeats run",
+		task: base([]Check{
+			{Name: "same", Weight: 1, Build: "go test ./...", Run: "go test ./..."},
+		}, hidden),
+		want: "build and run are the same command",
+	}}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			diags := Validate(buildPhaseCourse(t, tc.task))
+			if HasErrors(diags) {
+				t.Fatalf("a build phase must never be an error: %v", diagStrings(diags))
+			}
+			joined := strings.Join(diagStrings(diags), "\n")
+			if got := strings.Contains(joined, tc.want); got == tc.absent {
+				t.Errorf("warning %q present=%v, want present=%v in:\n%s", tc.want, got, !tc.absent, joined)
+			}
+		})
+	}
+}
+
+// TestLoadTaskBuildPhase: `build:` has to survive the strict decoder and the
+// merge into ResolvedTask, and a task without it must stay exactly what it was
+// - the boundary is additive, so an existing course.yaml/task.yaml pair keeps
+// its meaning byte for byte.
+func TestLoadTaskBuildPhase(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(repo, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("course.yaml", "name: C\nregistration:\n  mode: invite\ndefaults:\n  runner:\n    type: local\n")
+	write("tasks/two/main.go", "package main\n")
+	write("tasks/two/task.yaml", `name: Two
+score: 100
+solution_files: [main.go]
+checks:
+  - name: compiled
+    weight: 60
+    build: go test -c -o $ANYGRADE_ARTIFACTS/two.test ./...
+    run: $ANYGRADE_ARTIFACTS/two.test -test.run TestBasic
+  - name: plain
+    weight: 40
+    run: go vet ./...
+`)
+
+	r, diags, err := LoadAll(repo)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if HasErrors(append(diags, Validate(r)...)) {
+		t.Fatalf("unexpected errors: %v", diagStrings(append(diags, Validate(r)...)))
+	}
+	checks := r.Tasks[0].Checks
+	if got := checks[0].Build; got != "go test -c -o $ANYGRADE_ARTIFACTS/two.test ./..." {
+		t.Errorf("build phase: %q", got)
+	}
+	if checks[1].Build != "" {
+		t.Errorf("a check without build must stay run-only: %q", checks[1].Build)
+	}
+	if !HasBuildPhase(checks) {
+		t.Error("HasBuildPhase must see the one build phase in the list")
+	}
+	if HasBuildPhase(checks[1:]) {
+		t.Error("HasBuildPhase must be false for a run-only list")
+	}
+}

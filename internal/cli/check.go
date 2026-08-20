@@ -262,6 +262,11 @@ func runTask(ctx context.Context, repo, dataDir string, t config.ResolvedTask, r
 		Spec:         spec,
 		Checks:       t.Checks,
 		LogDir:       filepath.Join(dataDir, "logs", runID),
+		// Usually empty here - `check` never fetches hidden tests - but a
+		// course author with the local source at hand gets the same boundary
+		// the server applies, which is the point of authoring against it.
+		HiddenPaths: ws.HiddenPaths,
+		HiddenDirs:  ws.HiddenDirs,
 		// --keep is for inspecting the run afterwards, so the docker runner has
 		// to copy its ephemeral /work back out; without it the kept workspace
 		// would only hold the assembled inputs.
@@ -298,6 +303,12 @@ func printTaskResult(t config.ResolvedTask, spec config.ResolvedRunner, outcomes
 		case !o.Passed:
 			res = "fail"
 			note = o.LogPath
+		}
+		if o.BuildFailed {
+			// The run phase never happened, so LogPath is empty: point the
+			// author at the phase that actually failed.
+			res = "build " + res
+			note = o.BuildLogPath
 		}
 		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", o.Name, res, o.Duration.Round(10*time.Millisecond), note)
 		results[i] = scoring.CheckResult{

@@ -29,6 +29,16 @@ type Job struct {
 	Spec       config.ResolvedRunner
 	Checks     []config.Check // run in order
 	LogDir     string         // per-check log files are written here
+	// HiddenPaths lists the workspace-relative (slash-separated) files the
+	// hidden-tests overlay wrote, as reported by Assemble. They are removed
+	// between the build and the run phases when the task has any build phase
+	// at all - the execution boundary of SPEC §6.1. Empty means there is
+	// nothing to remove and the boundary is a no-op.
+	HiddenPaths []string
+	// HiddenDirs are the directories of that same overlay, removed after the
+	// files when they are left empty, so a directory name cannot outlive the
+	// sources it held.
+	HiddenDirs []string
 	// ExportWorkspace copies the container's /work back onto WorkspaceDir when
 	// the run finishes (docker runner only). The workspace lives in a tmpfs
 	// inside the container, so this is the only way files a check produced
@@ -47,6 +57,13 @@ type Outcome struct {
 	Skipped    bool // an earlier gate failed; this check did not run
 	LogPath    string
 	LogExcerpt string // tail of the log, at most Job.Spec.LogExcerpt bytes
+	// BuildFailed says the check never reached its run phase because its build
+	// phase failed. LogPath and LogExcerpt are then empty on purpose: the only
+	// output this check produced came from the phase that read the hidden
+	// tests, and that one is teacher-only (SPEC §14). BuildLogPath points at
+	// it for the callers that are allowed to look.
+	BuildFailed  bool
+	BuildLogPath string
 }
 
 // Runner executes all checks of one submission in order. A non-nil error is
@@ -84,39 +101,108 @@ func (e *InfraError) Unwrap() error { return e.Err }
 
 func infraErr(op string, err error) *InfraError { return &InfraError{Op: op, Err: err} }
 
-// checkExecutor runs a single check; implemented by both runners. A non-nil
-// error must be an *InfraError and aborts the whole run.
+// checkExecutor runs the phases of a run; implemented by both runners. A
+// non-nil error must be an *InfraError and aborts the whole run.
 type checkExecutor interface {
-	execCheck(ctx context.Context, job Job, c config.Check, logPath string) (Outcome, error)
+	// execCheck runs one phase of check c (cmd is c.Build or c.Run) and writes
+	// its output to logPath.
+	execCheck(ctx context.Context, job Job, c config.Check, cmd, logPath string) (Outcome, error)
+	// dropHiddenTests takes the hidden-test sources out of the workspace the
+	// run phases will execute in. It is called once, between the two sweeps of
+	// runAll, and only when there is something to remove.
+	dropHiddenTests(ctx context.Context, job Job) error
 }
 
-// runAll is the shared driver: it iterates checks in order, applies the gate
-// short-circuit (after a failed required check the remaining checks are
-// reported Skipped), and honors parent-context cancellation.
+// runAll is the shared driver. A check is up to two phases (SPEC §4.3): every
+// build phase runs first, in check order; then the hidden-test sources leave
+// the workspace; then every run phase, in check order. A task whose checks
+// declare no build phase skips the first two steps entirely and behaves
+// exactly as it did before the boundary existed.
+//
+// Both sweeps share one stop index, which is what makes the gates coherent
+// across the split. A gate that fails takes everything after it out of the
+// run, whichever phase it failed in: at build time the builds that follow are
+// pointless, at run time their builds already happened and the wasted work is
+// simply accepted - re-ordering the sweeps to avoid it would put student code
+// on disk next to the hidden tests again, which is the whole thing being
+// bought here. Checks *before* the failed gate keep both of their phases and
+// report a real result, exactly as they did when a check was one command.
+//
+// Each phase gets the task's full `runner.timeout`: a phase is one command and
+// the timeout has always been a per-command wall clock. A check with both
+// phases can therefore occupy 2×timeout (see dockerSession.lifetime).
 func runAll(ctx context.Context, job Job, ex checkExecutor) ([]Outcome, error) {
 	// Owner-only: check logs hold the full output of a student's run, and the
 	// data dir around them is 0700 as well.
 	if err := os.MkdirAll(job.LogDir, 0o700); err != nil {
 		return nil, infraErr("workspace", err)
 	}
-	outcomes := make([]Outcome, 0, len(job.Checks))
-	gateFailed := false
-	for _, c := range job.Checks {
-		if gateFailed {
-			outcomes = append(outcomes, Outcome{Name: c.Name, Skipped: true})
+	// Pre-seed every check as skipped: whatever neither sweep reaches keeps
+	// that verdict, so a gate needs no bookkeeping beyond the stop index.
+	outcomes := make([]Outcome, len(job.Checks))
+	for i, c := range job.Checks {
+		outcomes[i] = Outcome{Name: c.Name, Skipped: true}
+	}
+	stop := len(job.Checks)
+	// What each check spent in its build phase. A check costs both of its
+	// phases, so the duration it reports is their sum - a check that takes 40s
+	// to compile and 2s to run is not a 2s check.
+	buildDur := make([]time.Duration, len(job.Checks))
+
+	if config.HasBuildPhase(job.Checks) {
+		if err := os.MkdirAll(BuildLogDir(job.LogDir), 0o700); err != nil {
+			return nil, infraErr("workspace", err)
+		}
+		for i, c := range job.Checks {
+			if i >= stop {
+				break
+			}
+			if c.Build == "" {
+				continue
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, infraErr("canceled", err)
+			}
+			o, err := ex.execCheck(ctx, job, c, c.Build, buildLogPath(job.LogDir, c.Name))
+			if err != nil {
+				return nil, err
+			}
+			if o.Passed {
+				buildDur[i] = o.Duration
+				continue // the run phase decides the check
+			}
+			// The build phase is the one that reads the hidden tests, so none
+			// of its output may reach the student: no excerpt, no log for the
+			// live stream to tail, only the teacher-only file (SPEC §14).
+			o.BuildFailed, o.BuildLogPath = true, o.LogPath
+			o.LogPath, o.LogExcerpt = "", ""
+			outcomes[i] = o
+			if c.Required {
+				stop = i + 1
+			}
+		}
+		if len(job.HiddenPaths) > 0 {
+			if err := ex.dropHiddenTests(ctx, job); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	for i, c := range job.Checks {
+		if i >= stop || outcomes[i].BuildFailed {
 			continue
 		}
 		if err := ctx.Err(); err != nil {
 			return nil, infraErr("canceled", err)
 		}
-		logPath := filepath.Join(job.LogDir, logFileName(c.Name))
-		o, err := ex.execCheck(ctx, job, c, logPath)
+		o, err := ex.execCheck(ctx, job, c, c.Run, filepath.Join(job.LogDir, logFileName(c.Name)))
 		if err != nil {
 			return nil, err
 		}
-		outcomes = append(outcomes, o)
+		o.Duration += buildDur[i]
+		outcomes[i] = o
 		if c.Required && !o.Passed {
-			gateFailed = true
+			stop = i + 1
 		}
 	}
 	return outcomes, nil
@@ -199,3 +285,18 @@ func shortHash(s string) string {
 // LogFileName is logFileName for other packages: the web layer must tail
 // exactly the files the runner writes.
 func LogFileName(name string) string { return logFileName(name) }
+
+// buildLogSubdir holds the build-phase logs. A subdirectory rather than a
+// suffixed file name for two reasons: it stays injective for free (a check
+// named "x" and a check named "x.build" would otherwise fight over
+// x.build.log), and the teacher-only rule becomes structural - the student's
+// live stream tails LogDir and never descends into it (SPEC §14).
+const buildLogSubdir = "build"
+
+// BuildLogDir is where the build-phase logs of a submission live. The file
+// inside it keeps the check's ordinary LogFileName.
+func BuildLogDir(logDir string) string { return filepath.Join(logDir, buildLogSubdir) }
+
+func buildLogPath(logDir, check string) string {
+	return filepath.Join(BuildLogDir(logDir), logFileName(check))
+}
