@@ -296,34 +296,39 @@ func TestLocalRunnerBuildFailureIsTeacherOnly(t *testing.T) {
 	}
 }
 
-// TestTwoPhaseDurationCoversBothPhases: a check costs what both of its phases
-// cost. Reporting only the run phase would hide a slow compile from the queue
-// view and from the teacher deciding what `runner.timeout` should be.
-func TestTwoPhaseDurationCoversBothPhases(t *testing.T) {
-	job := localJob(t, time.Minute, []config.Check{
-		{Name: "slow-build", Weight: 1, Build: "sleep 0.4", Run: "true"},
+// TestPhaseBudgetIsPerPhase pins the timeout as per-phase (SPEC §4.3): a phase
+// is one command, and the timeout has always been the wall clock of one
+// command. Both phases here fit the budget on their own and would blow it
+// together, so a shared clock fails the check. The reported duration is their
+// sum for the same reason: a check that takes a long time to compile and no
+// time to run is not a fast check, and the teacher setting `runner.timeout`
+// has to see it.
+func TestPhaseBudgetIsPerPhase(t *testing.T) {
+	// Whole seconds: fractional sleeps are not POSIX. 2+2 over a 3s budget
+	// leaves a second of slack per phase and still fails a shared clock.
+	job := localJob(t, 3*time.Second, []config.Check{
+		{Name: "two-phase", Weight: 1, Build: "sleep 2", Run: "sleep 2"},
 	})
 	outcomes, err := (&LocalRunner{}).Run(t.Context(), job)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !outcomes[0].Passed {
-		t.Fatalf("slow-build: %+v", outcomes[0])
+	o := outcomes[0]
+	if !o.Passed || o.TimedOut {
+		t.Fatalf("each phase gets the full timeout: %+v", o)
 	}
-	if outcomes[0].Duration < 400*time.Millisecond {
-		t.Errorf("duration %v does not include the build phase", outcomes[0].Duration)
+	if o.Duration < 3500*time.Millisecond {
+		t.Errorf("duration %v does not cover both phases", o.Duration)
 	}
 }
 
-// TestLocalRunnerPhaseTimeout pins the timeout as per-phase (SPEC §4.3): a
-// phase is one command, and the timeout has always been the wall clock of one
-// command. A build that times out is that check's failure, in its build phase.
-func TestLocalRunnerPhaseTimeout(t *testing.T) {
+// TestLocalRunnerBuildTimeout: a build phase that times out is that check's
+// failure, in its build phase - so no run phase, and the checks after it are
+// untouched because it is not a gate.
+func TestLocalRunnerBuildTimeout(t *testing.T) {
 	job := localJob(t, 300*time.Millisecond, []config.Check{
-		{Name: "slow-build", Weight: 1, Build: "sleep 30 & wait", Run: "true"},
-		// Its own full budget: the previous phase burning the clock does not
-		// shorten this one.
-		{Name: "after", Weight: 1, Build: "sleep 0.1", Run: "sleep 0.1"},
+		{Name: "slow-build", Weight: 1, Build: "sleep 30 & wait", Run: "echo unreachable"},
+		{Name: "after", Weight: 1, Run: "echo still runs"},
 	})
 	outcomes, err := (&LocalRunner{}).Run(t.Context(), job)
 	if err != nil {
@@ -332,8 +337,17 @@ func TestLocalRunnerPhaseTimeout(t *testing.T) {
 	if !outcomes[0].TimedOut || !outcomes[0].BuildFailed || outcomes[0].Passed {
 		t.Errorf("slow-build: %+v", outcomes[0])
 	}
+	// The timeout note belongs to the build phase, so it goes to the
+	// teacher-only log and not to the student's excerpt.
+	if outcomes[0].LogExcerpt != "" {
+		t.Errorf("a timed-out build must not leave a student-visible excerpt: %q", outcomes[0].LogExcerpt)
+	}
+	if got := readFile(t, outcomes[0].BuildLogPath); !strings.Contains(got, "timed out after") {
+		t.Errorf("build log missing the timeout note: %q", got)
+	}
+	// The clock the previous check burned is not this one's.
 	if !outcomes[1].Passed {
-		t.Errorf("after: each phase gets the full timeout: %+v", outcomes[1])
+		t.Errorf("after: %+v", outcomes[1])
 	}
 }
 
