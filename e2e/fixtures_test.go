@@ -120,6 +120,89 @@ checks:
 const lateReadme = "# Late\n\nDeadline passed long ago.\n"
 const lateNotes = "todo\n"
 
+// slowTaskYAML is a task whose check runs long enough for a scenario to catch
+// the submission in `running` and act on it (restart, cancel).
+const slowTaskYAML = `name: "Slow"
+score: 10
+
+solution_files:
+  - notes.txt
+
+checks:
+  - name: slow
+    weight: 1
+    run: sleep 3
+`
+
+const slowReadme = "# Slow\n\nA check that takes a few seconds.\n"
+const slowNotes = "todo\n"
+
+// timeoutTaskYAML has a non-gate check that outlives the task's runner timeout,
+// plus a following check that must still run (SPEC §13).
+const timeoutTaskYAML = `name: "Timeout"
+score: 20
+
+solution_files:
+  - notes.txt
+
+runner:
+  timeout: 2s
+
+checks:
+  - name: hang
+    weight: 1
+    run: sleep 30
+  - name: after
+    weight: 1
+    run: "true"
+`
+
+const timeoutReadme = "# Timeout\n\nOne check hangs.\n"
+const timeoutNotes = "todo\n"
+
+// softTaskYAML is late by years with the hard deadline still ahead, so it is
+// always accepted and always carries the capped penalty from the course
+// defaults (10% per 24h, capped at 50%) - a fixed expectation no matter when
+// the suite runs (SPEC §9).
+const softTaskYAML = `name: "Soft"
+score: 100
+
+solution_files:
+  - notes.txt
+
+deadline:
+  soft: 2020-01-01T00:00:00+03:00
+  hard: 2999-01-01T00:00:00+03:00
+
+checks:
+  - name: check
+    weight: 1
+    run: "true"
+`
+
+const softReadme = "# Soft\n\nSoft deadline long past, hard deadline far ahead.\n"
+const softNotes = "todo\n"
+
+// limitedTaskYAML caps attempts at two so a third push is rejected without
+// running (SPEC §4.3).
+const limitedTaskYAML = `name: "Limited"
+score: 10
+
+solution_files:
+  - notes.txt
+
+limits:
+  max_attempts: 2
+
+checks:
+  - name: check
+    weight: 1
+    run: "true"
+`
+
+const limitedReadme = "# Limited\n\nTwo attempts.\n"
+const limitedNotes = "todo\n"
+
 // hiddenSecret is printed by the hidden test and by nothing else, so finding
 // it in a response is proof that hidden-test output reached that reader.
 const hiddenSecret = "hidden-marker-e2e-secret"
@@ -162,6 +245,22 @@ func writeCourseFixture(t *testing.T, root, hiddenDir string) string {
 	writeFile(t, filepath.Join(dir, "tasks", "late", "task.yaml"), lateTaskYAML)
 	writeFile(t, filepath.Join(dir, "tasks", "late", "README.md"), lateReadme)
 	writeFile(t, filepath.Join(dir, "tasks", "late", "notes.txt"), lateNotes)
+
+	writeFile(t, filepath.Join(dir, "tasks", "slow", "task.yaml"), slowTaskYAML)
+	writeFile(t, filepath.Join(dir, "tasks", "slow", "README.md"), slowReadme)
+	writeFile(t, filepath.Join(dir, "tasks", "slow", "notes.txt"), slowNotes)
+
+	writeFile(t, filepath.Join(dir, "tasks", "timeout", "task.yaml"), timeoutTaskYAML)
+	writeFile(t, filepath.Join(dir, "tasks", "timeout", "README.md"), timeoutReadme)
+	writeFile(t, filepath.Join(dir, "tasks", "timeout", "notes.txt"), timeoutNotes)
+
+	writeFile(t, filepath.Join(dir, "tasks", "soft", "task.yaml"), softTaskYAML)
+	writeFile(t, filepath.Join(dir, "tasks", "soft", "README.md"), softReadme)
+	writeFile(t, filepath.Join(dir, "tasks", "soft", "notes.txt"), softNotes)
+
+	writeFile(t, filepath.Join(dir, "tasks", "limited", "task.yaml"), limitedTaskYAML)
+	writeFile(t, filepath.Join(dir, "tasks", "limited", "README.md"), limitedReadme)
+	writeFile(t, filepath.Join(dir, "tasks", "limited", "notes.txt"), limitedNotes)
 
 	git(t, dir, nil, "init", "-q", "-b", "main")
 	git(t, dir, nil, "add", ".")
