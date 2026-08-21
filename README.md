@@ -112,6 +112,8 @@ checks:
 
 Raw score = `score × (passed weight / total weight)`. Weights must be non-negative - a negative one would push the score past the maximum, so `anygrade validate` rejects it; weight 0 is what gates carry. Late submissions between the soft and hard deadline get a percentage penalty per started interval; past the hard deadline they are recorded but not graded.
 
+A check may also carry an optional `build:` phase before its `run:`; it passes iff both exit 0. That is what keeps a compiled language's hidden tests off the disk while the student's code runs - see [hidden tests](#hidden-tests).
+
 Check output is kept twice: the last `log_excerpt` bytes go to the database and the UI, the whole stream to a file capped at `log_max` and closed with a truncation marker. Students see the excerpt and the live stream; the full log is a teacher-only download.
 
 ## Install
@@ -152,14 +154,25 @@ Students are registered by invite links (`anygrade user invite --login alice`, o
 git clone http://host:8080/git/<login>/course.git
 git remote add upstream http://host:8080/git/course.git
 
-# or over SSH, once an SSH key is added (at activation or in settings)
+# or over SSH, once an SSH key is added on the settings page
 git clone ssh://git@host:2222/<login>/course.git
 git remote add upstream ssh://git@host:2222/course.git
 
 # later: git pull upstream main
 ```
 
-The token is the basic-auth password for git over HTTP and the login credential for the web UI. SSH auth is by key only; the token is not asked for. Teachers push course updates to `/git/course.git` - every push is validated and rejected with the error list if the metadata is broken.
+The token is the basic-auth password for git over HTTP and the login credential for the web UI. SSH auth is by key only; the token is not asked for.
+
+Adding an SSH key takes two steps, because public keys are public: paste the key on the settings page, and the server hands back a one-time challenge to sign with the private half.
+
+```sh
+printf '%s' 'anygrade-key-proof/v1 user=alice key=SHA256:... nonce=agc_...' \
+  | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n anygrade -
+```
+
+The page prints the exact line; it names your login and the key, so a line somebody else sends you would register your key to their account. Paste the whole `-----BEGIN SSH SIGNATURE-----` block back and the key is registered. The challenge lasts ten minutes and works once. Keys added by a teacher with `anygrade user add-key`, and keys registered by older versions, carry no such proof: they keep working, are labelled unproven on the settings and student pages, and lose the fingerprint to whoever later proves possession of it.
+
+Teachers push course updates to `/git/course.git` - every push is validated and rejected with the error list if the metadata is broken.
 
 Rechecks: a commit message marker `[recheck <task-id>]` (works with an empty commit) or the recheck button on the task page. Student rechecks count against attempts and cooldown; teacher rechecks do not.
 
@@ -191,6 +204,40 @@ The server caches hidden repos in the data dir and falls back to the last succes
 
 With `source: local` the `path` is an absolute path on the grading server; `validate` warns when it is relative or missing locally, since a course repo is usually validated elsewhere. `ANYGRADE_HIDDEN_LOCAL_ROOTS` (colon-separated absolute roots) limits which directories such a path may reach; unset means unrestricted. Set it whenever the teachers who push `course.yaml` are not the administrators of the machine. `anygrade check` reads the working copy and is not subject to it.
 
+### Keeping them off the disk while the solution runs
+
+By default the hidden tests sit in the same workspace as the solution and run under the same uid, because the interpreter or compiler has to read them. A student who deliberately prints them reads them back out of their own check output.
+
+For a **compiled** language you can close that. Give a check a `build:` phase:
+
+```yaml
+checks:
+  - name: build            # the student's own code, so they see the compiler errors
+    required: true
+    weight: 0
+    run: go build ./...
+  - name: basic
+    weight: 60
+    build: go test -c -o $ANYGRADE_ARTIFACTS/basic.test ./...
+    run: $ANYGRADE_ARTIFACTS/basic.test -test.run 'TestBasic'
+  - name: advanced
+    weight: 40
+    build: go test -c -o $ANYGRADE_ARTIFACTS/advanced.test ./...
+    run: $ANYGRADE_ARTIFACTS/advanced.test -test.run 'TestAdvanced'
+```
+
+Every `build:` runs first, then the hidden test files are removed from the workspace, then every `run:`. `go test -c` compiles the hidden tests together with the solution and **never executes** it, so by the time the test binary runs, the sources it was built from are gone. `$ANYGRADE_ARTIFACTS` is a directory in the workspace that survives the removal - it is where a build phase leaves what its run phase executes. Each phase gets the full `timeout`.
+
+Read the three limits before you rely on this:
+
+- **It is not secrecy against a determined student.** The test binary still carries test names, string literals and line numbers, and a process can read its own executable. You have turned `cat` into reverse engineering, which is worth doing, and not into a lock.
+- **It buys nothing for an interpreted language.** Python, shell, Ruby: the test source has to be there when the student's code runs, so there is nothing to remove.
+- **A `build:` that runs the solution defeats it.** `go test -run X ./...` executes student code with the hidden sources still on disk. Only compile in `build:`. `validate` cannot check this for you - the command is an arbitrary shell line - so it is on you.
+
+The build phase's output is **teacher-only**: it is the phase that compiles against the hidden tests, so a compiler error quoting a hidden source line would land in it. A student whose check fails there is told the build failed and nothing else, which is why the example above keeps a plain `go build ./...` gate: that one does not compile `_test.go` files, so its output is safe to show and it is where a student sees their own compile errors. Teachers get the build log next to the ordinary one on the submission page.
+
+One check with a `build:` turns the boundary on for the whole task, so any check left run-only will not find the hidden tests any more. `anygrade validate` warns about each one; make sure it is what you meant.
+
 ## CLI
 
 ```
@@ -212,8 +259,9 @@ Anything else should be served over TLS: either give `serve` a certificate (`--t
 ## Security
 
 - Student code is untrusted: the docker runner (one ephemeral container per submission) applies memory/cpu/pids limits, no network by default, read-only base image, a non-root user, a tmpfs workspace copied into the container instead of a host bind mount, and a hard wall-clock timeout. Serving on a non-loopback address with any task on the local runner refuses to start unless `--allow-local-runner` is passed explicitly.
-- Tokens, invite links and session cookies are stored hashed; SSH is limited to git commands; failed logins are rate limited per client and login across git and the web.
-- Role checks on every route; students can only read their own submissions. The check excerpt and the live stream are theirs; the full check log is a teacher-only download, because their code runs beside the hidden tests.
+- Tokens, invite links, session cookies and SSH key challenges are stored hashed; registering an SSH key takes a signed challenge, so nobody can claim a classmate's key; SSH is limited to git commands; failed logins are rate limited per client and login across git and the web.
+- SSH has no guessable credential to rate limit - it authenticates a key fingerprint, and a client offers every key in its agent until one matches - so it is bounded on connection churn instead: how many connections may sit in the handshake at once, overall and per client address, how long each one has to get through it, and how long an established connection may sit idle. Nothing is tunable and nothing needs to be; the ceilings are far above a whole class pushing at a deadline, and a key that authenticates stops counting against them straight away.
+- Role checks on every route; students can only read their own submissions. The check excerpt and the live stream are theirs; the full check log is a teacher-only download, because their code runs beside the hidden tests. A check's `build:` phase is teacher-only in full - no excerpt, no live stream - since that is the phase that compiles against the hidden tests.
 - CSV export prefixes any cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return with an apostrophe, so a login can never become a spreadsheet formula.
 
 ## Data directory
@@ -227,6 +275,7 @@ Everything lives in one directory, `./.anygrade` by default (`--data-dir` to ove
   repos/                 # bare course mirror + per-student repos
   hidden/                # hidden-tests cache
   logs/<submission-id>/  # raw check output
+    build/               # build-phase output, teacher-only
   workspaces/            # ephemeral check workspaces
 ```
 

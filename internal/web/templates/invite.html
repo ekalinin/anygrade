@@ -4,12 +4,9 @@
 {{if .Invalid}}
 <p class="flash error">{{t "invite.invalid"}}</p>
 {{else}}
-<p>{{t "invite.welcome"}} <strong>{{.Login}}</strong>. {{t "invite.activation_creates"}}{{if not .Error}}{{t "invite.and_ssh"}}{{end}}.</p>
-{{if .Error}}<p class="flash error">{{tFlash .Error}}</p>{{end}}
+<p>{{t "invite.welcome"}} <strong>{{.Login}}</strong>. {{t "invite.activation_creates"}}</p>
+<p class="hint">{{t "invite.ssh_later"}}</p>
 <form method="post" action="/invite/{{.Token}}">
-  <label>{{t "invite.ssh_key_label"}} <span class="hint">{{t "invite.ssh_key_hint"}}</span>
-    <input name="key" placeholder="ssh-ed25519 AAAA... comment">
-  </label>
   <button type="submit">{{t "invite.activate"}}</button>
 </form>
 {{end}}

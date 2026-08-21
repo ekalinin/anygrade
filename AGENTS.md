@@ -12,8 +12,9 @@ Guidance for AI coding agents (Claude Code and any tool that reads `AGENTS.md`) 
 
 ## Commands
 
-- `make check` - build + vet + gofmt + full unit tests; run before handing work off
+- `make check` - build + vet + gofmt + full unit tests; run before handing work off. The docker runner tests skip themselves when no daemon is reachable; `ANYGRADE_REQUIRE_DOCKER=1` turns that absence into a failure, which is how CI keeps the sandbox actually exercised rather than silently unverified
 - `make e2e` - end-to-end regression suite (spawns the real binary, drives CLI/HTTP/git; needs `git`, no docker, ~6s)
+- `make vulncheck` - govulncheck over the module; fails only on vulnerabilities the code can reach
 - `make test-short` - unit tests with `-short`
 - `make binary` - build `./anygrade`
 - single test: `go test ./internal/<pkg> -run TestName -count=1`
@@ -33,7 +34,7 @@ Submission flow (the path that touches most packages):
 3. `internal/intake` diffs the pushed head against the last processed baseline ref, maps changed paths to tasks, and admits or rejects per task (deadlines, attempt limits). Pushes are never rejected for policy reasons - the submission is, in the push output. The personal repo is seeded with a baseline at provisioning (`gitserver.EnsureStudent` sets `refs/anygrade/baseline` to the cloned head), so a student's first push diffs against the course template and detects only the tasks they actually changed. If the baseline ref is missing (legacy repo, or gc'd after a force-push), intake self-heals by diffing against the empty tree, which re-detects every task.
 4. `internal/queue` stores submissions in SQLite; a worker pool claims them. Running submissions are re-queued on restart. `queue.Terminal(msg)` marks a prepare failure non-retryable.
 5. Prep assembles an ephemeral workspace: authoritative task files from the course mirror + only the student's `solution_files` from their commit + hidden tests. Student edits to task.yaml/open tests are discarded and noted for the teacher.
-6. `internal/runner` executes each check via `sh -c` (local runner) or in an ephemeral docker container; `internal/scoring` and `internal/gradebook` turn results into scores.
+6. `internal/runner` executes each check via `sh -c` (local runner) or in an ephemeral docker container; `internal/scoring` and `internal/gradebook` turn results into scores. A check is one phase or two: when any check of the task declares `build:`, every build phase runs first, the hidden-test files are then removed from the workspace, and only then do the run phases execute (SPEC §6.1). A build phase's log is teacher-only - it is the one that compiles against the hidden tests - and lives in `logs/<id>/build/`.
 7. `internal/web` (SSR html/template + htmx + SSE, all embedded) streams live status via the Hub.
 
 Package boundaries to preserve:

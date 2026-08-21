@@ -258,6 +258,10 @@ func (q *Queue) process(ctx context.Context, sub store.Submission) {
 		Spec:         p.Task.Runner,
 		Checks:       p.Task.Checks,
 		LogDir:       p.LogDir,
+		// What the hidden-tests overlay wrote, so the runner can take it back
+		// out between the build and the run phases (SPEC §6.1).
+		HiddenPaths: ws.HiddenPaths,
+		HiddenDirs:  ws.HiddenDirs,
 	})
 	if err != nil {
 		q.fail(ctx, sub, err)
@@ -282,6 +286,8 @@ func (q *Queue) process(ctx context.Context, sub store.Submission) {
 			Skipped:    o.Skipped,
 			TimedOut:   o.TimedOut,
 			LogExcerpt: o.LogExcerpt,
+			// Empty excerpt with a reason: the build phase is teacher-only.
+			BuildFailed: o.BuildFailed,
 		}
 	}
 	raw := scoring.RawScore(p.Task.Score, results)

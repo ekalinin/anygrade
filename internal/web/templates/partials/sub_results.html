@@ -15,7 +15,10 @@
       {{else}}<span class="badge st-failed">{{t "status.fail"}}</span>{{end}}
     </td>
     <td>{{.Duration}}</td>
-    {{if $.CanDownloadLogs}}<td><a href="/submissions/{{$.Sub.ID}}/logs/{{.Name}}">{{t "common.download"}}</a></td>{{end}}
+    {{if $.CanDownloadLogs}}<td>
+      {{if not .BuildFailed}}<a href="/submissions/{{$.Sub.ID}}/logs/{{.Name}}">{{t "common.download"}}</a>{{end}}
+      {{if or .BuildFailed (index $.BuildChecks .Name)}}<a href="/submissions/{{$.Sub.ID}}/logs/{{.Name}}?phase=build">{{t "sub.build_log"}}</a>{{end}}
+    </td>{{end}}
   </tr>
   {{end}}
   </tbody>
@@ -26,7 +29,9 @@
   &rarr; <strong>{{score .Sub.FinalScore}} / {{.TaskScore}}</strong>
 </p>
 {{end}}
-{{range .Checks}}{{if and .LogExcerpt (not .Passed) (not .Skipped)}}
+{{range .Checks}}{{if .BuildFailed}}
+<p class="hint">{{.Name}}: {{t "sub.build_failed"}}</p>
+{{else if and .LogExcerpt (not .Passed) (not .Skipped)}}
 <details class="pane">
   <summary>{{.Name}} {{t "sub.output"}}</summary>
   <pre>{{.LogExcerpt}}</pre>

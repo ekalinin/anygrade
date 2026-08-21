@@ -248,6 +248,7 @@ func validateTask(t *ResolvedTask, add func(Severity, string, string, string, ..
 	}
 
 	validateChecks(t, add)
+	validateBoundary(t, add)
 	validateHidden(t, add)
 	validateWorkspace(t, add)
 	validatePenaltyWarnings(t, add)
@@ -337,6 +338,13 @@ func validateChecks(t *ResolvedTask, add func(Severity, string, string, string, 
 		if ch.Run == "" {
 			add(SevError, f, field+".run", "check command is required")
 		}
+		// build and run are two phases of one check, separated by the removal
+		// of the hidden tests (SPEC §6.1). Writing the same command twice means
+		// the run phase's work is already done while the hidden sources are
+		// still on disk, which is exactly what the boundary exists to prevent.
+		if ch.Build != "" && ch.Build == ch.Run {
+			add(SevWarning, f, field+".build", "build and run are the same command, so the run phase's work happens before the hidden tests are removed")
+		}
 		if ch.Required {
 			if ch.Weight != 0 {
 				add(SevWarning, f, field+".weight", "weight is ignored for required (gate) checks")
@@ -364,6 +372,28 @@ func validateChecks(t *ResolvedTask, add func(Severity, string, string, string, 
 	for i, ch := range t.Checks {
 		if !ch.Required && ch.Weight == 0 {
 			add(SevWarning, f, fmt.Sprintf("checks[%d].weight", i), "non-gate check %q has weight 0 and never contributes to the score", ch.Name)
+		}
+	}
+}
+
+// validateBoundary reports the one thing a two-phase task can get silently
+// wrong. A single `build:` anywhere in the list turns the hidden-test boundary
+// on for the whole task, so the hidden sources are gone by the time *any* run
+// phase starts (SPEC §6.1). A check that has no build phase and needs the
+// hidden tests at run time therefore stops working the moment a neighbour
+// gains one - and it fails as a wrong answer, not as an error.
+//
+// The warning cannot tell that case from the legitimate one (a linter, or a
+// check over the open tests, needs nothing hidden), so it stays a warning: the
+// author reads the list and either recognizes it or finds the bug.
+func validateBoundary(t *ResolvedTask, add func(Severity, string, string, string, ...any)) {
+	if t.Hidden == nil || !HasBuildPhase(t.Checks) {
+		return
+	}
+	for i, ch := range t.Checks {
+		if ch.Build == "" {
+			add(SevWarning, t.file, fmt.Sprintf("checks[%d].run", i),
+				"check %q has no build phase, so it runs after the hidden tests are removed from the workspace", ch.Name)
 		}
 	}
 }

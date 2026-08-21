@@ -29,6 +29,7 @@ type Store interface {
 	AuditStore
 	OverrideStore
 	InviteStore
+	KeyChallengeStore
 	io.Closer
 }
 
@@ -49,6 +50,21 @@ type SSHKey struct {
 	Fingerprint string // SHA256:... (OpenSSH format)
 	PublicKey   string // authorized_keys line
 	CreatedAt   time.Time
+	// VerifiedAt is when the owner signed a server challenge with the private
+	// half. nil means the key was never proven - a registration from before
+	// proof of possession existed, or one a teacher made out of band. Such a
+	// key still authenticates; it is displayed as unproven and can lose its
+	// fingerprint to somebody who does prove possession (SPEC §8).
+	VerifiedAt *time.Time
+}
+
+// KeyChallenge is a pending proof of possession: a one-shot nonce bound to the
+// account and to the exact key it was issued for (SPEC §8, §12).
+type KeyChallenge struct {
+	UserID      int64
+	Fingerprint string
+	PublicKey   string
+	ExpiresAt   time.Time
 }
 
 // UserStore is the minimal account access M3 needs (M5/M6 extend it).
@@ -65,7 +81,14 @@ type UserStore interface {
 	// ok=false for unknown tokens and disabled users. Best-effort
 	// bumps tokens.last_used_at.
 	VerifyToken(ctx context.Context, plaintext string) (User, bool, error)
+	// AddSSHKey registers a key without proof of possession (teacher CLI only).
 	AddSSHKey(ctx context.Context, userID int64, fingerprint, publicKey string) (SSHKey, error)
+	// AddProvenSSHKey registers a key whose owner just signed a server
+	// challenge. It stamps verified_at, upgrades the caller's own unproven key
+	// in place, refuses a fingerprint held by another PROVEN key with
+	// ErrKeyHeld, and takes one held by another *unproven* key over - returning
+	// that account so the caller can audit the takeover.
+	AddProvenSSHKey(ctx context.Context, userID int64, fingerprint, publicKey string) (SSHKey, *User, error)
 	ListSSHKeys(ctx context.Context, userID int64) ([]SSHKey, error)
 	// UserByFingerprint resolves an SSH key fingerprint to its ACTIVE user.
 	UserByFingerprint(ctx context.Context, fingerprint string) (User, bool, error)
@@ -177,6 +200,11 @@ type CheckRow struct {
 	Skipped    bool
 	TimedOut   bool
 	LogExcerpt string
+	// BuildFailed marks a check that never reached its run phase because its
+	// build phase failed. That phase's output is teacher-only (SPEC §14), so
+	// LogExcerpt is empty by design rather than by accident, and the UI needs
+	// the fact to say so.
+	BuildFailed bool
 }
 
 // SubmissionResult is the terminal outcome written by a worker.
@@ -308,4 +336,18 @@ type InviteStore interface {
 	// that set used_at, false when someone else already did. Callers must
 	// consume before any side effect of the activation.
 	ConsumeInvite(ctx context.Context, id int64, now time.Time) (bool, error)
+}
+
+// KeyChallengeStore persists hashed proof-of-possession nonces (SPEC §8).
+type KeyChallengeStore interface {
+	// CreateKeyChallenge issues the nonce for (userID, fingerprint), replacing
+	// any challenge the account already had outstanding.
+	CreateKeyChallenge(ctx context.Context, userID int64, noncePlaintext, fingerprint, publicKey string, expiresAt time.Time) error
+	// LookupKeyChallenge resolves a plaintext nonce to a live challenge;
+	// ok=false for unknown, already consumed, or expired nonces.
+	LookupKeyChallenge(ctx context.Context, noncePlaintext string, now time.Time) (KeyChallenge, bool, error)
+	// ConsumeKeyChallenge burns the one-shot nonce: ok=true for the single
+	// caller that removed the row, false when someone else already did.
+	// Callers must consume before registering the key.
+	ConsumeKeyChallenge(ctx context.Context, noncePlaintext string) (bool, error)
 }

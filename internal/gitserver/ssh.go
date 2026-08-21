@@ -1,6 +1,7 @@
 package gitserver
 
 import (
+	"cmp"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -13,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gliderlabs/ssh"
 	gossh "golang.org/x/crypto/ssh"
@@ -21,6 +23,10 @@ import (
 // identityKey stores the authenticated Identity in the ssh.Context between
 // the publickey callback and the session handler.
 const identityKey = "anygrade-identity"
+
+// connKey stores the *handshakeConn in the ssh.Context, so whichever side
+// notices the handshake is over can hand its slot and its deadline back.
+const connKey = "anygrade-conn"
 
 // SSHServer serves git over SSH (SPEC §7): publickey auth by registered
 // fingerprint, exec-only (`git-upload-pack`/`git-receive-pack`), no shell,
@@ -33,6 +39,15 @@ type SSHServer struct {
 	// Local, when non-nil, accepts any key/none and acts as this identity
 	// (serve --local; loopback bind is enforced by the caller).
 	Local *Identity
+
+	// Transport budgets (SPEC §14); zero means the package default. They are
+	// fields rather than flags because the defaults sit orders of magnitude
+	// above classroom load - see sshlimits.go for the arithmetic - and only the
+	// tests have a reason to tighten them.
+	MaxHandshakes      int           // concurrent handshakes, all peers
+	MaxHandshakesPerIP int           // concurrent handshakes, one client address
+	HandshakeTimeout   time.Duration // accept -> authenticated
+	IdleTimeout        time.Duration // silence on an established connection
 }
 
 // ListenAndServe blocks until ctx is canceled.
@@ -51,18 +66,7 @@ func (s *SSHServer) Serve(ctx context.Context, l net.Listener) error {
 		l.Close()
 		return err
 	}
-	srv := &ssh.Server{Handler: s.handle}
-	srv.AddHostKey(signer)
-	if s.Local == nil {
-		srv.PublicKeyHandler = func(ctx ssh.Context, key ssh.PublicKey) bool {
-			id, ok, err := s.Auth.ByFingerprint(ctx, gossh.FingerprintSHA256(key))
-			if err != nil || !ok {
-				return false
-			}
-			ctx.SetValue(identityKey, id)
-			return true
-		}
-	}
+	srv := s.newServer(signer)
 
 	done := make(chan struct{})
 	go func() {
@@ -80,8 +84,66 @@ func (s *SSHServer) Serve(ctx context.Context, l net.Listener) error {
 	return err
 }
 
+// newServer builds the library server: the session handler, the host key, the
+// transport budgets (SPEC §14) and the publickey callback.
+func (s *SSHServer) newServer(signer gossh.Signer) *ssh.Server {
+	gate := newConnGate(
+		cmp.Or(s.MaxHandshakes, defaultMaxHandshakes),
+		cmp.Or(s.MaxHandshakesPerIP, defaultMaxHandshakesPerIP),
+	)
+	grace := cmp.Or(s.HandshakeTimeout, defaultHandshakeTimeout)
+
+	srv := &ssh.Server{
+		Handler: s.handle,
+		// IdleTimeout only, never MaxTimeout: an absolute deadline on the
+		// connection would cut a legitimate slow clone or a large push
+		// mid-transfer, exactly what the HTTP listener's missing read/write
+		// timeouts avoid.
+		IdleTimeout: cmp.Or(s.IdleTimeout, defaultIdleTimeout),
+		ConnCallback: func(ctx ssh.Context, conn net.Conn) net.Conn {
+			release, ok := gate.acquire(conn.RemoteAddr().String())
+			if !ok {
+				// Refused before the key exchange, for what the peer costs and
+				// not for who it is: nothing has been compared yet, so nothing
+				// is charged to any credential budget. Returning nil closes it.
+				return nil
+			}
+			hc := &handshakeConn{Conn: conn, deadline: time.Now().Add(grace), release: release}
+			_ = conn.SetDeadline(hc.deadline)
+			ctx.SetValue(connKey, hc)
+			return hc
+		},
+	}
+	srv.AddHostKey(signer)
+	if s.Local == nil {
+		srv.PublicKeyHandler = func(ctx ssh.Context, key ssh.PublicKey) bool {
+			id, ok, err := s.Auth.ByFingerprint(ctx, gossh.FingerprintSHA256(key))
+			if err != nil || !ok {
+				return false
+			}
+			ctx.SetValue(identityKey, id)
+			// A registered key is the point where the peer stops being a cost
+			// with no name: give the handshake slot back before the transfer,
+			// which is the long part, even starts.
+			established(ctx)
+			return true
+		}
+	}
+	return srv
+}
+
+// established releases the handshake budget once the connection has an identity
+// - or, under --local, where there is no publickey callback at all, once it
+// reaches a session, which cannot happen before the handshake is done.
+func established(ctx ssh.Context) {
+	if c, ok := ctx.Value(connKey).(*handshakeConn); ok {
+		c.established()
+	}
+}
+
 // handle runs one exec session: parse the git command, authorize, pipe stdio.
 func (s *SSHServer) handle(sess ssh.Session) {
+	established(sess.Context())
 	if _, _, isPty := sess.Pty(); isPty {
 		fmt.Fprintln(sess.Stderr(), "anygrade: interactive sessions are not allowed")
 		_ = sess.Exit(1)

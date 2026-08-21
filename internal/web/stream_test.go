@@ -5,12 +5,17 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/ekalinin/anygrade/internal/config"
 	"github.com/ekalinin/anygrade/internal/gradebook"
+	"github.com/ekalinin/anygrade/internal/intake"
+	"github.com/ekalinin/anygrade/internal/runner"
 	"github.com/ekalinin/anygrade/internal/store"
 )
 
@@ -238,5 +243,61 @@ func TestMatrixStreamReconcilesEveryRow(t *testing.T) {
 	got := stream(t, h, "/matrix/stream", "event: user-bob")
 	if !strings.Contains(got, "event: user-bob") {
 		t.Fatalf("the matrix stream sent no post-subscribe snapshot:\n%q", got)
+	}
+}
+
+// TestSubmissionStreamNeverTailsTheBuildLog: the live view exists so a student
+// can watch their own tests run. The build phase is the one that compiles
+// against the hidden tests, so its log must not be in the set of files the
+// stream follows - it lives in its own subdirectory of the log dir, and the
+// stream only ever opens LogFileName(check) directly under that dir (SPEC §14).
+func TestSubmissionStreamNeverTailsTheBuildLog(t *testing.T) {
+	const secret = "hidden_test.go:7: undefined: Solve"
+	h, _ := newTestSite(t)
+	h.DataDir = t.TempDir()
+	holder := &intake.Holder{}
+	holder.Set(&intake.Course{Resolved: &config.Resolved{
+		Course: config.ResolvedCourse{Name: "Test course"},
+		Tasks: []config.ResolvedTask{{
+			ID:     "t1",
+			Checks: []config.Check{{Name: "compiled", Weight: 1, Build: "build it", Run: "run it"}},
+		}},
+	}})
+	h.Course = holder
+
+	student, err := h.DB.CreateUser(t.Context(), "bob", "Student", "student")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, err := h.DB.Enqueue(t.Context(), store.NewSubmission{
+		UserID: student.ID, TaskID: "t1", CommitSHA: "deadbeef",
+		ReceivedAt: time.Now(), Counts: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := h.DB.ClaimNext(t.Context(), time.Now()); err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+
+	dir := intake.SubmissionLogDir(h.DataDir, sub.ID)
+	buildDir := runner.BuildLogDir(dir)
+	if err := os.MkdirAll(buildDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, runner.LogFileName("compiled")), []byte(secret), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, runner.LogFileName("compiled")), []byte("student visible output"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h.Local = &student
+	got := stream(t, h, "/submissions/"+itoa(sub.ID)+"/stream", "student visible output")
+	if strings.Contains(got, secret) {
+		t.Fatalf("the live stream tailed the build phase log:\n%q", got)
+	}
+	if !strings.Contains(got, "student visible output") {
+		t.Fatalf("the live stream lost the run phase log:\n%q", got)
 	}
 }

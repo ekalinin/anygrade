@@ -22,6 +22,32 @@ func dockerAvailable() bool {
 	return exec.Command("docker", "version", "--format", "{{.Server.Version}}").Run() == nil
 }
 
+// requireDockerEnv turns a skipped docker test into a failing one. The docker
+// runner is the only sandbox anygrade has (SPEC §14), so a run that quietly
+// skips every test of it is indistinguishable from a run that verified it - and
+// that is how the coverage would disappear: not with a red build, but with a
+// green one after the daemon stops being reachable. CI sets this; a developer
+// without a daemon does not.
+const requireDockerEnv = "ANYGRADE_REQUIRE_DOCKER"
+
+// requireDocker skips the calling test when docker is unavailable, unless the
+// environment demands docker - in which case its absence is the finding.
+func requireDocker(t *testing.T) {
+	t.Helper()
+	if os.Getenv(requireDockerEnv) != "1" {
+		if testing.Short() || !dockerAvailable() {
+			t.Skip("docker not available")
+		}
+		return
+	}
+	if testing.Short() {
+		t.Fatalf("%s=1 with -short: the docker tests cannot be both required and skipped", requireDockerEnv)
+	}
+	if !dockerAvailable() {
+		t.Fatalf("%s=1 but no docker daemon is reachable", requireDockerEnv)
+	}
+}
+
 // dockerWorkspace returns a workspace dir for a docker run. Any location will
 // do: the workspace is copied into the container, never mounted, so the colima
 // restriction on which host dirs reach the VM no longer applies.
@@ -126,9 +152,7 @@ func TestDockerRunArgsWorkspaceIsTmpfs(t *testing.T) {
 }
 
 func TestDockerRunnerEndToEnd(t *testing.T) {
-	if testing.Short() || !dockerAvailable() {
-		t.Skip("docker not available")
-	}
+	requireDocker(t)
 	ws := dockerWorkspace(t)
 	writeFiles(t, ws, map[string]string{
 		"tasks/01/input.txt": "data\n",
@@ -172,9 +196,7 @@ func TestDockerRunnerEndToEnd(t *testing.T) {
 // TestDockerRunnerWorkspaceIsolation pins SPEC §14: /work is a tmpfs, the
 // check does not run as root, and nothing a check writes reaches the host.
 func TestDockerRunnerWorkspaceIsolation(t *testing.T) {
-	if testing.Short() || !dockerAvailable() {
-		t.Skip("docker not available")
-	}
+	requireDocker(t)
 	ws := dockerWorkspace(t)
 	writeFiles(t, ws, map[string]string{"tasks/01/input.txt": "data\n"})
 
@@ -208,9 +230,7 @@ func TestDockerRunnerWorkspaceIsolation(t *testing.T) {
 // asks for the ephemeral workspace to be copied back so the artifacts a check
 // produced can be inspected on the host.
 func TestDockerRunnerExportWorkspace(t *testing.T) {
-	if testing.Short() || !dockerAvailable() {
-		t.Skip("docker not available")
-	}
+	requireDocker(t)
 	ws := dockerWorkspace(t)
 	writeFiles(t, ws, map[string]string{"tasks/01/input.txt": "data\n"})
 
@@ -237,9 +257,7 @@ func TestDockerRunnerExportWorkspace(t *testing.T) {
 // together with the uid. So the checks must still be able to write in their
 // task dir, read the hidden tests, and fail to modify them.
 func TestDockerRunnerAssembledWorkspace(t *testing.T) {
-	if testing.Short() || !dockerAvailable() {
-		t.Skip("docker not available")
-	}
+	requireDocker(t)
 	course := t.TempDir()
 	writeFiles(t, course, map[string]string{"tasks/01/main.sh": "echo main\n"})
 	hidden := t.TempDir()
@@ -284,9 +302,7 @@ func TestDockerRunnerAssembledWorkspace(t *testing.T) {
 // so this is an infrastructure error - retried, no attempt consumed (SPEC §13)
 // - and not a check the student failed.
 func TestDockerRunnerContainerGone(t *testing.T) {
-	if testing.Short() || !dockerAvailable() {
-		t.Skip("docker not available")
-	}
+	requireDocker(t)
 	job := Job{
 		WorkspaceDir: dockerWorkspace(t),
 		Spec:         dockerSpec(time.Minute),
@@ -294,16 +310,14 @@ func TestDockerRunnerContainerGone(t *testing.T) {
 	}
 	// A session that believes it owns a container which does not exist.
 	s := &dockerSession{r: &DockerRunner{}, job: job, name: "ag-gone-" + randHex(6)}
-	_, err := s.execCheck(t.Context(), job, job.Checks[0], filepath.Join(t.TempDir(), "x.log"))
+	_, err := s.execCheck(t.Context(), job, job.Checks[0], job.Checks[0].Run, filepath.Join(t.TempDir(), "x.log"))
 	if infra, ok := errors.AsType[*InfraError](err); !ok || infra.Op != "runner_exec" {
 		t.Fatalf("want InfraError(runner_exec), got %v", err)
 	}
 }
 
 func TestDockerRunnerTimeout(t *testing.T) {
-	if testing.Short() || !dockerAvailable() {
-		t.Skip("docker not available")
-	}
+	requireDocker(t)
 	ws := dockerWorkspace(t)
 	r := &DockerRunner{}
 	job := Job{
@@ -335,5 +349,54 @@ func TestDockerRunnerTimeout(t *testing.T) {
 	// follow get a fresh one - with the workspace they had built up so far.
 	if !outcomes[2].Passed || !strings.Contains(outcomes[2].LogExcerpt, "kept") {
 		t.Errorf("after must run in a fresh container over the same workspace: %+v", outcomes[2])
+	}
+}
+
+// TestDockerRunnerHiddenTestBoundary is the boundary in the runner that
+// actually sandboxes anything. The docker workspace is a tmpfs inside the
+// container, not the host tree, so removing the files on the host proves
+// nothing on its own: the boundary takes the container down with its tmpfs and
+// seeds a fresh one from the cleaned host copy. What has to survive that is
+// $ANYGRADE_ARTIFACTS, because it is the only thing the run phase has left to
+// execute.
+func TestDockerRunnerHiddenTestBoundary(t *testing.T) {
+	requireDocker(t)
+	const secret = "hidden-expectations-42"
+	ws := assembleWithHidden(t, secret)
+
+	job := Job{
+		WorkspaceDir: ws.Root,
+		TaskRelDir:   "tasks/01",
+		Spec:         dockerSpec(time.Minute),
+		Checks: []config.Check{{
+			Name:   "boundary",
+			Weight: 1,
+			Build:  `cat hidden_test.txt > "$ANYGRADE_ARTIFACTS/compiled"; cat hidden_test.txt`,
+			Run: `cat "$ANYGRADE_ARTIFACTS/compiled"; ` +
+				`if [ -e hidden_test.txt ]; then echo LEAKED; else echo GONE; fi`,
+		}},
+		LogDir:      filepath.Join(t.TempDir(), "logs"),
+		HiddenPaths: ws.HiddenPaths,
+		HiddenDirs:  ws.HiddenDirs,
+	}
+	outcomes, err := (&DockerRunner{}).Run(t.Context(), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := outcomes[0]
+	if !o.Passed {
+		t.Fatalf("boundary check failed: %+v excerpt=%q", o, o.LogExcerpt)
+	}
+	if strings.Contains(o.LogExcerpt, "LEAKED") {
+		t.Errorf("the hidden test source was still in the container when the run phase started: %q", o.LogExcerpt)
+	}
+	if !strings.Contains(o.LogExcerpt, "GONE") {
+		t.Errorf("run phase did not report on the hidden test: %q", o.LogExcerpt)
+	}
+	if !strings.Contains(o.LogExcerpt, secret) {
+		t.Errorf("the build artifact did not survive the container swap: %q", o.LogExcerpt)
+	}
+	if got := readFile(t, buildLogPath(job.LogDir, "boundary")); !strings.Contains(got, secret) {
+		t.Errorf("the build phase should have read the hidden test: %q", got)
 	}
 }

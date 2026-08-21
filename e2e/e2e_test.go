@@ -29,6 +29,8 @@ var bin string
 var (
 	reToken      = regexp.MustCompile(`ag_[0-9a-f]{64}`)
 	reInvite     = regexp.MustCompile(`inv_[0-9a-f]{64}`)
+	reChallenge  = regexp.MustCompile(`agc_[0-9a-f]{64}`)
+	reProofCmd   = regexp.MustCompile(`printf '%s' '([^']*)'`)
 	reSubmission = regexp.MustCompile(`submission #(\d+) queued`)
 )
 
@@ -99,6 +101,7 @@ func TestE2E(t *testing.T) {
 	t.Run("hard deadline rejects", func(t *testing.T) { testHardDeadline(t, e) })
 	t.Run("recheck marker", func(t *testing.T) { testRecheckMarker(t, e) })
 	t.Run("invite and ssh transport", func(t *testing.T) { testInviteAndSSH(t, e) })
+	t.Run("hidden tests boundary", func(t *testing.T) { testHiddenTestsBoundary(t, e) })
 	t.Run("teacher pages", func(t *testing.T) { testTeacherPages(t, e) })
 	t.Run("teacher pushes course update", func(t *testing.T) { testTeacherCourseUpdate(t, e) })
 	t.Run("language switcher", func(t *testing.T) { testLanguageSwitcher(t, e) })

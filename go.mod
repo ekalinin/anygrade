@@ -1,6 +1,6 @@
 module github.com/ekalinin/anygrade
 
-go 1.26.4
+go 1.26.6
 
 require (
 	github.com/gliderlabs/ssh v0.3.8

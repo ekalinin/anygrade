@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ekalinin/anygrade/internal/i18n"
 	"github.com/ekalinin/anygrade/internal/intake"
 	"github.com/ekalinin/anygrade/internal/runner"
 	"github.com/ekalinin/anygrade/internal/store"
@@ -18,6 +19,18 @@ import (
 // finishedWithChecks seeds one finished submission whose results carry the
 // given check names, and writes each check's log file where the runner puts it.
 func finishedWithChecks(t *testing.T, h *Handler, names ...string) (store.User, store.Submission) {
+	t.Helper()
+	rows := make([]store.CheckRow, len(names))
+	for i, n := range names {
+		rows[i] = store.CheckRow{Name: n, Passed: true, Weight: 1}
+	}
+	return finishedWithRows(t, h, rows...)
+}
+
+// finishedWithRows is finishedWithChecks over explicit result rows. A row that
+// failed in its build phase gets no run-phase log, exactly as the runner leaves
+// it: that check never reached the phase students can read.
+func finishedWithRows(t *testing.T, h *Handler, rows ...store.CheckRow) (store.User, store.Submission) {
 	t.Helper()
 	student, err := h.DB.CreateUser(t.Context(), "bob", "Student", "student")
 	if err != nil {
@@ -34,10 +47,6 @@ func finishedWithChecks(t *testing.T, h *Handler, names ...string) (store.User, 
 		t.Fatalf("claim: ok=%v err=%v", ok, err)
 	}
 
-	rows := make([]store.CheckRow, len(names))
-	for i, n := range names {
-		rows[i] = store.CheckRow{Name: n, Passed: true, Weight: 1}
-	}
 	if err := h.DB.FinishSubmission(t.Context(), sub.ID, store.SubmissionResult{
 		Status: store.StatusDone, Checks: rows,
 	}); err != nil {
@@ -48,8 +57,11 @@ func finishedWithChecks(t *testing.T, h *Handler, names ...string) (store.User, 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, n := range names {
-		if err := os.WriteFile(filepath.Join(dir, runner.LogFileName(n)), []byte("log of "+n), 0o644); err != nil {
+	for _, c := range rows {
+		if c.BuildFailed {
+			continue
+		}
+		if err := os.WriteFile(filepath.Join(dir, runner.LogFileName(c.Name)), []byte("log of "+c.Name), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -169,5 +181,102 @@ func TestSubmissionPageHidesLogLinkFromStudent(t *testing.T) {
 	New(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/submissions/"+itoa(sub.ID), nil))
 	if !strings.Contains(rec.Body.String(), "/logs/build") {
 		t.Errorf("teacher page lost the log download:\n%s", rec.Body.String())
+	}
+}
+
+// buildFailedSubmission seeds one finished submission whose single check
+// failed in its build phase, with the build log where the runner puts it: in
+// the build subdirectory, which nothing student-facing ever reads.
+func buildFailedSubmission(t *testing.T, h *Handler, output string) (store.User, store.Submission) {
+	t.Helper()
+	student, sub := finishedWithRows(t, h,
+		store.CheckRow{Name: "compiled", Weight: 1, ExitCode: 2, BuildFailed: true})
+	dir := runner.BuildLogDir(intake.SubmissionLogDir(h.DataDir, sub.ID))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, runner.LogFileName("compiled")), []byte(output), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return student, sub
+}
+
+// TestBuildLogDownloadIsTeacherOnly: the build phase is the one that compiles
+// against the hidden tests, so a compiler quoting a hidden source line lands in
+// its log. It is a separate file from the run phase's, and only a teacher may
+// read it (SPEC §14).
+func TestBuildLogDownloadIsTeacherOnly(t *testing.T) {
+	const secret = "hidden_test.go:7: undefined: Solve"
+	h, _ := newTestSite(t)
+	h.DataDir = t.TempDir()
+	student, sub := buildFailedSubmission(t, h, secret)
+
+	h.Local = &student
+	rec := getLog(t, h, "/submissions/"+itoa(sub.ID)+"/logs/compiled?phase=build")
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("student read the build log: status %d, body %q", rec.Code, rec.Body.String())
+	}
+
+	teacher, err := h.DB.GetUserByLogin(t.Context(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Local = &teacher
+	rec = getLog(t, h, "/submissions/"+itoa(sub.ID)+"/logs/compiled?phase=build")
+	if rec.Code != http.StatusOK || rec.Body.String() != secret {
+		t.Fatalf("teacher: status %d, body %q, want 200 and the build log", rec.Code, rec.Body.String())
+	}
+	// The two phases are two downloads, not one file under two names.
+	if cd := rec.Header().Get("Content-Disposition"); !strings.Contains(cd, "build-compiled.log") {
+		t.Errorf("build log offered as %q, want a name distinct from the run log", cd)
+	}
+	// The run phase never happened, so its log does not exist - and asking for
+	// it must not fall through to the build one.
+	if rec := getLog(t, h, "/submissions/"+itoa(sub.ID)+"/logs/compiled"); rec.Code == http.StatusOK &&
+		strings.Contains(rec.Body.String(), secret) {
+		t.Errorf("the run-phase download served the build log: %q", rec.Body.String())
+	}
+}
+
+// TestBuildFailurePageExplainsItself: with no excerpt to show - by design, the
+// output is teacher-only - the page has to say why, in the reader's language,
+// and offer the teacher the log it withheld.
+func TestBuildFailurePageExplainsItself(t *testing.T) {
+	h, _ := newTestSite(t)
+	h.DataDir = t.TempDir()
+	student, sub := buildFailedSubmission(t, h, "secret compiler output")
+
+	page := func(lang string) string {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/submissions/"+itoa(sub.ID), nil)
+		req.AddCookie(&http.Cookie{Name: langCookie, Value: lang})
+		rec := httptest.NewRecorder()
+		New(h).ServeHTTP(rec, req)
+		return rec.Body.String()
+	}
+
+	h.Local = &student
+	for _, lang := range []string{"en", "ru"} {
+		body := page(lang)
+		if want := i18n.For(lang).T("sub.build_failed"); !strings.Contains(body, want) {
+			t.Errorf("student page [%s] does not explain the build failure:\n%s", lang, body)
+		}
+		if strings.Contains(body, "secret compiler output") || strings.Contains(body, "phase=build") {
+			t.Errorf("student page [%s] leaks the build phase:\n%s", lang, body)
+		}
+	}
+
+	teacher, err := h.DB.GetUserByLogin(t.Context(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Local = &teacher
+	body := page("en")
+	if !strings.Contains(body, "phase=build") {
+		t.Errorf("teacher page lost the build log link:\n%s", body)
+	}
+	// The run phase never happened, so its download would only 404.
+	if strings.Contains(body, `/logs/compiled"`) {
+		t.Errorf("teacher page offers a run log that does not exist:\n%s", body)
 	}
 }

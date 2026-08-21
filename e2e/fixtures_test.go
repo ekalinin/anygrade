@@ -87,9 +87,14 @@ checks:
   - name: open
     weight: 1
     run: test "$(sh greet.sh)" = "hello"
+  # Two phases (SPEC §6.1): the build phase is the only one that sees the
+  # hidden sources, the run phase executes what it left behind. Shell is
+  # interpreted, so a real shell course gains nothing from this - it is here
+  # because it is the smallest thing that exercises the boundary end to end.
   - name: hidden
     weight: 1
-    run: sh hidden_check.sh
+    build: sh hidden_check.sh && echo ok > "$ANYGRADE_ARTIFACTS/greet.ok"
+    run: test -f "$ANYGRADE_ARTIFACTS/greet.ok" && test ! -e hidden_check.sh
 `
 
 const greetReadme = "# Greet\n\nPrint hello.\n"
@@ -198,8 +203,13 @@ checks:
 const limitedReadme = "# Limited\n\nTwo attempts.\n"
 const limitedNotes = "todo\n"
 
+// hiddenSecret is printed by the hidden test and by nothing else, so finding
+// it in a response is proof that hidden-test output reached that reader.
+const hiddenSecret = "hidden-marker-e2e-secret"
+
 // hiddenCheckSh is the hidden-tests overlay for the greet task.
-const hiddenCheckSh = `test "$(sh greet.sh)" = "hello"
+const hiddenCheckSh = `echo "` + hiddenSecret + `"
+test "$(sh greet.sh)" = "hello"
 `
 
 // writeHiddenFixture writes and commits the hidden-tests repo, returning its
