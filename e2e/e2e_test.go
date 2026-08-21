@@ -57,11 +57,16 @@ func TestMain(m *testing.M) {
 type env struct {
 	root      string
 	baseURL   string
+	httpPort  int
 	sshPort   int
 	courseDir string
 	dataDir   string
 	hiddenDir string
 	profToken string
+
+	// The running server, so a scenario can kill and respawn it.
+	serverCmd *exec.Cmd
+	serverLog *os.File
 
 	profClient *http.Client
 
@@ -100,7 +105,22 @@ func TestE2E(t *testing.T) {
 	t.Run("auth and rate limit", func(t *testing.T) { testAuthAndRateLimit(t, e) })
 	t.Run("serve --local", func(t *testing.T) { testServeLocal(t, e) })
 	t.Run("local self-check", func(t *testing.T) { testLocalSelfCheck(t, e) })
+	t.Run("restart requeues a running submission", func(t *testing.T) { testRestartRequeue(t, e) })
+	t.Run("teacher cancels a running submission", func(t *testing.T) { testCancelRunning(t, e) })
+	t.Run("check timeout", func(t *testing.T) { testCheckTimeout(t, e) })
+	t.Run("soft deadline penalty", func(t *testing.T) { testSoftDeadlinePenalty(t, e) })
+	t.Run("attempt limit", func(t *testing.T) { testAttemptLimit(t, e) })
+	t.Run("hidden tests unavailable", func(t *testing.T) { testHiddenTestsScrubbed(t, e) })
+	t.Run("multiple tasks in one push", func(t *testing.T) { testMultiTaskPush(t, e) })
+	t.Run("non-default branch", func(t *testing.T) { testNonDefaultBranch(t, e) })
+	t.Run("push without task changes", func(t *testing.T) { testNonTaskPush(t, e) })
+	t.Run("cross-student access", func(t *testing.T) { testCrossStudentAccess(t, e) })
+	t.Run("cli export against a live server", func(t *testing.T) { testCLIExport(t, e) })
+	t.Run("token reset", func(t *testing.T) { testTokenReset(t, e) })
+	t.Run("leaderboard", func(t *testing.T) { testLeaderboard(t, e) })
+	t.Run("max push size", func(t *testing.T) { testMaxPushSize(t, e) })
 	t.Run("force push after submission", func(t *testing.T) { testForcePushAfterSubmission(t, e) })
+	t.Run("score override", func(t *testing.T) { testScoreOverride(t, e) })
 	t.Run("tamper notes", func(t *testing.T) { testTamperNotes(t, e) })
 }
 
@@ -130,29 +150,21 @@ func startEnv(t *testing.T) *env {
 		t.Fatalf("create serve.log: %v", err)
 	}
 
-	cmd := exec.Command(bin, "serve",
-		"--repo", courseDir,
-		"--data-dir", dataDir,
-		"--http-addr", fmt.Sprintf("127.0.0.1:%d", httpPort),
-		"--ssh-addr", fmt.Sprintf("127.0.0.1:%d", sshPort),
-		"--workers", "2",
-	)
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start serve: %v", err)
+	e := &env{
+		root:       root,
+		baseURL:    baseURL,
+		httpPort:   httpPort,
+		sshPort:    sshPort,
+		courseDir:  courseDir,
+		dataDir:    dataDir,
+		hiddenDir:  hiddenDir,
+		profToken:  profToken,
+		serverLog:  logFile,
+		profClient: newClient(t),
 	}
 
 	t.Cleanup(func() {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			_ = cmd.Process.Kill()
-			<-done
-		}
+		stopServer(t, e, syscall.SIGTERM)
 		logFile.Close()
 		if t.Failed() {
 			if b, err := os.ReadFile(logPath); err == nil {
@@ -161,18 +173,56 @@ func startEnv(t *testing.T) *env {
 		}
 	})
 
-	waitReady(t, baseURL)
+	startServer(t, e)
+	return e
+}
 
-	return &env{
-		root:       root,
-		baseURL:    baseURL,
-		sshPort:    sshPort,
-		courseDir:  courseDir,
-		dataDir:    dataDir,
-		hiddenDir:  hiddenDir,
-		profToken:  profToken,
-		profClient: newClient(t),
+// startServer starts `anygrade serve` on the fixture and records it on env.
+// The log file is opened once by startEnv and appended to by every restart.
+func startServer(t *testing.T, e *env) {
+	t.Helper()
+	cmd := exec.Command(bin, "serve",
+		"--repo", e.courseDir,
+		"--data-dir", e.dataDir,
+		"--http-addr", fmt.Sprintf("127.0.0.1:%d", e.httpPort),
+		"--ssh-addr", fmt.Sprintf("127.0.0.1:%d", e.sshPort),
+		"--workers", "2",
+	)
+	cmd.Stdout = e.serverLog
+	cmd.Stderr = e.serverLog
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start serve: %v", err)
 	}
+	e.serverCmd = cmd
+	waitReady(t, e.baseURL)
+}
+
+// stopServer signals the running server and waits for it to exit, escalating
+// to SIGKILL if it does not go within 10s.
+func stopServer(t *testing.T, e *env, sig syscall.Signal) {
+	t.Helper()
+	if e.serverCmd == nil {
+		return
+	}
+	_ = e.serverCmd.Process.Signal(sig)
+	done := make(chan error, 1)
+	go func() { done <- e.serverCmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		_ = e.serverCmd.Process.Kill()
+		<-done
+	}
+	e.serverCmd = nil
+}
+
+// restartServer kills the server the way a crash would - no graceful shutdown,
+// no chance to finish the run in flight - and brings a fresh one up on the same
+// data dir and ports.
+func restartServer(t *testing.T, e *env) {
+	t.Helper()
+	stopServer(t, e, syscall.SIGKILL)
+	startServer(t, e)
 }
 
 // waitReady polls GET /login until the server accepts connections.
@@ -326,6 +376,27 @@ func pollSubmission(t *testing.T, client *http.Client, e *env, id int) string {
 		time.Sleep(300 * time.Millisecond)
 	}
 	t.Fatalf("submission #%d did not finish within 90s", id)
+	return ""
+}
+
+// pollStatus waits for a submission to reach one specific status and returns
+// the rendered page. Unlike pollSubmission it does not treat infra_error as a
+// failure - scenarios that expect one ask for it by name.
+func pollStatus(t *testing.T, client *http.Client, e *env, id int, want string) string {
+	t.Helper()
+	target := fmt.Sprintf("%s/submissions/%d", e.baseURL, id)
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		status, body := get(t, client, target)
+		if status != http.StatusOK {
+			t.Fatalf("GET %s: status %d", target, status)
+		}
+		if strings.Contains(body, ">"+want+"<") {
+			return body
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("submission #%d never reached %q within 90s", id, want)
 	return ""
 }
 

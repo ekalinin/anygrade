@@ -3,6 +3,8 @@
 package e2e
 
 import (
+	"crypto/rand"
+	"encoding/csv"
 	"fmt"
 	"io"
 	"net/http"
@@ -76,7 +78,7 @@ func testOpenRegistration(t *testing.T, e *env) {
 // hook queues a submission.
 func testCloneAndPushHTTP(t *testing.T, e *env) {
 	e.aliceDir = filepath.Join(e.root, "alice")
-	httpCloneURL := fmt.Sprintf("http://alice:%s@127.0.0.1:%d/git/alice/course.git", e.aliceToken, httpPortOf(t, e))
+	httpCloneURL := fmt.Sprintf("http://alice:%s@127.0.0.1:%d/git/alice/course.git", e.aliceToken, e.httpPort)
 	git(t, e.root, nil, "clone", httpCloneURL, e.aliceDir)
 	setIdentity(t, e.aliceDir)
 
@@ -113,22 +115,6 @@ func taskSubmissionID(t *testing.T, out, taskID string) int {
 		t.Fatalf("parse submission id %q: %v", m[1], err)
 	}
 	return id
-}
-
-// httpPortOf recovers the HTTP port from e.baseURL (the fixture never stores
-// it separately; sshPort has its own field).
-func httpPortOf(t *testing.T, e *env) int {
-	t.Helper()
-	u, err := url.Parse(e.baseURL)
-	if err != nil {
-		t.Fatalf("parse baseURL: %v", err)
-	}
-	port := u.Port()
-	var p int
-	if _, err := fmt.Sscanf(port, "%d", &p); err != nil {
-		t.Fatalf("parse http port from %q: %v", e.baseURL, err)
-	}
-	return p
 }
 
 // 5. graded done: the submission finishes and the score lands in the CSV
@@ -336,7 +322,7 @@ func testTeacherPages(t *testing.T, e *env) {
 // same push, reverted, is accepted and reloads the course metadata.
 func testTeacherCourseUpdate(t *testing.T, e *env) {
 	e.profCloneDir = filepath.Join(e.root, "prof")
-	cloneURL := fmt.Sprintf("http://prof:%s@127.0.0.1:%d/git/course.git", e.profToken, httpPortOf(t, e))
+	cloneURL := fmt.Sprintf("http://prof:%s@127.0.0.1:%d/git/course.git", e.profToken, e.httpPort)
 	git(t, e.root, nil, "clone", cloneURL, e.profCloneDir)
 	setIdentity(t, e.profCloneDir)
 
@@ -536,6 +522,444 @@ func testLocalSelfCheck(t *testing.T, e *env) {
 	}
 }
 
+// 18. restart requeues a running submission: a server killed mid-check comes
+// back, requeues what was `running`, and reruns it from scratch (SPEC §13).
+func testRestartRequeue(t *testing.T, e *env) {
+	writeFile(t, filepath.Join(e.aliceDir, "tasks", "slow", "notes.txt"), "restart\n")
+	git(t, e.aliceDir, nil, "add", "-A")
+	git(t, e.aliceDir, nil, "commit", "-q", "-m", "slow: before the restart")
+	out := git(t, e.aliceDir, nil, "push", "origin", "main")
+	id := taskSubmissionID(t, out, "slow")
+
+	pollStatus(t, e.aliceClient, e, id, "running")
+	restartServer(t, e)
+
+	// The rerun gets a fresh workspace, so the check passes on its own merits;
+	// what the restart must not do is leave the submission stuck in `running`.
+	pollSubmission(t, e.aliceClient, e, id)
+	if got := fetchScores(t, e)["alice"]["slow"]; got != "10" {
+		t.Fatalf("alice/slow after the restart: got %q, want 10", got)
+	}
+}
+
+// 19. teacher cancels a running submission: the run stops, the row carries the
+// canceled note, and the retry loop never re-arms it (SPEC §13, §12). The
+// status stored is infra_error - there is no `canceled` status - but the page
+// refines it to `canceled` because canceled_at is set.
+func testCancelRunning(t *testing.T, e *env) {
+	writeFile(t, filepath.Join(e.aliceDir, "tasks", "slow", "notes.txt"), "cancel\n")
+	git(t, e.aliceDir, nil, "add", "-A")
+	git(t, e.aliceDir, nil, "commit", "-q", "-m", "slow: to be canceled")
+	out := git(t, e.aliceDir, nil, "push", "origin", "main")
+	id := taskSubmissionID(t, out, "slow")
+
+	pollStatus(t, e.aliceClient, e, id, "running")
+	resp, body := postForm(t, e.profClient, fmt.Sprintf("%s/queue/%d/cancel", e.baseURL, id), nil)
+	if resp.StatusCode != http.StatusSeeOther && resp.StatusCode != http.StatusFound {
+		t.Fatalf("cancel submission #%d: status %d, body:\n%s", id, resp.StatusCode, body)
+	}
+
+	pollStatus(t, e.aliceClient, e, id, "canceled")
+
+	// The note lives on the queue row, not the submission page: sub_results
+	// renders worker_note only alongside check results, and a cancel leaves
+	// none.
+	status, queue := get(t, e.profClient, e.baseURL+"/queue")
+	if status != http.StatusOK {
+		t.Fatalf("GET /queue: status %d", status)
+	}
+	if !strings.Contains(queue, "canceled by teacher") {
+		t.Fatalf("queue row for canceled submission #%d missing the note:\n%s", id, queue)
+	}
+
+	// A cancel that re-armed the retry loop would flip the row back to running
+	// moments later; give it the chance to and confirm it does not.
+	time.Sleep(2 * time.Second)
+	_, page := get(t, e.aliceClient, fmt.Sprintf("%s/submissions/%d", e.baseURL, id))
+	if !strings.Contains(page, ">canceled<") {
+		t.Fatalf("canceled submission #%d was re-armed:\n%s", id, page)
+	}
+	// The cancel is a teacher action, so it is in the audit log.
+	_, audit := get(t, e.profClient, e.baseURL+"/audit")
+	if !strings.Contains(audit, "submission.cancel") {
+		t.Errorf("/audit missing the submission.cancel event:\n%s", audit)
+	}
+}
+
+// 20. check timeout: the hanging check is killed at the task's runner timeout
+// and marked as such, the check after it still runs, and the score reflects
+// exactly one of the two weights (SPEC §13).
+func testCheckTimeout(t *testing.T, e *env) {
+	writeFile(t, filepath.Join(e.aliceDir, "tasks", "timeout", "notes.txt"), "go\n")
+	git(t, e.aliceDir, nil, "add", "-A")
+	git(t, e.aliceDir, nil, "commit", "-q", "-m", "trigger the timeout task")
+	out := git(t, e.aliceDir, nil, "push", "origin", "main")
+
+	body := pollSubmission(t, e.aliceClient, e, taskSubmissionID(t, out, "timeout"))
+	if !strings.Contains(body, "timed out after 2s") {
+		t.Errorf("submission page missing the timeout note:\n%s", body)
+	}
+	if strings.Contains(body, "st-skipped") {
+		t.Errorf("the check after a non-gate timeout was skipped:\n%s", body)
+	}
+	// hang failed, after passed: half the weight, half the score.
+	if got := fetchScores(t, e)["alice"]["timeout"]; got != "10" {
+		t.Fatalf("alice/timeout: got %q, want 10 (one of two checks passed)", got)
+	}
+}
+
+// 21. soft deadline penalty: a submission past the soft deadline is accepted,
+// carries the capped penalty, and the penalised score is what lands in the CSV
+// (SPEC §9).
+func testSoftDeadlinePenalty(t *testing.T, e *env) {
+	writeFile(t, filepath.Join(e.aliceDir, "tasks", "soft", "notes.txt"), "late but accepted\n")
+	git(t, e.aliceDir, nil, "add", "-A")
+	git(t, e.aliceDir, nil, "commit", "-q", "-m", "solve soft")
+	out := git(t, e.aliceDir, nil, "push", "origin", "main")
+
+	body := pollSubmission(t, e.aliceClient, e, taskSubmissionID(t, out, "soft"))
+	if !strings.Contains(body, "late penalty 50%") {
+		t.Errorf("submission page missing the capped late penalty:\n%s", body)
+	}
+	if got := fetchScores(t, e)["alice"]["soft"]; got != "50" {
+		t.Fatalf("alice/soft: got %q, want 50 (100 raw, 50%% capped penalty)", got)
+	}
+}
+
+// 22. attempt limit: the third push to a two-attempt task is rejected in the
+// push output, stored with its reason, and never runs (SPEC §4.3, §12).
+func testAttemptLimit(t *testing.T, e *env) {
+	notes := filepath.Join(e.aliceDir, "tasks", "limited", "notes.txt")
+	for i := range 2 {
+		writeFile(t, notes, fmt.Sprintf("attempt %d\n", i+1))
+		git(t, e.aliceDir, nil, "add", "-A")
+		git(t, e.aliceDir, nil, "commit", "-q", "-m", fmt.Sprintf("limited attempt %d", i+1))
+		out := git(t, e.aliceDir, nil, "push", "origin", "main")
+		pollSubmission(t, e.aliceClient, e, taskSubmissionID(t, out, "limited"))
+	}
+
+	writeFile(t, notes, "attempt 3\n")
+	git(t, e.aliceDir, nil, "add", "-A")
+	git(t, e.aliceDir, nil, "commit", "-q", "-m", "limited attempt 3")
+	out := git(t, e.aliceDir, nil, "push", "origin", "main")
+	if !strings.Contains(out, "attempt limit reached (2 of 2)") {
+		t.Fatalf("third push not rejected by the attempt limit:\n%s", out)
+	}
+	if regexp.MustCompile(`limited\s+submission #\d+ queued`).MatchString(out) {
+		t.Fatalf("the rejected third attempt was queued anyway:\n%s", out)
+	}
+}
+
+// 23. hidden tests unavailable: with the overlay repo unreachable the student
+// sees only the scrubbed message - never the URL, never git's error - while the
+// server log keeps the detail. The broken URL is a cache key of its own, so the
+// offline fallback to the pinned ref cannot mask the failure.
+func testHiddenTestsScrubbed(t *testing.T, e *env) {
+	gone := filepath.Join(e.root, "hidden-gone")
+	taskPath := filepath.Join(e.profCloneDir, "tasks", "greet", "task.yaml")
+	orig, err := os.ReadFile(taskPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", taskPath, err)
+	}
+	broken := strings.Replace(string(orig), "file://"+e.hiddenDir, "file://"+gone, 1)
+	if broken == string(orig) {
+		t.Fatalf("hidden_tests url not found in %s:\n%s", taskPath, orig)
+	}
+	writeFile(t, taskPath, broken)
+	git(t, e.profCloneDir, nil, "add", "-A")
+	git(t, e.profCloneDir, nil, "commit", "-q", "-m", "point greet at a missing hidden repo")
+	git(t, e.profCloneDir, nil, "push", "origin", "main")
+
+	// Restore the course before asserting, so a failed assertion cannot leave
+	// the fixture broken for whatever runs next.
+	t.Cleanup(func() {
+		writeFile(t, taskPath, string(orig))
+		git(t, e.profCloneDir, nil, "add", "-A")
+		git(t, e.profCloneDir, nil, "commit", "-q", "-m", "restore greet hidden tests")
+		git(t, e.profCloneDir, nil, "push", "origin", "main")
+	})
+
+	sshEnv := []string{"GIT_SSH_COMMAND=ssh -i " + e.bobKey +
+		" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes"}
+	writeFile(t, filepath.Join(e.bobDir, "tasks", "greet", "greet.sh"), greetSolution+"# retry\n")
+	git(t, e.bobDir, sshEnv, "add", "-A")
+	git(t, e.bobDir, sshEnv, "commit", "-q", "-m", "greet with hidden tests down")
+	out := git(t, e.bobDir, sshEnv, "push", "origin", "main")
+
+	id := taskSubmissionID(t, out, "greet")
+	page := pollStatus(t, e.bobClient, e, id, "retrying")
+	if strings.Contains(page, gone) || strings.Contains(page, "file://") {
+		t.Errorf("student page leaks the hidden-tests location:\n%s", page)
+	}
+
+	// The scrubbed note reaches the teacher's queue row; sub_results only
+	// renders worker_note alongside check results, and an unreachable overlay
+	// produces none, so the student page carries no explanation at all.
+	status, queue := get(t, e.profClient, e.baseURL+"/queue")
+	if status != http.StatusOK {
+		t.Fatalf("GET /queue: status %d", status)
+	}
+	if !strings.Contains(queue, "hidden tests temporarily unavailable") {
+		t.Errorf("queue row for submission #%d missing the scrubbed message:\n%s", id, queue)
+	}
+	if strings.Contains(queue, gone) {
+		t.Errorf("queue row leaks the hidden-tests location:\n%s", queue)
+	}
+}
+
+// 24. multiple tasks in one push: one submission per changed task, queued
+// independently (SPEC §13). Scenario 4 asserts the negative - untouched tasks
+// stay out of the queue - this asserts the positive.
+func testMultiTaskPush(t *testing.T, e *env) {
+	writeFile(t, filepath.Join(e.aliceDir, "tasks", "sum", "sum.sh"), sumSolution+"# multi\n")
+	writeFile(t, filepath.Join(e.aliceDir, "tasks", "greet", "greet.sh"), greetSolution)
+	git(t, e.aliceDir, nil, "add", "-A")
+	git(t, e.aliceDir, nil, "commit", "-q", "-m", "solve sum and greet in one commit")
+	out := git(t, e.aliceDir, nil, "push", "origin", "main")
+
+	if !strings.Contains(out, "2 task(s) detected") {
+		t.Fatalf("push touching two tasks should detect both:\n%s", out)
+	}
+	sumID := taskSubmissionID(t, out, "sum")
+	greetID := taskSubmissionID(t, out, "greet")
+	if sumID == greetID {
+		t.Fatalf("both tasks share submission #%d:\n%s", sumID, out)
+	}
+	pollSubmission(t, e.aliceClient, e, sumID)
+	pollSubmission(t, e.aliceClient, e, greetID)
+}
+
+// 25. non-default branch: accepted and stored, but not graded, and the push
+// output says so (SPEC §13).
+func testNonDefaultBranch(t *testing.T, e *env) {
+	git(t, e.aliceDir, nil, "checkout", "-q", "-b", "scratch")
+	writeFile(t, filepath.Join(e.aliceDir, "tasks", "sum", "sum.sh"), sumSolution+"# on scratch\n")
+	git(t, e.aliceDir, nil, "add", "-A")
+	git(t, e.aliceDir, nil, "commit", "-q", "-m", "sum on a side branch")
+	out := git(t, e.aliceDir, nil, "push", "origin", "scratch")
+	git(t, e.aliceDir, nil, "checkout", "-q", "main")
+
+	if !strings.Contains(out, "branch scratch stored; only main is graded") {
+		t.Fatalf("side-branch push output missing the stored-not-graded line:\n%s", out)
+	}
+	if reSubmission.MatchString(out) {
+		t.Fatalf("a side-branch push queued a submission:\n%s", out)
+	}
+	// Stored means stored: the ref exists in the personal repo.
+	bare := filepath.Join(e.dataDir, "repos", "students", "alice.git")
+	if out, err := gitErr(bare, nil, "rev-parse", "--verify", "refs/heads/scratch"); err != nil {
+		t.Fatalf("scratch branch not stored in the personal repo: %v\n%s", err, out)
+	}
+}
+
+// 26. push touching only non-task files: accepted, nothing queued, and the
+// student is told (SPEC §13).
+func testNonTaskPush(t *testing.T, e *env) {
+	writeFile(t, filepath.Join(e.aliceDir, "NOTES.md"), "just a note\n")
+	git(t, e.aliceDir, nil, "add", "-A")
+	git(t, e.aliceDir, nil, "commit", "-q", "-m", "add NOTES.md")
+	out := git(t, e.aliceDir, nil, "push", "origin", "main")
+
+	if !strings.Contains(out, "no tasks changed") {
+		t.Fatalf("non-task push output missing the informational line:\n%s", out)
+	}
+	if reSubmission.MatchString(out) {
+		t.Fatalf("a non-task push queued a submission:\n%s", out)
+	}
+}
+
+// 27. cross-student access: alice cannot read bob's submission, and gets the
+// same 404 the teacher routes give her - not a 403 that would confirm the row
+// exists (SPEC §8).
+func testCrossStudentAccess(t *testing.T, e *env) {
+	target := fmt.Sprintf("%s/submissions/%d", e.baseURL, e.bobGreetSubID)
+	if status, _ := get(t, e.aliceClient, target); status != http.StatusNotFound {
+		t.Fatalf("alice GET bob's submission: status %d, want 404", status)
+	}
+	// The teacher can, which is what makes the 404 an authorization answer and
+	// not a missing row.
+	if status, _ := get(t, e.profClient, target); status != http.StatusOK {
+		t.Fatalf("teacher GET bob's submission: status %d, want 200", status)
+	}
+	if status, _ := get(t, e.aliceClient, e.baseURL+"/students/bob"); status != http.StatusNotFound {
+		t.Fatalf("alice GET /students/bob: status %d, want 404", status)
+	}
+}
+
+// 28. cli export against a live server: a second process reads the same SQLite
+// file the server is writing and produces the same matrix as the web export
+// (AGENTS.md: MaxOpenConns(1) + WAL).
+func testCLIExport(t *testing.T, e *env) {
+	out := runBin(t, "", "export", "scores", "--format", "csv",
+		"--repo", e.courseDir, "--data-dir", e.dataDir)
+
+	records, err := csv.NewReader(strings.NewReader(out)).ReadAll()
+	if err != nil {
+		t.Fatalf("parse cli csv: %v\n%s", err, out)
+	}
+	if len(records) == 0 {
+		t.Fatalf("cli csv: empty")
+	}
+	cli := map[string]map[string]string{}
+	header := records[0]
+	for _, rec := range records[1:] {
+		row := map[string]string{}
+		for i, col := range header {
+			if i < len(rec) {
+				row[col] = rec[i]
+			}
+		}
+		cli[row["login"]] = row
+	}
+
+	web := fetchScores(t, e)
+	for _, login := range []string{"alice", "bob"} {
+		if len(web[login]) == 0 {
+			t.Fatalf("web export has no row for %s", login)
+		}
+		for task, want := range web[login] {
+			if got := cli[login][task]; got != want {
+				t.Errorf("cli export %s/%s = %q, web export = %q", login, task, got, want)
+			}
+		}
+	}
+}
+
+// 29. token reset: rotating bob's token from the CLI invalidates the old one
+// for both surfaces it authenticates - web login and git HTTP basic auth -
+// while his SSH key keeps working (SPEC §8, §12). Bob rather than alice: he
+// pushes over SSH, so no HTTP remote a later scenario needs gets invalidated.
+func testTokenReset(t *testing.T, e *env) {
+	old := e.bobToken
+	httpURL := func(tok string) string {
+		return fmt.Sprintf("http://bob:%s@127.0.0.1:%d/git/bob/course.git", tok, e.httpPort)
+	}
+	if out, err := gitErr(e.root, nil, "ls-remote", httpURL(old)); err != nil {
+		t.Fatalf("bob's token should work before the reset: %v\n%s", err, out)
+	}
+
+	out := runBin(t, "", "user", "reset-token", "--login", "bob", "--data-dir", e.dataDir)
+	fresh := reToken.FindString(out)
+	if fresh == "" || fresh == old {
+		t.Fatalf("reset-token did not issue a new token:\n%s", out)
+	}
+	e.bobToken = fresh
+
+	if out, err := gitErr(e.root, nil, "ls-remote", httpURL(old)); err == nil {
+		t.Fatalf("the old token still authenticates git over http:\n%s", out)
+	}
+	if out, err := gitErr(e.root, nil, "ls-remote", httpURL(fresh)); err != nil {
+		t.Fatalf("the new token does not authenticate git over http: %v\n%s", err, out)
+	}
+
+	stale := newClient(t)
+	resp, body := postForm(t, stale, e.baseURL+"/login", url.Values{
+		"login": {"bob"}, "token": {old}, "next": {"/"},
+	})
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("web login with the old token: status %d, body:\n%s", resp.StatusCode, body)
+	}
+
+	// SSH authenticates by key, so the rotation must not have touched it.
+	sshEnv := []string{"GIT_SSH_COMMAND=ssh -i " + e.bobKey +
+		" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes"}
+	if out, err := gitErr(e.bobDir, sshEnv, "ls-remote", "origin"); err != nil {
+		t.Fatalf("bob's ssh key stopped working after a token reset: %v\n%s", err, out)
+	}
+
+	// Leave bob logged in for whatever runs next.
+	e.bobClient = newClient(t)
+	login(t, e, e.bobClient, "bob", fresh)
+}
+
+// 30. leaderboard: with anonymize off every authenticated user sees real
+// logins; flipping anonymize on through a teacher push hides other students'
+// logins from a student but not from the teacher (SPEC §10).
+func testLeaderboard(t *testing.T, e *env) {
+	status, body := get(t, e.aliceClient, e.baseURL+"/leaderboard")
+	if status != http.StatusOK {
+		t.Fatalf("GET /leaderboard: status %d", status)
+	}
+	for _, login := range []string{"alice", "bob"} {
+		if !strings.Contains(body, login) {
+			t.Fatalf("/leaderboard missing %q with anonymize off:\n%s", login, body)
+		}
+	}
+
+	coursePath := filepath.Join(e.profCloneDir, "course.yaml")
+	orig, err := os.ReadFile(coursePath)
+	if err != nil {
+		t.Fatalf("read course.yaml: %v", err)
+	}
+	writeFile(t, coursePath, strings.Replace(string(orig), "anonymize: false", "anonymize: true", 1))
+	git(t, e.profCloneDir, nil, "add", "-A")
+	git(t, e.profCloneDir, nil, "commit", "-q", "-m", "anonymize the leaderboard")
+	git(t, e.profCloneDir, nil, "push", "origin", "main")
+	t.Cleanup(func() {
+		writeFile(t, coursePath, string(orig))
+		git(t, e.profCloneDir, nil, "add", "-A")
+		git(t, e.profCloneDir, nil, "commit", "-q", "-m", "de-anonymize the leaderboard")
+		git(t, e.profCloneDir, nil, "push", "origin", "main")
+	})
+
+	_, body = get(t, e.aliceClient, e.baseURL+"/leaderboard")
+	if strings.Contains(body, "bob") {
+		t.Errorf("anonymized /leaderboard leaks bob's login to a student:\n%s", body)
+	}
+	_, body = get(t, e.profClient, e.baseURL+"/leaderboard")
+	if !strings.Contains(body, "bob") {
+		t.Errorf("anonymized /leaderboard hides bob from the teacher too:\n%s", body)
+	}
+}
+
+// 31. max_push_size: a teacher lowers the limit without a restart, a student's
+// oversized push is refused with anygrade's own message naming the limit and
+// how to recover, and the limit is lifted again the same way (SPEC §13).
+func testMaxPushSize(t *testing.T, e *env) {
+	coursePath := filepath.Join(e.profCloneDir, "course.yaml")
+	orig, err := os.ReadFile(coursePath)
+	if err != nil {
+		t.Fatalf("read course.yaml: %v", err)
+	}
+	// Single-letter suffix: the byte-size parser takes 64K, not 64KB.
+	writeFile(t, coursePath, string(orig)+"\nlimits:\n  max_push_size: 64K\n")
+	git(t, e.profCloneDir, nil, "add", "-A")
+	git(t, e.profCloneDir, nil, "commit", "-q", "-m", "cap the push size")
+	if out := git(t, e.profCloneDir, nil, "push", "origin", "main"); !strings.Contains(out, "course metadata reloaded") {
+		t.Fatalf("the limit push was not applied:\n%s", out)
+	}
+	t.Cleanup(func() {
+		writeFile(t, coursePath, string(orig))
+		git(t, e.profCloneDir, nil, "add", "-A")
+		git(t, e.profCloneDir, nil, "commit", "-q", "-m", "lift the push size cap")
+		git(t, e.profCloneDir, nil, "push", "origin", "main")
+	})
+
+	// Random bytes: a compressible blob would slip under the cap in the pack.
+	blob := make([]byte, 1<<20)
+	if _, err := rand.Read(blob); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(e.aliceDir, "big.bin"), blob, 0o644); err != nil {
+		t.Fatalf("write big.bin: %v", err)
+	}
+	git(t, e.aliceDir, nil, "add", "-A")
+	git(t, e.aliceDir, nil, "commit", "-q", "-m", "push something oversized")
+	out, err := gitErr(e.aliceDir, nil, "push", "origin", "main")
+	if err == nil {
+		t.Fatalf("oversized push unexpectedly succeeded:\n%s", out)
+	}
+	if !strings.Contains(out, "anygrade: push rejected: it is larger than max_push_size (64") {
+		t.Fatalf("oversized push rejection is not anygrade's message naming the limit:\n%s", out)
+	}
+	if !strings.Contains(out, "drop the large files from the commit") {
+		t.Fatalf("oversized push rejection does not say how to recover:\n%s", out)
+	}
+
+	// Drop the blob so later scenarios push a normal-sized history again.
+	git(t, e.aliceDir, nil, "reset", "--hard", "HEAD~1")
+}
+
 // 14. force push after submission: a graded commit that a force push drops
 // from the branch survives under refs/anygrade/submissions/<id> (SPEC §6 step
 // 7), and the rewritten branch keeps being graded.
@@ -580,6 +1004,36 @@ func testForcePushAfterSubmission(t *testing.T, e *env) {
 	pollSubmission(t, e.aliceClient, e, taskSubmissionID(t, out, "sum"))
 	if got := fetchScores(t, e)["alice"]["sum"]; got != "100" {
 		t.Fatalf("alice/sum after the force push: got %q, want 100", got)
+	}
+}
+
+// 32. score override: a teacher's manual score beats the computed one in the
+// CSV export and shows up in the audit log; clearing it restores the computed
+// score (SPEC §9). Runs after every scenario that asserts alice's computed sum
+// score, so a stray failure here cannot cascade into them.
+func testScoreOverride(t *testing.T, e *env) {
+	target := e.baseURL + "/students/alice/tasks/sum/override"
+	resp, body := postForm(t, e.profClient, target, url.Values{
+		"score": {"77"}, "comment": {"partial credit, discussed in class"},
+	})
+	if resp.StatusCode != http.StatusSeeOther && resp.StatusCode != http.StatusFound {
+		t.Fatalf("set override: status %d, body:\n%s", resp.StatusCode, body)
+	}
+	if got := fetchScores(t, e)["alice"]["sum"]; got != "77" {
+		t.Fatalf("alice/sum with an override: got %q, want 77", got)
+	}
+
+	_, page := get(t, e.profClient, e.baseURL+"/audit")
+	if !strings.Contains(page, "override") {
+		t.Errorf("/audit does not record the override:\n%s", page)
+	}
+
+	resp, body = postForm(t, e.profClient, target+"/delete", nil)
+	if resp.StatusCode != http.StatusSeeOther && resp.StatusCode != http.StatusFound {
+		t.Fatalf("clear override: status %d, body:\n%s", resp.StatusCode, body)
+	}
+	if got := fetchScores(t, e)["alice"]["sum"]; got != "100" {
+		t.Fatalf("alice/sum after clearing the override: got %q, want 100", got)
 	}
 }
 
