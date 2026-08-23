@@ -61,9 +61,10 @@ Prerequisite outside `landing/`: a root `LICENSE` file (MIT), referenced by the 
 
 ## 4. Design system
 
-Dark, developer-forward, terminal-flavored. The palette adapts the app's semantic
-colors (`internal/web/static/app.css`) to a dark surface (GitHub-dark-adjacent, since
-the app already renders code on `#f6f8fa`).
+Dark, developer-forward, terminal-flavored. The palette was originally derived from the
+app's semantic colors. The app has since moved to its own design language (see
+`specs/SPEC.ui.md`), so the two no longer share a token vocabulary; the landing keeps
+the palette below until it is redesigned separately.
 
 ```css
 :root{
