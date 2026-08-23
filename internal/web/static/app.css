@@ -40,8 +40,8 @@
   --rule-heavy: light-dark(#15201b, #9db0a6);
   /* ink */
   --ink: light-dark(#15201b, #dfe8e2);
-  --ink-2: light-dark(#59685f, #93a29a);
-  --ink-3: light-dark(#8a988f, #6e7d75);
+  --ink-2: light-dark(#44514a, #9faea5);
+  --ink-3: light-dark(#5f6e66, #7c8b82);
   /* machine verdicts: earthy and low-chroma, so the pen stays the hottest
      thing on the page. --fail is deliberately dusty in dark for that reason. */
   --pass: light-dark(#16643f, #58c68c);
@@ -102,6 +102,8 @@ h1 {
   font-family: var(--display);
   font-size: 1.45rem; font-weight: 600; letter-spacing: -0.02em;
   margin: 0.2rem 0 1rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 2px solid var(--rule-heavy);
 }
 h2 {
   font-family: var(--display);
@@ -147,8 +149,23 @@ h1 .badge, h2 .badge { vertical-align: middle; letter-spacing: 0.12em; }
 }
 .topbar nav a:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 4px; }
 .who { font-family: var(--mono); font-size: 0.75rem; color: var(--ink-3); }
-.lang-switch { display: flex; gap: 0.35rem; }
-.lang-switch .linklike { font-family: var(--mono); font-size: 0.75rem; color: var(--ink-3); }
+/* Text actions in the topbar (logout, lang switch) ride the nav's tracked
+   scale instead of .linklike's inherited body size - scoped here so table
+   row actions (queue cancel/recheck, settings key removal) keep inheriting
+   the local font size as intended. */
+.topbar .linklike {
+  font-family: var(--display); font-size: 0.78rem; font-weight: 500;
+  letter-spacing: 0.1em; text-transform: uppercase;
+}
+/* .inline sets the lang-switch form to display:inline, which drops the flex
+   gap between its buttons regardless of source order - space the buttons
+   with a sibling margin instead, so it does not depend on winning that
+   specificity race. */
+.lang-switch .linklike {
+  font-family: var(--mono); font-size: 0.75rem; font-weight: 400; color: var(--ink-3);
+  text-transform: none; letter-spacing: normal;
+}
+.lang-switch .linklike + .linklike { margin-left: 0.35rem; }
 .lang-switch .active { color: var(--ink); font-weight: 700; }
 
 /* Site footer: project link and the version of the running binary */
@@ -199,7 +216,6 @@ tbody tr:hover { background: var(--sheet); }
   white-space: nowrap; width: 1%; text-align: right;
   border-right: 1px solid var(--rule);
 }
-th.key { text-align: right; }
 
 /* Figures are mono everywhere so columns align by construction. */
 .num, .scoreline, td.cell {
