@@ -20,13 +20,16 @@ import (
 //go:embed templates static
 var assets embed.FS
 
-func staticHandler() http.Handler {
-	// .woff2 is not in Go's builtin MIME table. It resolves from a system
-	// table on a developer machine and not in a minimal container, so pin it
-	// here to keep the served type identical everywhere.
+// .woff2 is not in Go's builtin MIME table. It resolves from a system table
+// on a developer machine and not in a minimal container, so pin it here,
+// once per process, to keep the served type identical everywhere.
+func init() {
 	if err := mime.AddExtensionType(".woff2", "font/woff2"); err != nil {
 		panic(err)
 	}
+}
+
+func staticHandler() http.Handler {
 	sub, err := fs.Sub(assets, "static")
 	if err != nil {
 		panic(err)
