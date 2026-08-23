@@ -2,6 +2,8 @@ package web
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -106,5 +108,28 @@ func TestRenderTaskRowStatusLocalized(t *testing.T) {
 	}
 	if !strings.Contains(ru, "st-passed") {
 		t.Errorf("task-row [ru]: CSS class should stay English-derived: %s", ru)
+	}
+}
+
+// TestFontsAreServedWithTheRightType: the display face is embedded and served
+// as font/woff2. The type matters because .woff2 is absent from Go's builtin
+// MIME table - it resolves from a system table on a developer machine, but not
+// in a minimal container, so staticHandler registers it explicitly.
+func TestFontsAreServedWithTheRightType(t *testing.T) {
+	for _, name := range []string{"geologica-latin.woff2", "geologica-cyrillic.woff2"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/fonts/"+name, nil)
+		staticHandler().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: status = %d, want 200", name, rec.Code)
+			continue
+		}
+		if got := rec.Header().Get("Content-Type"); got != "font/woff2" {
+			t.Errorf("%s: Content-Type = %q, want %q", name, got, "font/woff2")
+		}
+		if rec.Body.Len() == 0 {
+			t.Errorf("%s: served an empty body", name)
+		}
 	}
 }

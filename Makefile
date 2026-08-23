@@ -1,4 +1,4 @@
-.PHONY: build test test-short vet fmt check binary e2e vulncheck release-check release-snapshot landing-build landing-serve landing-og
+.PHONY: build test test-short vet fmt check binary e2e vulncheck release-check release-snapshot landing-build landing-serve landing-og fonts
 
 # Build metadata stamped into the binary (internal/version). A release build
 # gets these from goreleaser instead; here they describe the working copy.
@@ -79,3 +79,21 @@ landing-serve: landing-build
 # Requires librsvg (macOS: brew install librsvg).
 landing-og:
 	rsvg-convert -w 1200 -h 630 landing/og-image.svg -o landing/og-image.png
+
+# Refetch the vendored display face from Google Fonts. Author-time only:
+# the .woff2 files are committed, so neither the build nor the server ever
+# needs network access. Re-run when bumping the font version.
+FONT_UA := Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36
+FONT_DIR := internal/web/static/fonts
+
+fonts:
+	@mkdir -p $(FONT_DIR)
+	@css=$$(curl -sf -A "$(FONT_UA)" \
+	  "https://fonts.googleapis.com/css2?family=Geologica:wght@400..700&display=swap"); \
+	for sub in latin cyrillic; do \
+	  url=$$(printf '%s\n' "$$css" | awk -v s="/* $$sub */" '$$0==s{f=1} f&&/url\(/{print;exit}' \
+	    | sed -E 's/.*url\((.*)\) format.*/\1/'); \
+	  test -n "$$url" || { echo "no $$sub subset found"; exit 1; }; \
+	  curl -sf -A "$(FONT_UA)" "$$url" -o $(FONT_DIR)/geologica-$$sub.woff2; \
+	  echo "fetched $(FONT_DIR)/geologica-$$sub.woff2"; \
+	done
