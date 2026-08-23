@@ -18,9 +18,9 @@
 <div class="table-scroll">
 <table class="matrix">
   <thead><tr>
-    <th>{{t "common.student"}}</th>
+    <th class="key">{{t "common.student"}}</th>
     {{range $tasks}}<th title="{{.Name}}">{{.ID}}<br><span class="hint">/{{.MaxScore}}</span></th>{{end}}
-    <th>{{t "common.total"}}</th>
+    <th class="total">{{t "common.total"}}</th>
   </tr></thead>
   <tbody>
   {{range .Matrix.Rows}}{{template "matrix-row" (dict "Row" . "Tasks" $tasks)}}{{end}}
@@ -32,9 +32,9 @@
 <div class="table-scroll">
 <table class="matrix">
   <thead><tr>
-    <th>{{t "common.student"}}</th>
+    <th class="key">{{t "common.student"}}</th>
     {{range $tasks}}<th title="{{.Name}}">{{.ID}}<br><span class="hint">/{{.MaxScore}}</span></th>{{end}}
-    <th>{{t "common.total"}}</th>
+    <th class="total">{{t "common.total"}}</th>
   </tr></thead>
   <tbody>
   {{range .Matrix.Rows}}{{template "matrix-row" (dict "Row" . "Tasks" $tasks)}}{{end}}

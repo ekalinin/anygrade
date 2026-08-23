@@ -79,6 +79,58 @@ func TestMatrixPageCellDrillDown(t *testing.T) {
 	}
 }
 
+// TestMatrixCellShowsTheCorrection: an overridden cell shows both numbers, so
+// a teacher scanning the matrix sees at a glance which marks are the machine's
+// and which are their own. Replaces the old "*" glyph, which said an override
+// existed without saying what it changed.
+func TestMatrixCellShowsTheCorrection(t *testing.T) {
+	computed, override := 72.0, 85.0
+	data := matrixRowData{
+		Row: gradebook.Row{
+			User: store.User{Login: "alice", State: "active"},
+			Cells: map[string]gradebook.Cell{
+				"t1": {
+					Status:   gradebook.StatusOverridden,
+					Computed: &computed,
+					Override: &override,
+					Display:  85,
+				},
+			},
+		},
+		Tasks: []gradebook.TaskCol{{ID: "t1", Name: "Task one", MaxScore: 100}},
+	}
+	html, err := renderPartial("en", "matrix-row", data)
+	if err != nil {
+		t.Fatalf("render matrix-row: %v", err)
+	}
+	for _, want := range []string{`class="machine">72<`, `class="pen">85<`} {
+		if !strings.Contains(html, want) {
+			t.Errorf("matrix cell: missing %s:\n%s", want, html)
+		}
+	}
+}
+
+// TestMatrixCellWithoutOverrideHasNoPen: red is reserved for the human hand.
+func TestMatrixCellWithoutOverrideHasNoPen(t *testing.T) {
+	computed := 72.0
+	data := matrixRowData{
+		Row: gradebook.Row{
+			User: store.User{Login: "alice", State: "active"},
+			Cells: map[string]gradebook.Cell{
+				"t1": {Status: gradebook.StatusPassed, Computed: &computed, Display: 72},
+			},
+		},
+		Tasks: []gradebook.TaskCol{{ID: "t1", Name: "Task one", MaxScore: 100}},
+	}
+	html, err := renderPartial("en", "matrix-row", data)
+	if err != nil {
+		t.Fatalf("render matrix-row: %v", err)
+	}
+	if strings.Contains(html, `class="pen"`) || strings.Contains(html, `class="machine"`) {
+		t.Errorf("matrix cell: no override, so no correction markup:\n%s", html)
+	}
+}
+
 func TestFilterRows(t *testing.T) {
 	tasks := []gradebook.TaskCol{{ID: "t1", MaxScore: 10}, {ID: "t2", MaxScore: 10}}
 	rows := []gradebook.Row{

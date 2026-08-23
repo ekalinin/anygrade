@@ -1,14 +1,15 @@
 {{define "matrix-row"}}<tr sse-swap="user-{{.Row.User.Login}}" hx-swap="outerHTML">
-  <td><a href="/students/{{.Row.User.Login}}">{{.Row.User.Login}}</a>{{if eq .Row.User.State "disabled"}} <span class="badge st-skipped">{{t "state.disabled"}}</span>{{end}}</td>
+  <td class="key"><a href="/students/{{.Row.User.Login}}">{{.Row.User.Login}}</a>{{if eq .Row.User.State "disabled"}} <span class="badge st-skipped">{{t "state.disabled"}}</span>{{end}}</td>
   {{$row := .Row}}
   {{range .Tasks}}
   {{$c := index $row.Cells .ID}}
   <td class="cell">
-    {{if $c.Status}}<a class="cell-link" href="/students/{{$row.User.Login}}?task={{.ID}}#submissions" title="{{tStatus $c.Status}}"><span class="badge {{statusClass $c.Status}}">{{score $c.Display}}</span></a>
-    {{if $c.Override}}<span class="ovr" title="{{t "matrix.override_title"}}">*</span>{{end}}
+    {{if $c.Status}}<a class="cell-link" href="/students/{{$row.User.Login}}?task={{.ID}}#submissions" title="{{tStatus $c.Status}}">
+      {{if $c.Override}}{{with $c.Computed}}<span class="machine">{{score .}}</span> {{end}}<span title="{{t "matrix.override_title"}}" class="pen">{{score $c.Override}}</span>
+      {{else}}<span class="badge {{statusClass $c.Status}}">{{score $c.Display}}</span>{{end}}</a>
     {{if $c.LatestSubID}}<a class="cell-link" href="/submissions/{{$c.LatestSubID}}" title="{{t "matrix.latest_title"}}">&rarr;</a>{{end}}
-    {{else}}&mdash;{{end}}
+    {{else}}<span class="den">&mdash;</span>{{end}}
   </td>
   {{end}}
-  <td><strong>{{score .Row.Total}}</strong></td>
+  <td class="cell total"><strong>{{score .Row.Total}}</strong></td>
 </tr>{{end}}
