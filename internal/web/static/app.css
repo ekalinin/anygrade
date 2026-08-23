@@ -149,11 +149,12 @@ h1 .badge, h2 .badge { vertical-align: middle; letter-spacing: 0.12em; }
 }
 .topbar nav a:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 4px; }
 .who { font-family: var(--mono); font-size: 0.75rem; color: var(--ink-3); }
-/* Text actions in the topbar (logout, lang switch) ride the nav's tracked
-   scale instead of .linklike's inherited body size - scoped here so table
-   row actions (queue cancel/recheck, settings key removal) keep inheriting
-   the local font size as intended. */
-.topbar .linklike {
+/* The logout action lives inside <nav> (base.html), unlike the theme toggle
+   and lang switch which are its siblings in .topbar-right - scoping to
+   `nav` targets logout alone, by construction, so no other topbar control
+   or table-row .linklike (queue cancel/recheck, settings key removal) is
+   ever at risk of picking this up. */
+.topbar nav .linklike {
   font-family: var(--display); font-size: 0.78rem; font-weight: 500;
   letter-spacing: 0.1em; text-transform: uppercase;
 }
@@ -161,10 +162,7 @@ h1 .badge, h2 .badge { vertical-align: middle; letter-spacing: 0.12em; }
    gap between its buttons regardless of source order - space the buttons
    with a sibling margin instead, so it does not depend on winning that
    specificity race. */
-.lang-switch .linklike {
-  font-family: var(--mono); font-size: 0.75rem; font-weight: 400; color: var(--ink-3);
-  text-transform: none; letter-spacing: normal;
-}
+.lang-switch .linklike { font-family: var(--mono); font-size: 0.75rem; color: var(--ink-3); }
 .lang-switch .linklike + .linklike { margin-left: 0.35rem; }
 .lang-switch .active { color: var(--ink); font-weight: 700; }
 
