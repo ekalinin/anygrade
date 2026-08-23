@@ -1,44 +1,70 @@
-/* anygrade app UI - light-first with automatic dark mode plus a manual toggle.
-   Token vocabulary mirrors landing/styles.css so the app and the marketing page
-   share one design language. Each token carries both its light and dark value via
-   light-dark(), resolved from the effective `color-scheme`:
+/* anygrade app UI - "the ledger" (specs/SPEC.ui.md).
+   A mark book: rows of records on ruled lines, a machine entering marks, and
+   one human who can overrule it. Red is reserved for that human and appears
+   nowhere else - see .pen / .machine below.
+
+   Light-first with automatic dark mode plus a manual toggle. Each token
+   carries both values via light-dark(), resolved from the effective
+   `color-scheme`:
      - `auto`  (default): :root sets `color-scheme: light dark`, following the OS.
      - `light`/`dark`: [data-theme=...] pins `color-scheme`, set by the base.html
        toggle from localStorage. */
 
+/* Display face: Geologica, variable 400-700, vendored (static/VERSIONS).
+   Split by unicode-range so an English page never fetches the Cyrillic
+   subset. font-display:swap plus the system-ui fallback means a blocked font
+   request degrades to plain text, never to invisible text. */
+@font-face {
+  font-family: Geologica;
+  src: url(/static/fonts/geologica-latin.woff2) format("woff2");
+  font-weight: 400 700;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+2000-206F,
+                 U+2192, U+2212, U+2215;
+}
+@font-face {
+  font-family: Geologica;
+  src: url(/static/fonts/geologica-cyrillic.woff2) format("woff2");
+  font-weight: 400 700;
+  font-display: swap;
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+
 :root {
   color-scheme: light dark;
-  /* surfaces */
-  --bg: light-dark(#ffffff, #0d1117);
-  --card: light-dark(#ffffff, #161b22);
-  --surface: light-dark(#f6f8fa, #161b22);
-  --surface-2: light-dark(#eef1f5, #1c2230);
-  --code-bg: light-dark(#f1f3f6, #0d1117);
-  --line: light-dark(#e5e7eb, #30363d);
-  /* text */
-  --fg: light-dark(#1a1d21, #e6edf3);
-  --muted: light-dark(#6b7280, #8b949e);
-  /* accent */
-  --accent: light-dark(#1d4ed8, #58a6ff);
-  --accent-strong: light-dark(#1e40af, #388bfd);
-  --accent-weak: light-dark(#e8effc, rgba(56, 139, 253, 0.16));
-  --on-accent: light-dark(#ffffff, #06121f);
-  /* status */
-  --ok: light-dark(#15803d, #3fb950);
-  --ok-weak: light-dark(#e6f4ea, rgba(63, 185, 80, 0.16));
-  --warn: light-dark(#b45309, #d29922);
-  --warn-weak: light-dark(#fbf0e1, rgba(210, 153, 34, 0.16));
-  --bad: light-dark(#b91c1c, #f85149);
-  --bad-weak: light-dark(#fbeaea, rgba(248, 81, 73, 0.16));
-  --info: light-dark(#1d4ed8, #58a6ff);
-  --info-weak: light-dark(#e8effc, rgba(88, 166, 255, 0.16));
+  /* surfaces: tinted paper, with a crisp sheet for documents and hover */
+  --paper: light-dark(#eff3f0, #121915);
+  --sheet: light-dark(#ffffff, #19211d);
+  --code-bg: light-dark(#e9eeeb, #0e1411);
+  --rule: light-dark(#d2dad5, #2e3a34);
+  --rule-heavy: light-dark(#15201b, #9db0a6);
+  /* ink */
+  --ink: light-dark(#15201b, #dfe8e2);
+  --ink-2: light-dark(#59685f, #93a29a);
+  --ink-3: light-dark(#8a988f, #6e7d75);
+  /* machine verdicts: earthy and low-chroma, so the pen stays the hottest
+     thing on the page. --fail is deliberately dusty in dark for that reason. */
+  --pass: light-dark(#16643f, #58c68c);
+  --fail: light-dark(#8e3024, #d98a7e);
+  --warn: light-dark(#7e5a0b, #dda53a);
+  --live: light-dark(#0b5d6b, #4fc3d8);
+  --pass-w: light-dark(rgba(22, 100, 63, 0.09), rgba(88, 198, 140, 0.10));
+  --fail-w: light-dark(rgba(142, 48, 36, 0.09), rgba(217, 138, 126, 0.10));
+  --warn-w: light-dark(rgba(126, 90, 11, 0.10), rgba(221, 165, 58, 0.10));
+  --live-w: light-dark(rgba(11, 93, 107, 0.09), rgba(79, 195, 216, 0.10));
+  /* the human hand, and nothing else */
+  --pen: light-dark(#c42d1a, #ff5a3d);
+  /* focus ring and selection only - never a status */
+  --blue: light-dark(#2c5f8a, #7fb2e0);
+  --blue-w: light-dark(rgba(44, 95, 138, 0.14), rgba(127, 178, 224, 0.18));
   /* chrome */
-  --topbar-bg: light-dark(rgba(255, 255, 255, 0.8), rgba(13, 17, 23, 0.85));
-  --shadow: light-dark(0 2px 10px rgba(0, 0, 0, 0.07), 0 8px 24px rgba(1, 4, 9, 0.5));
+  --topbar-bg: light-dark(rgba(239, 243, 240, 0.85), rgba(18, 25, 21, 0.85));
+  --shadow: light-dark(0 1px 2px rgba(21, 32, 27, 0.06), 0 8px 24px rgba(0, 0, 0, 0.45));
   /* system */
-  --radius: 0.5rem;
-  --radius-sm: 0.35rem;
-  --radius-pill: 1rem;
+  --radius: 0.4rem;
+  --radius-sm: 0.3rem;
+  --radius-stamp: 2px;
+  --display: Geologica, system-ui, -apple-system, sans-serif;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   font-size: 16px;
@@ -52,23 +78,44 @@
 
 body {
   margin: 0;
-  color: var(--fg);
-  background: var(--bg);
+  color: var(--ink);
+  background: var(--paper);
   font-family: var(--sans);
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
 }
 
-main { max-width: 60rem; margin: 0 auto; padding: 1.25rem 1.25rem 4rem; }
+main { max-width: 62rem; margin: 0 auto; padding: 1.5rem 1.5rem 5rem; }
 
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
+/* Links are ink with a rule underneath - print convention, no browser blue.
+   Set on the element so links inside tables and panes cannot fall through to
+   the UA default. Opt out with .bare. */
+a {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--rule);
+}
+a:hover { border-bottom-color: var(--ink); }
+a.bare, .topbar nav a, .topbar .brand, .cell-link, .crumbs a { border-bottom: none; }
 
-h1 { font-size: 1.55rem; font-weight: 700; letter-spacing: -0.01em; margin: 0.2rem 0 1rem; }
-h2 { font-size: 1.2rem; font-weight: 600; margin: 1.5rem 0 0.5rem; }
-h1 .badge, h2 .badge { vertical-align: middle; font-size: 0.8rem; }
+h1 {
+  font-family: var(--display);
+  font-size: 1.45rem; font-weight: 600; letter-spacing: -0.02em;
+  margin: 0.2rem 0 1rem;
+}
+h2 {
+  font-family: var(--display);
+  font-size: 0.8rem; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--ink);
+  margin: 2rem 0 0.5rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 2px solid var(--rule-heavy);
+}
+h1 .badge, h2 .badge { vertical-align: middle; letter-spacing: 0.12em; }
 
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+:focus-visible {
+  outline: 2px solid var(--blue); outline-offset: 2px; border-radius: var(--radius-stamp);
+}
 
 /* Skip link (accessibility) */
 .skip-link {
