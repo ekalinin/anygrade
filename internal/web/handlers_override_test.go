@@ -235,8 +235,8 @@ func TestStudentPageShowsOverride(t *testing.T) {
 		t.Fatalf("GET /students/stud: status %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "4 / 10") {
-		t.Errorf("GET /students/stud: computed score column lost:\n%s", body)
+	if !strings.Contains(body, `class="machine">4<`) {
+		t.Errorf("GET /students/stud: superseded computed score not struck through:\n%s", body)
 	}
 	if !strings.Contains(body, "manual review") {
 		t.Errorf("GET /students/stud: override column lost:\n%s", body)

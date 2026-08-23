@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -103,8 +104,10 @@ func TestMatrixCellShowsTheCorrection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render matrix-row: %v", err)
 	}
-	for _, want := range []string{`class="machine">72<`, `class="pen">85<`} {
-		if !strings.Contains(html, want) {
+	// Attribute order is not part of the contract, so match the class
+	// wherever it lands on the span rather than pinning it as the last one.
+	for _, want := range []string{`<span[^>]*class="machine"[^>]*>72<`, `<span[^>]*class="pen"[^>]*>85<`} {
+		if !regexp.MustCompile(want).MatchString(html) {
 			t.Errorf("matrix cell: missing %s:\n%s", want, html)
 		}
 	}
@@ -128,6 +131,37 @@ func TestMatrixCellWithoutOverrideHasNoPen(t *testing.T) {
 	}
 	if strings.Contains(html, `class="pen"`) || strings.Contains(html, `class="machine"`) {
 		t.Errorf("matrix cell: no override, so no correction markup:\n%s", html)
+	}
+}
+
+// TestMatrixCellOverrideWithoutComputedHasNoEmptyMachineSpan: a teacher can
+// override a task the machine never graded. There is then no number to
+// strike, and the machine span must not render at all.
+func TestMatrixCellOverrideWithoutComputedHasNoEmptyMachineSpan(t *testing.T) {
+	override := 85.0
+	data := matrixRowData{
+		Row: gradebook.Row{
+			User: store.User{Login: "alice", State: "active"},
+			Cells: map[string]gradebook.Cell{
+				"t1": {
+					Status:   gradebook.StatusOverridden,
+					Computed: nil,
+					Override: &override,
+					Display:  85,
+				},
+			},
+		},
+		Tasks: []gradebook.TaskCol{{ID: "t1", Name: "Task one", MaxScore: 100}},
+	}
+	html, err := renderPartial("en", "matrix-row", data)
+	if err != nil {
+		t.Fatalf("render matrix-row: %v", err)
+	}
+	if !regexp.MustCompile(`<span[^>]*class="pen"[^>]*>85<`).MatchString(html) {
+		t.Errorf("matrix cell: missing pen span for the override:\n%s", html)
+	}
+	if strings.Contains(html, `<span class="machine"></span>`) {
+		t.Errorf("matrix cell: empty machine span for a task the machine never graded:\n%s", html)
 	}
 }
 

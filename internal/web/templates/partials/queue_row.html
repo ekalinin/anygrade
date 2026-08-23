@@ -1,5 +1,5 @@
 {{define "queue-row"}}<tr sse-swap="sub-{{.Sub.ID}}" hx-swap="outerHTML">
-  <td><a href="/submissions/{{.Sub.ID}}">#{{.Sub.ID}}</a></td>
+  <td class="key"><a href="/submissions/{{.Sub.ID}}">#{{.Sub.ID}}</a></td>
   <td><a href="/students/{{.Login}}">{{.Login}}</a></td>
   <td>{{.Sub.TaskID}}</td>
   <td><span class="badge {{statusClass .Status}}">{{tStatus .Status}}</span></td>

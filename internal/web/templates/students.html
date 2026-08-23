@@ -1,14 +1,14 @@
 {{define "content"}}
 <h1>{{t "students.title"}}</h1>
 <table>
-  <thead><tr><th>{{t "common.login"}}</th><th>{{t "common.name"}}</th><th>{{t "common.role"}}</th><th>{{t "common.state"}}</th><th>{{t "common.created"}}</th></tr></thead>
+  <thead><tr><th class="key">{{t "common.login"}}</th><th>{{t "common.name"}}</th><th>{{t "common.role"}}</th><th>{{t "common.state"}}</th><th>{{t "common.created"}}</th></tr></thead>
   <tbody>
   {{range .Students}}
   <tr>
-    <td><a href="/students/{{.Login}}">{{.Login}}</a></td>
+    <td class="key"><a href="/students/{{.Login}}">{{.Login}}</a></td>
     <td>{{.DisplayName}}</td>
     <td>{{.Role}}</td>
-    <td><span class="badge {{if eq .State "active"}}st-passed{{else}}st-failed{{end}}">{{t (print "state." .State)}}</span></td>
+    <td><span class="badge {{if eq .State "active"}}st-not-started{{else}}st-partial{{end}}">{{t (print "state." .State)}}</span></td>
     <td>{{fmtTime .CreatedAt}}</td>
   </tr>
   {{end}}

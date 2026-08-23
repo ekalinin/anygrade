@@ -1,7 +1,7 @@
 {{define "content"}}
 <p class="crumbs"><a href="/students">{{t "students.crumb"}}</a> / {{.Student.Login}}</p>
 <h1>{{if .Student.DisplayName}}{{.Student.DisplayName}}{{else}}{{.Student.Login}}{{end}}
-  <span class="badge {{if eq .Student.State "active"}}st-passed{{else}}st-failed{{end}}">{{t (print "state." .Student.State)}}</span>
+  <span class="badge {{if eq .Student.State "active"}}st-not-started{{else}}st-partial{{end}}">{{t (print "state." .Student.State)}}</span>
 </h1>
 {{if .Flash}}<p class="flash">{{tFlash .Flash}}</p>{{end}}
 
@@ -27,9 +27,9 @@
   <tr>
     <td>{{.Task.Name}}{{if .Latest}} <a href="/students/{{$login}}/submissions/{{.Latest.ID}}/code">{{t "student.code_link"}}</a>{{end}}</td>
     <td><span class="badge {{statusClass .Status}}">{{tStatus .Status}}</span></td>
-    <td>{{if .Score}}{{score .Score}}{{else}}&mdash;{{end}} / {{.Task.Score}}</td>
-    <td>
-      {{if .Override}}<strong>{{score .Override.Score}}</strong> <span class="hint" title="{{.Override.Comment}}">{{.Override.Comment}}</span>{{else}}&mdash;{{end}}
+    <td class="num">{{if .Score}}{{if .Override}}<span class="machine">{{score .Score}}</span>{{else}}{{score .Score}}{{end}}{{else}}<span class="den">&mdash;</span>{{end}} <span class="den">/ {{.Task.Score}}</span></td>
+    <td class="num">
+      {{if .Override}}<span class="pen">{{score .Override.Score}}</span>{{if .Override.Comment}} <span class="note">{{.Override.Comment}}</span>{{end}}{{else}}<span class="den">&mdash;</span>{{end}}
     </td>
     <td class="admin-cell">
       <form method="post" action="/students/{{$login}}/tasks/{{.Task.ID}}/override" class="inline override-form">
@@ -62,11 +62,11 @@
 </form>
 {{if .Subs}}
 <table class="history">
-  <thead><tr><th>#</th><th>{{t "common.task"}}</th><th>{{t "common.attempt"}}</th><th>{{t "common.status"}}</th><th>{{t "common.score"}}</th><th>{{t "common.received"}}</th><th></th></tr></thead>
+  <thead><tr><th class="key">#</th><th>{{t "common.task"}}</th><th>{{t "common.attempt"}}</th><th>{{t "common.status"}}</th><th>{{t "common.score"}}</th><th>{{t "common.received"}}</th><th></th></tr></thead>
   <tbody>
   {{range .Subs}}
   <tr>
-    <td><a href="/submissions/{{.Sub.ID}}">#{{.Sub.ID}}</a></td>
+    <td class="key"><a href="/submissions/{{.Sub.ID}}">#{{.Sub.ID}}</a></td>
     <td>{{.TaskName}}</td>
     <td>{{if .Sub.AttemptNo}}{{.Sub.AttemptNo}}{{else}}&mdash;{{end}}</td>
     <td><span class="badge {{statusClass .Status}}">{{tStatus .Status}}</span></td>
