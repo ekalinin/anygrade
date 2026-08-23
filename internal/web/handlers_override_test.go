@@ -238,8 +238,48 @@ func TestStudentPageShowsOverride(t *testing.T) {
 	if !strings.Contains(body, `class="machine">4<`) {
 		t.Errorf("GET /students/stud: superseded computed score not struck through:\n%s", body)
 	}
+	if !strings.Contains(body, `class="pen">9<`) {
+		t.Errorf("GET /students/stud: override score not shown in pen:\n%s", body)
+	}
+	if !strings.Contains(body, `class="note"`) {
+		t.Errorf("GET /students/stud: override comment not rendered as a margin note:\n%s", body)
+	}
 	if !strings.Contains(body, "manual review") {
 		t.Errorf("GET /students/stud: override column lost:\n%s", body)
+	}
+}
+
+// TestStudentPageOverrideWithoutComputedScore: a teacher grading a task the
+// machine never ran (no submissions) still shows the pen number, and the
+// struck "machine" span never renders empty (SPEC.ui.md 5, student.html).
+func TestStudentPageOverrideWithoutComputedScore(t *testing.T) {
+	h, teacher, student := newOverrideSite(t)
+	h.Course.Set(&intake.Course{Resolved: &config.Resolved{
+		Course: config.ResolvedCourse{Name: "Test course", ScoringPolicy: "best"},
+		Tasks: []config.ResolvedTask{
+			{ID: "t1", Name: "Task one", Score: 10},
+			{ID: "t2", Name: "Task two", Score: 5},
+		},
+	}})
+	if err := h.DB.SetScoreOverride(t.Context(), store.ScoreOverride{
+		UserID: student.ID, TaskID: "t2", Score: 5,
+		Comment: "credited from the seminar", TeacherID: teacher.ID,
+	}); err != nil {
+		t.Fatalf("set override: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	New(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/students/stud", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /students/stud: status %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `class="pen">5<`) {
+		t.Errorf("GET /students/stud: override score not shown in pen:\n%s", body)
+	}
+	if strings.Contains(body, `class="machine"></span>`) {
+		t.Errorf("GET /students/stud: struck score rendered empty for an ungraded task:\n%s", body)
 	}
 }
 
