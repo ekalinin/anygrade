@@ -97,11 +97,15 @@ func TestDashboardShowsOverride(t *testing.T) {
 		t.Fatalf("GET /: status %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "9 / 10") {
-		t.Errorf("GET /: override score not shown:\n%s", body)
+	// The correction shows both numbers: the machine's, struck through, and
+	// the teacher's in pen. The override is still the score that counts -
+	// Display(), Total and the CSV export are unchanged (SPEC §9). The struck
+	// number is provenance (SPEC.ui.md 3.1).
+	if !strings.Contains(body, `class="pen">9<`) {
+		t.Errorf("GET /: override score not shown in pen:\n%s", body)
 	}
-	if strings.Contains(body, "4 / 10") {
-		t.Errorf("GET /: computed score still shown:\n%s", body)
+	if !strings.Contains(body, `class="machine">4<`) {
+		t.Errorf("GET /: superseded computed score not struck through:\n%s", body)
 	}
 	if !strings.Contains(body, "set by teacher") {
 		t.Errorf("GET /: no override marker:\n%s", body)
@@ -146,7 +150,7 @@ func TestDashboardWithoutOverrideShowsComputed(t *testing.T) {
 	New(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	body := rec.Body.String()
-	if !strings.Contains(body, "4 / 10") {
+	if !strings.Contains(body, `class="den">/ 10<`) || !strings.Contains(body, "4") {
 		t.Errorf("GET /: computed score not shown:\n%s", body)
 	}
 	if strings.Contains(body, "set by teacher") {

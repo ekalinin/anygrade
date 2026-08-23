@@ -1,12 +1,18 @@
 {{define "task-row"}}<tr sse-swap="task-{{.Task.ID}}" hx-swap="outerHTML">
-  <td><a href="/tasks/{{.Task.ID}}">{{.Task.Name}}</a></td>
+  <td class="key">{{.Task.ID}}</td>
+  <td class="name"><a href="/tasks/{{.Task.ID}}">{{.Task.Name}}</a>
+    {{with .Override}}{{with .Comment}}<span class="note">{{t "task.override_note"}}: {{.}}</span>{{end}}{{end}}</td>
   <td><span class="badge {{statusClass .Status}}">{{tStatus .Status}}</span></td>
-  <td>{{$shown := .Display}}{{if $shown}}{{score $shown}} / {{.Task.Score}}{{else}}&mdash;{{end}}{{with .Override}}
-    <span class="hint" title="{{t "task.override_note"}}{{with .Comment}}: {{.}}{{end}}">({{t "task.override_note"}})</span>{{end}}</td>
-  <td>{{.Attempts}}</td>
-  <td>
+  <td class="num right">
+    {{if .Override}}{{with .Score}}<span class="machine">{{score .}}</span> {{end}}<span class="pen">{{score .Override.Score}}</span>
+    {{else if .Score}}{{score .Score}}
+    {{else}}<span class="den">&mdash;</span>{{end}}
+    <span class="den">/ {{.Task.Score}}</span>
+  </td>
+  <td class="num right">{{.Attempts}}</td>
+  <td class="num right">
     {{if .Task.Deadline.Soft}}<span title="{{t "task.soft_deadline"}}">{{fmtTime .Task.Deadline.Soft}} ({{countdown .Task.Deadline.Soft}})</span>
     {{else if .Task.Deadline.Hard}}<span title="{{t "task.hard_deadline"}}">{{fmtTime .Task.Deadline.Hard}} ({{countdown .Task.Deadline.Hard}})</span>
-    {{else}}&mdash;{{end}}
+    {{else}}<span class="den">&mdash;</span>{{end}}
   </td>
 </tr>{{end}}
