@@ -148,10 +148,11 @@ Scale, all in the display face unless noted:
 
 **The gutter.** Every register's first column is the record's key, set in mono, muted,
 right-aligned, and ruled off from the entry with a `border-right`. The key is the task
-ID on the dashboard, `#<id>` on submissions and the queue, the check name in a results
-table, and the login in the matrix and students list. This is useful rather than
-ornamental: the task ID is the string a student types in a `[recheck <task-id>]` commit
-marker, and it is currently not shown on the dashboard at all.
+ID on the dashboard, `#<id>` on submissions and the queue, and the login in the matrix
+and students list. This is useful rather than ornamental: the task ID is the string a
+student types in a `[recheck <task-id>]` commit marker, and it is currently not shown on
+the dashboard at all. The results table (`sub_results.html`) is left alone: its check
+name column is CSS-only, per section 5.
 
 **The caption.** Section headings are tracked uppercase over a 2px `--rule-heavy` rule,
 with an optional mono caption-note flush right for counts and totals.
