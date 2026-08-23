@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -128,8 +129,8 @@ func TestTaskPageShowsOverride(t *testing.T) {
 		t.Fatalf("GET /tasks/t1: status %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "9 / 10") {
-		t.Errorf("GET /tasks/t1: override score not shown:\n%s", body)
+	if !strings.Contains(body, `class="pen">9<`) {
+		t.Errorf("GET /tasks/t1: override score not shown in pen:\n%s", body)
 	}
 	if !strings.Contains(body, "set by teacher: manual review") {
 		t.Errorf("GET /tasks/t1: no override marker with comment:\n%s", body)
@@ -150,7 +151,9 @@ func TestDashboardWithoutOverrideShowsComputed(t *testing.T) {
 	New(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	body := rec.Body.String()
-	if !strings.Contains(body, `class="den">/ 10<`) || !strings.Contains(body, "4") {
+	// The computed score is unwrapped text right before the denominator span
+	// (no "machine"/"pen" markup - that only appears once a teacher overrides).
+	if !regexp.MustCompile(`>\s*4\s*<span class="den">/ 10<`).MatchString(body) {
 		t.Errorf("GET /: computed score not shown:\n%s", body)
 	}
 	if strings.Contains(body, "set by teacher") {
@@ -237,6 +240,50 @@ func TestStudentPageShowsOverride(t *testing.T) {
 	}
 	if !strings.Contains(body, "manual review") {
 		t.Errorf("GET /students/stud: override column lost:\n%s", body)
+	}
+}
+
+// TestTaskPageShowsTheCorrection: the task page carries the same correction
+// gesture as the dashboard - the machine's number struck through, the
+// teacher's in pen, the comment as a margin note (SPEC.ui.md 3.1).
+func TestTaskPageShowsTheCorrection(t *testing.T) {
+	h, teacher, student := newOverrideSite(t)
+	storeOverride(t, h, teacher, student, 9, "manual review")
+	h.Local = &student
+
+	rec := httptest.NewRecorder()
+	New(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/tasks/t1", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /tasks/t1: status %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`class="machine">4<`,
+		`class="pen">9<`,
+		`class="note"`,
+		"manual review",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("task page: missing %s:\n%s", want, body)
+		}
+	}
+}
+
+// TestTaskPageWithoutOverrideHasNoPen: red means a human intervened, so a task
+// the machine graded on its own carries no pen markup.
+func TestTaskPageWithoutOverrideHasNoPen(t *testing.T) {
+	h, _, student := newOverrideSite(t)
+	h.Local = &student
+
+	rec := httptest.NewRecorder()
+	New(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/tasks/t1", nil))
+
+	body := rec.Body.String()
+	for _, unwanted := range []string{`class="pen"`, `class="machine"`, `class="note"`} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("task page: %s must not appear without an override:\n%s", unwanted, body)
+		}
 	}
 }
 
