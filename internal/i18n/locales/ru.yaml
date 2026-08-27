@@ -108,10 +108,10 @@ login.hint: "Используйте персональный токен дост
 dashboard.title: "Задачи"
 
 # task.html
-task.score_label: "баллы:"
-task.soft_deadline: "мягкий дедлайн:"
-task.hard_deadline: "жёсткий дедлайн:"
-task.attempts_label: "попытки:"
+task.score_label: "баллы"
+task.soft_deadline: "мягкий дедлайн"
+task.hard_deadline: "жёсткий дедлайн"
+task.attempts_label: "попытки"
 task.of: "из"
 task.cooldown_until: "перерыв до"
 task.submissions: "Отправки"

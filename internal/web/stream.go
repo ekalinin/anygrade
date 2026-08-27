@@ -165,5 +165,5 @@ func statusBadge(lang, status string) string {
 	case store.StatusInfraError:
 		label = gradebook.StatusRetrying
 	}
-	return fmt.Sprintf(`<span class="badge st-%s">%s</span>`, label, i18n.For(lang).TStatus(label))
+	return fmt.Sprintf(`<span class="badge %s">%s</span>`, statusClass(label), i18n.For(lang).TStatus(label))
 }

@@ -1,44 +1,70 @@
-/* anygrade app UI - light-first with automatic dark mode plus a manual toggle.
-   Token vocabulary mirrors landing/styles.css so the app and the marketing page
-   share one design language. Each token carries both its light and dark value via
-   light-dark(), resolved from the effective `color-scheme`:
+/* anygrade app UI - "the ledger" (specs/SPEC.ui.md).
+   A mark book: rows of records on ruled lines, a machine entering marks, and
+   one human who can overrule it. Red is reserved for that human and appears
+   nowhere else - see .pen / .machine below.
+
+   Light-first with automatic dark mode plus a manual toggle. Each token
+   carries both values via light-dark(), resolved from the effective
+   `color-scheme`:
      - `auto`  (default): :root sets `color-scheme: light dark`, following the OS.
      - `light`/`dark`: [data-theme=...] pins `color-scheme`, set by the base.html
        toggle from localStorage. */
 
+/* Display face: Geologica, variable 400-700, vendored (static/VERSIONS).
+   Split by unicode-range so an English page never fetches the Cyrillic
+   subset. font-display:swap plus the system-ui fallback means a blocked font
+   request degrades to plain text, never to invisible text. */
+@font-face {
+  font-family: Geologica;
+  src: url(/static/fonts/geologica-latin.woff2) format("woff2");
+  font-weight: 400 700;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+2000-206F,
+                 U+2192, U+2212, U+2215;
+}
+@font-face {
+  font-family: Geologica;
+  src: url(/static/fonts/geologica-cyrillic.woff2) format("woff2");
+  font-weight: 400 700;
+  font-display: swap;
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+
 :root {
   color-scheme: light dark;
-  /* surfaces */
-  --bg: light-dark(#ffffff, #0d1117);
-  --card: light-dark(#ffffff, #161b22);
-  --surface: light-dark(#f6f8fa, #161b22);
-  --surface-2: light-dark(#eef1f5, #1c2230);
-  --code-bg: light-dark(#f1f3f6, #0d1117);
-  --line: light-dark(#e5e7eb, #30363d);
-  /* text */
-  --fg: light-dark(#1a1d21, #e6edf3);
-  --muted: light-dark(#6b7280, #8b949e);
-  /* accent */
-  --accent: light-dark(#1d4ed8, #58a6ff);
-  --accent-strong: light-dark(#1e40af, #388bfd);
-  --accent-weak: light-dark(#e8effc, rgba(56, 139, 253, 0.16));
-  --on-accent: light-dark(#ffffff, #06121f);
-  /* status */
-  --ok: light-dark(#15803d, #3fb950);
-  --ok-weak: light-dark(#e6f4ea, rgba(63, 185, 80, 0.16));
-  --warn: light-dark(#b45309, #d29922);
-  --warn-weak: light-dark(#fbf0e1, rgba(210, 153, 34, 0.16));
-  --bad: light-dark(#b91c1c, #f85149);
-  --bad-weak: light-dark(#fbeaea, rgba(248, 81, 73, 0.16));
-  --info: light-dark(#1d4ed8, #58a6ff);
-  --info-weak: light-dark(#e8effc, rgba(88, 166, 255, 0.16));
+  /* surfaces: tinted paper, with a crisp sheet for documents and hover */
+  --paper: light-dark(#eff3f0, #121915);
+  --sheet: light-dark(#ffffff, #19211d);
+  --code-bg: light-dark(#e9eeeb, #0e1411);
+  --rule: light-dark(#d2dad5, #2e3a34);
+  --rule-heavy: light-dark(#15201b, #9db0a6);
+  /* ink */
+  --ink: light-dark(#15201b, #dfe8e2);
+  --ink-2: light-dark(#44514a, #9faea5);
+  --ink-3: light-dark(#5f6e66, #7c8b82);
+  /* machine verdicts: earthy and low-chroma, so the pen stays the hottest
+     thing on the page. --fail is deliberately dusty in dark for that reason. */
+  --pass: light-dark(#16643f, #58c68c);
+  --fail: light-dark(#8e3024, #d98a7e);
+  --warn: light-dark(#7e5a0b, #dda53a);
+  --live: light-dark(#0b5d6b, #4fc3d8);
+  --pass-w: light-dark(rgba(22, 100, 63, 0.09), rgba(88, 198, 140, 0.10));
+  --fail-w: light-dark(rgba(142, 48, 36, 0.09), rgba(217, 138, 126, 0.10));
+  --warn-w: light-dark(rgba(126, 90, 11, 0.10), rgba(221, 165, 58, 0.10));
+  --live-w: light-dark(rgba(11, 93, 107, 0.09), rgba(79, 195, 216, 0.10));
+  /* the human hand, and nothing else */
+  --pen: light-dark(#c42d1a, #ff5a3d);
+  /* focus ring and selection only - never a status */
+  --blue: light-dark(#2c5f8a, #7fb2e0);
+  --blue-w: light-dark(rgba(44, 95, 138, 0.14), rgba(127, 178, 224, 0.18));
   /* chrome */
-  --topbar-bg: light-dark(rgba(255, 255, 255, 0.8), rgba(13, 17, 23, 0.85));
-  --shadow: light-dark(0 2px 10px rgba(0, 0, 0, 0.07), 0 8px 24px rgba(1, 4, 9, 0.5));
+  --topbar-bg: light-dark(rgba(239, 243, 240, 0.85), rgba(18, 25, 21, 0.85));
+  --shadow: light-dark(0 1px 2px rgba(21, 32, 27, 0.06), 0 8px 24px rgba(0, 0, 0, 0.45));
   /* system */
-  --radius: 0.5rem;
-  --radius-sm: 0.35rem;
-  --radius-pill: 1rem;
+  --radius: 0.4rem;
+  --radius-sm: 0.3rem;
+  --radius-stamp: 2px;
+  --display: Geologica, system-ui, -apple-system, sans-serif;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   font-size: 16px;
@@ -52,201 +78,326 @@
 
 body {
   margin: 0;
-  color: var(--fg);
-  background: var(--bg);
+  color: var(--ink);
+  background: var(--paper);
   font-family: var(--sans);
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
 }
 
-main { max-width: 60rem; margin: 0 auto; padding: 1.25rem 1.25rem 4rem; }
+main { max-width: 62rem; margin: 0 auto; padding: 1.5rem 1.5rem 5rem; }
 
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
+/* Links are ink with a rule underneath - print convention, no browser blue.
+   Set on the element so links inside tables and panes cannot fall through to
+   the UA default. */
+a {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--rule);
+}
+a:hover { border-bottom-color: var(--ink); }
+.topbar nav a, .topbar .brand, .cell-link, .crumbs a { border-bottom: none; }
 
-h1 { font-size: 1.55rem; font-weight: 700; letter-spacing: -0.01em; margin: 0.2rem 0 1rem; }
-h2 { font-size: 1.2rem; font-weight: 600; margin: 1.5rem 0 0.5rem; }
-h1 .badge, h2 .badge { vertical-align: middle; font-size: 0.8rem; }
+h1 {
+  font-family: var(--display);
+  font-size: 1.45rem; font-weight: 600; letter-spacing: -0.02em;
+  margin: 0.2rem 0 1rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 2px solid var(--rule-heavy);
+}
+h2 {
+  font-family: var(--display);
+  font-size: 0.8rem; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--ink);
+  margin: 2rem 0 0.5rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 2px solid var(--rule-heavy);
+}
+h1 .badge, h2 .badge { vertical-align: middle; }
 
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+:focus-visible {
+  outline: 2px solid var(--blue); outline-offset: 2px; border-radius: var(--radius-stamp);
+}
 
 /* Skip link (accessibility) */
 .skip-link {
   position: absolute; left: -9999px; top: 0; z-index: 100;
-  background: var(--accent); color: var(--on-accent);
-  padding: 0.5rem 0.9rem; border-radius: 0 0 var(--radius-sm) 0;
+  background: var(--ink); color: var(--paper);
+  padding: 0.5rem 0.9rem; border-radius: 0 0 var(--radius-sm) 0; border-bottom: none;
 }
 .skip-link:focus { left: 0; }
 
 /* Top bar */
 .topbar {
   position: sticky; top: 0; z-index: 50;
-  display: flex; justify-content: space-between; align-items: center; gap: 1rem;
-  padding: 0.6rem 1.25rem;
+  display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
+  padding: 0.75rem 1.5rem;
   background: var(--topbar-bg);
   backdrop-filter: saturate(140%) blur(8px);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 2px solid var(--rule-heavy);
 }
 .topbar .brand {
-  font-weight: 700; color: var(--fg); text-decoration: none; letter-spacing: -0.01em;
+  font-family: var(--display); font-weight: 600; font-size: 1rem;
+  letter-spacing: -0.01em; color: var(--ink);
 }
-.topbar .brand:hover { color: var(--accent); text-decoration: none; }
-.topbar nav { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
-.topbar-right { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
-.topbar nav a { color: var(--muted); text-decoration: none; font-size: 0.92rem; transition: color 0.15s; }
-.topbar nav a:hover { color: var(--fg); text-decoration: none; }
-.who { color: var(--muted); font-size: 0.9rem; }
-.lang-switch { display: flex; gap: 0.35rem; }
-.lang-switch .linklike { text-decoration: none; color: var(--muted); font-size: 0.8rem; }
-.lang-switch .active { color: var(--accent); font-weight: 700; text-decoration: none; }
+.topbar .brand:hover { color: var(--ink); }
+.topbar nav { display: flex; gap: 1.15rem; align-items: baseline; flex-wrap: wrap; }
+.topbar-right { display: flex; gap: 1.15rem; align-items: baseline; flex-wrap: wrap; }
+.topbar nav a {
+  font-family: var(--display); font-size: 0.78rem; font-weight: 500;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-2);
+}
+.topbar nav a:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 4px; }
+.who { font-family: var(--mono); font-size: 0.75rem; color: var(--ink-3); }
+/* The logout action lives inside <nav> (base.html), unlike the theme toggle
+   and lang switch which are its siblings in .topbar-right - scoping to
+   `nav` targets logout alone, by construction, so no other topbar control
+   or table-row .linklike (queue cancel/recheck, settings key removal) is
+   ever at risk of picking this up. */
+.topbar nav .linklike {
+  font-family: var(--display); font-size: 0.78rem; font-weight: 500;
+  letter-spacing: 0.1em; text-transform: uppercase;
+}
+/* .inline sets the lang-switch form to display:inline, which drops the flex
+   gap between its buttons regardless of source order - space the buttons
+   with a sibling margin instead, so it does not depend on winning that
+   specificity race. */
+.lang-switch .linklike { font-family: var(--mono); font-size: 0.75rem; color: var(--ink-3); }
+.lang-switch .linklike + .linklike { margin-left: 0.35rem; }
+.lang-switch .active { color: var(--ink); font-weight: 700; }
 
 /* Site footer: project link and the version of the running binary */
 .sitefoot {
   display: flex; justify-content: center; align-items: center; gap: 0.5rem;
-  padding: 1rem 1.25rem 1.5rem;
-  border-top: 1px solid var(--line);
-  color: var(--muted); font-size: 0.82rem;
+  padding: 1rem 1.5rem 1.5rem;
+  border-top: 1px solid var(--rule);
+  color: var(--ink-3); font-family: var(--mono); font-size: 0.75rem;
 }
-.sitefoot a { color: var(--muted); }
-.sitefoot a:hover { color: var(--accent); }
-.sitefoot-ver { font-family: var(--mono); }
+.sitefoot a { color: var(--ink-3); border-bottom: none; }
+.sitefoot a:hover { color: var(--ink); }
 
 .inline { display: inline; }
 
-/* Text-style action (logout, cancel, remove, lang switch) */
+/* Text-style action (logout, cancel, remove, lang switch). Underlined at
+   rest, since .linklike cancels the base `a` underline (border-bottom) and
+   the ink palette dropped the old browser blue - without it these read as
+   plain text, not controls. The topbar nav and lang switch opt back out:
+   they already sit in a bar where they read as controls. */
 .linklike, .linklike-a {
-  background: none; border: none; padding: 0; color: var(--accent);
-  text-decoration: none; cursor: pointer; font: inherit; transition: color 0.15s;
+  background: none; border: none; padding: 0; color: var(--ink-2);
+  text-decoration: underline; text-decoration-color: var(--rule);
+  text-underline-offset: 3px; cursor: pointer; font: inherit; transition: color 0.15s;
 }
-.linklike:hover, .linklike-a:hover { color: var(--accent-strong); text-decoration: underline; }
-.linklike-a { font-size: 0.9rem; font-weight: 500; }
+.linklike:hover, .linklike-a:hover { color: var(--ink); text-decoration-color: currentColor; }
+.linklike-a { font-family: var(--display); font-size: 0.78rem; font-weight: 500; }
+.topbar nav .linklike, .lang-switch .linklike { text-decoration: none; }
+/* Adjacent text-style actions in the same cell (student.html clear/recheck,
+   queue_row.html cancel/recheck) would otherwise read as one phrase. */
+td .inline + .inline { margin-left: 0.5rem; }
 
 /* Theme toggle - progressive enhancement, only shown once JS is present */
 .theme-toggle { display: none; }
 .js .theme-toggle {
-  display: inline-flex; align-items: center; gap: 0.3rem;
-  color: var(--muted); font-size: 0.8rem;
+  display: inline-flex; align-items: baseline; gap: 0.3rem;
+  font-family: var(--mono); color: var(--ink-3); font-size: 0.75rem;
 }
-.theme-toggle:hover { color: var(--fg); text-decoration: none; }
+.theme-toggle:hover { color: var(--ink); }
 
-/* Tables */
-table { border-collapse: collapse; width: 100%; margin: 0.75rem 0; font-size: 0.95rem; }
-th, td { text-align: left; padding: 0.5rem 0.65rem; border-bottom: 1px solid var(--line); }
-thead th { background: var(--surface); color: var(--muted); font-weight: 600; font-size: 0.8rem; }
+/* The register: records on ruled lines. No zebra - hover lifts the row to
+   the sheet instead. */
+table { border-collapse: collapse; width: 100%; margin: 0.75rem 0; font-size: 0.92rem; }
+th {
+  font-family: var(--display); font-size: 0.68rem; font-weight: 600;
+  letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-3);
+  text-align: left; padding: 0.55rem 0.7rem; border-bottom: 1px solid var(--rule);
+}
+td { padding: 0.62rem 0.7rem; border-bottom: 1px solid var(--rule); vertical-align: baseline; }
 tbody tr { transition: background-color 0.12s; }
-tbody tr:hover { background: var(--surface); }
+tbody tr:hover { background: var(--sheet); }
 
-.table-scroll { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); margin: 0.75rem 0; }
+/* The gutter: each record's own key, ruled off from the entry. Never an
+   ordinal - a partial re-rendered over SSE has no loop index. */
+.key {
+  font-family: var(--mono); font-size: 0.8rem; color: var(--ink-3);
+  white-space: nowrap; width: 1%; text-align: right;
+  border-right: 1px solid var(--rule);
+}
+
+/* Record name: set in the display face, per the register's type roles. */
+.name { font-family: var(--display); font-size: 0.92rem; font-weight: 500; letter-spacing: -0.005em; }
+
+/* Figures are mono everywhere so columns align by construction. */
+.num, .scoreline, td.cell {
+  font-family: var(--mono); font-variant-numeric: tabular-nums;
+}
+.num { font-size: 0.84rem; white-space: nowrap; }
+.den { color: var(--ink-3); }
+.right { text-align: right; }
+
+.table-scroll {
+  overflow-x: auto; border: 1px solid var(--rule);
+  border-radius: var(--radius); margin: 0.75rem 0;
+}
 .table-scroll table { margin: 0; }
 
-/* Status badges (class names generated in Go - do not rename) */
+/* The stamp: a verdict, not a chip. Class names are generated in Go
+   (render.go statusClass) - do not rename. */
 .badge {
-  display: inline-block; padding: 0.1rem 0.55rem; border-radius: var(--radius-pill);
-  font-size: 0.78rem; font-weight: 500; line-height: 1.5;
-  border: 1px solid transparent; white-space: nowrap;
+  display: inline-block; padding: 0.16rem 0.4rem; border-radius: var(--radius-stamp);
+  font-family: var(--display); font-size: 0.66rem; font-weight: 600;
+  letter-spacing: 0.12em; text-transform: uppercase; line-height: 1.5;
+  border: 1px solid currentColor; white-space: nowrap;
 }
-.st-passed { color: var(--ok); background: var(--ok-weak); }
-.st-partial, .st-retrying, .st-queued { color: var(--warn); background: var(--warn-weak); }
-.st-failed, .st-rejected, .st-rejected-deadline, .st-rejected-limit, .st-error { color: var(--bad); background: var(--bad-weak); }
-.st-running { color: var(--info); background: var(--info-weak); }
-.st-not-started, .st-skipped { color: var(--muted); background: var(--surface-2); border-color: var(--line); }
-/* A hand-set score: neutral, but not muted - the number is real. */
-.st-overridden { color: var(--fg); background: var(--surface-2); border-color: var(--line); }
+.st-passed { color: var(--pass); background: var(--pass-w); }
+.st-partial, .st-retrying, .st-queued { color: var(--warn); background: var(--warn-w); }
+.st-failed, .st-rejected, .st-rejected-deadline, .st-rejected-limit, .st-error {
+  color: var(--fail); background: var(--fail-w);
+}
+.st-running { color: var(--live); background: var(--live-w); }
+.st-not-started, .st-skipped, .st-canceled, .st-done {
+  color: var(--ink-3); background: transparent; border-color: var(--rule);
+}
+/* A hand-set score: neutral, so the pen number beside it carries the signal. */
+.st-overridden { color: var(--ink-2); background: transparent; border-color: var(--rule); }
 
-/* Meta / hints / flashes */
-.meta { display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: 0.9rem; }
-.crumbs { color: var(--muted); font-size: 0.9rem; }
-.crumbs a { color: var(--muted); }
-.crumbs a:hover { color: var(--accent); }
-.hint { color: var(--muted); }
-.note { white-space: pre-line; }
-.scoreline { font-size: 1.05rem; }
+/* THE SIGNATURE: the correction (SPEC.ui.md 3.1).
+   The machine's number struck, the teacher's number in pen, the comment as a
+   margin note. --pen appears nowhere else in this file: it means a human
+   intervened. The strikethrough carries the distinction independently of
+   color, so the pair stays legible without color perception. */
+.machine { color: var(--ink-3); text-decoration: line-through; text-decoration-thickness: 1px; }
+.pen { color: var(--pen); font-weight: 600; }
+.note {
+  display: block; font-family: var(--sans); font-size: 0.78rem;
+  color: var(--pen); margin-top: 0.2rem; white-space: pre-line;
+}
+.note::before { content: "\270E\A0"; font-family: var(--display); }
+
+/* Meta strip: a tracked micro-label over a mono value. */
+.meta { display: flex; gap: 0.35rem 1.6rem; flex-wrap: wrap; align-items: baseline; margin: 0.75rem 0 0; }
+.meta > span { display: flex; flex-direction: column; gap: 0.1rem; }
+.meta .k {
+  font-family: var(--display); font-size: 0.63rem; font-weight: 600;
+  letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-3);
+}
+.meta .v { font-family: var(--mono); font-size: 0.85rem; color: var(--ink); }
+
+.crumbs { font-family: var(--mono); font-size: 0.75rem; color: var(--ink-3); }
+.crumbs a { color: var(--ink-3); }
+.crumbs a:hover { color: var(--ink); }
+.hint { color: var(--ink-2); font-size: 0.88rem; }
+.note-plain { white-space: pre-line; }
+.scoreline { font-size: 1rem; }
 .cooldown { color: var(--warn); }
+.pager { display: flex; gap: 1rem; margin: 1rem 0; }
+
 .flash {
   padding: 0.6rem 0.85rem; margin: 0.75rem 0;
-  border: 1px solid var(--line); border-left: 3px solid var(--accent);
-  border-radius: var(--radius-sm); background: var(--surface);
+  border: 1px solid var(--rule); border-left: 3px solid var(--ink);
+  border-radius: var(--radius-sm); background: var(--sheet);
 }
-.flash.error { border-color: var(--bad); border-left-color: var(--bad); background: var(--bad-weak); color: var(--bad); }
+.flash.error { border-color: var(--fail); border-left-color: var(--fail); background: var(--fail-w); color: var(--fail); }
 
-/* Task statement card */
+/* Sheet: the one container in the design. A task statement is a document,
+   not a record. */
 .statement {
   margin: 1.25rem 0; padding: 1.1rem 1.3rem;
-  border: 1px solid var(--line); border-radius: var(--radius);
-  background: var(--card); box-shadow: var(--shadow);
+  border: 1px solid var(--rule); border-radius: var(--radius);
+  background: var(--sheet); box-shadow: var(--shadow);
 }
+.statement h1, .statement h2, .statement h3 {
+  font-family: var(--display); border-bottom: none; text-transform: none;
+  letter-spacing: -0.01em; padding-bottom: 0;
+}
+.statement h2 { font-size: 1.05rem; margin: 1.2rem 0 0.5rem; }
+.statement h3 { font-size: 0.95rem; margin: 1rem 0 0.4rem; }
 .statement pre {
   overflow-x: auto; background: var(--code-bg); padding: 0.7rem;
   border-radius: var(--radius-sm); font-family: var(--mono); font-size: 0.85rem;
 }
-.statement code { background: var(--code-bg); padding: 0.12rem 0.3rem; border-radius: 0.25rem; font-family: var(--mono); font-size: 0.9em; }
+.statement code {
+  background: var(--code-bg); padding: 0.12rem 0.3rem; border-radius: 3px;
+  font-family: var(--mono); font-size: 0.9em;
+}
 .statement pre code { background: none; padding: 0; }
 
 /* Collapsible log / output panes */
-.pane { margin: 0.5rem 0; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
-.pane summary { padding: 0.45rem 0.65rem; cursor: pointer; background: var(--surface-2); font-size: 0.9rem; }
+.pane {
+  margin: 0.55rem 0; border: 1px solid var(--rule);
+  border-radius: var(--radius); overflow: hidden; background: var(--sheet);
+}
+.pane summary {
+  padding: 0.45rem 0.7rem; cursor: pointer; background: var(--paper);
+  border-bottom: 1px solid var(--rule); font-family: var(--mono); font-size: 0.8rem;
+}
 .pane pre {
   margin: 0; padding: 0.7rem; max-height: 24rem; overflow: auto;
-  font-family: var(--mono); font-size: 0.8rem; line-height: 1.6;
+  font-family: var(--mono); font-size: 0.78rem; line-height: 1.65;
   white-space: pre-wrap; word-break: break-word;
-  background: var(--code-bg); color: var(--fg);
+  background: var(--sheet); color: var(--ink-2);
 }
 
 /* Forms */
 input[type="text"], input[type="password"], input[type="search"],
 input[type="email"], input[type="number"], select, textarea {
-  padding: 0.45rem 0.6rem; border: 1px solid var(--line); border-radius: var(--radius-sm);
-  background: var(--bg); color: var(--fg); font: inherit;
+  padding: 0.45rem 0.6rem; border: 1px solid var(--rule); border-radius: var(--radius-sm);
+  background: var(--sheet); color: var(--ink); font: inherit;
 }
 input:focus-visible, select:focus-visible, textarea:focus-visible {
-  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak);
+  outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-w);
 }
 
 /* Primary button (link-style buttons opt out via .linklike) */
 button[type="submit"]:not(.linklike) {
-  padding: 0.5rem 1rem; border: 1px solid var(--accent); border-radius: var(--radius-sm);
-  background: var(--accent); color: var(--on-accent); cursor: pointer;
-  font: inherit; font-weight: 600;
+  padding: 0.45rem 0.9rem; border: 1px solid var(--ink); border-radius: var(--radius-sm);
+  background: var(--ink); color: var(--paper); cursor: pointer;
+  font-family: var(--display); font-size: 0.8rem; font-weight: 600; letter-spacing: 0.02em;
   transition: background-color 0.15s, border-color 0.15s, transform 0.05s;
 }
-button[type="submit"]:not(.linklike):hover { background: var(--accent-strong); border-color: var(--accent-strong); }
+button[type="submit"]:not(.linklike):hover { background: var(--ink-2); border-color: var(--ink-2); }
 button[type="submit"]:not(.linklike):active { transform: translateY(1px); }
 button[type="submit"]:not(.linklike):disabled {
-  background: var(--muted); border-color: var(--muted); cursor: not-allowed; transform: none;
+  background: transparent; color: var(--ink-3); border-color: var(--rule);
+  cursor: not-allowed; transform: none;
 }
 
-/* Login card */
+/* Login sheet */
 .login {
   max-width: 24rem; margin: 4rem auto; padding: 1.75rem;
-  border: 1px solid var(--line); border-radius: var(--radius);
-  background: var(--card); box-shadow: var(--shadow);
+  border: 1px solid var(--rule); border-radius: var(--radius);
+  background: var(--sheet); box-shadow: var(--shadow);
 }
 .login h1 { margin-top: 0; }
-.login label { display: block; margin: 0.85rem 0; font-size: 0.9rem; color: var(--muted); }
+.login label { display: block; margin: 0.85rem 0; font-size: 0.85rem; color: var(--ink-2); }
 .login input { display: block; width: 100%; margin-top: 0.35rem; }
 .login button[type="submit"] { width: 100%; margin-top: 0.5rem; }
 
 /* Access token display */
 .token {
   font-family: var(--mono); font-size: 1rem; word-break: break-all;
-  background: var(--code-bg); border: 1px solid var(--line);
+  background: var(--code-bg); border: 1px solid var(--rule);
   border-radius: var(--radius-sm); padding: 0.6rem 0.75rem;
 }
 
 /* Page-specific bits */
 .filters { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin: 0.75rem 0; }
-.matrix th { white-space: nowrap; }
+
+.matrix { font-size: 0.85rem; }
+.matrix th { white-space: nowrap; text-align: center; padding: 0.5rem 0.45rem; }
+.matrix th.key { text-align: left; }
+.matrix td { padding: 0.42rem 0.45rem; }
 .matrix td.cell { white-space: nowrap; text-align: center; }
-.matrix .ovr { color: var(--warn); font-weight: 700; }
-.matrix .cell-link { text-decoration: none; }
-.leaderboard tr.self { background: var(--accent-weak); }
-.leaderboard tr.self:hover { background: var(--accent-weak); }
+.matrix .cell-link { color: inherit; }
+.matrix .total { border-left: 1px solid var(--rule); font-weight: 600; }
+
+.leaderboard tr.self { background: var(--blue-w); }
+.leaderboard tr.self:hover { background: var(--blue-w); }
 .admin-actions { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin: 0.5rem 0 1rem; }
 .admin-cell { white-space: nowrap; }
 .override-form input[name="score"] { width: 5rem; }
 .override-form input[name="comment"] { width: 9rem; }
 .filelist { list-style: none; padding-left: 0; }
-.filelist li { padding: 0.25rem 0; border-bottom: 1px solid var(--line); }
+.filelist li { padding: 0.25rem 0; border-bottom: 1px solid var(--rule); }
 
 /* Responsive */
 @media (max-width: 720px) {
@@ -254,7 +405,8 @@ button[type="submit"]:not(.linklike):disabled {
   .topbar { flex-wrap: wrap; gap: 0.5rem; padding: 0.6rem 1rem; }
   .topbar nav { gap: 0.6rem; }
   .meta { gap: 0.4rem 1rem; }
-  h1 { font-size: 1.35rem; }
+  h1 { font-size: 1.25rem; }
+  td, th { padding: 0.5rem 0.45rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

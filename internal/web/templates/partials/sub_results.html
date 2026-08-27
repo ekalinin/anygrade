@@ -38,7 +38,7 @@
 </details>
 {{end}}{{end}}
 {{if not .CanDownloadLogs}}<p class="hint">{{t "sub.logs_teacher_only"}}</p>{{end}}
-{{if .Sub.WorkerNote}}<p class="hint note">{{.Sub.WorkerNote}}</p>{{end}}
+{{if .Sub.WorkerNote}}<p class="hint note-plain">{{.Sub.WorkerNote}}</p>{{end}}
 {{else if .Running}}
 <p class="hint">{{t "sub.waiting"}}</p>
 {{else}}

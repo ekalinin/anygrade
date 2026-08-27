@@ -4,7 +4,7 @@
 <div hx-ext="sse" sse-connect="/queue/stream?ids={{.StreamIDs}}">
 {{if .Rows}}
 <table class="queue">
-  <thead><tr><th>#</th><th>{{t "common.student"}}</th><th>{{t "common.task"}}</th><th>{{t "common.status"}}</th><th>{{t "common.received"}}</th><th>{{t "common.note"}}</th><th></th></tr></thead>
+  <thead><tr><th class="key">#</th><th>{{t "common.student"}}</th><th>{{t "common.task"}}</th><th>{{t "common.status"}}</th><th>{{t "common.received"}}</th><th>{{t "common.note"}}</th><th></th></tr></thead>
   <tbody>
   {{range .Rows}}{{template "queue-row" .}}{{end}}
   </tbody>

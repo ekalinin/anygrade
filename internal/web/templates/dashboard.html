@@ -2,7 +2,7 @@
 <h1>{{t "dashboard.title"}}</h1>
 <div hx-ext="sse" sse-connect="/dashboard/stream">
 <table class="tasks">
-  <thead><tr><th>{{t "common.task"}}</th><th>{{t "common.status"}}</th><th>{{t "common.score"}}</th><th>{{t "common.attempts"}}</th><th>{{t "common.deadline"}}</th></tr></thead>
+  <thead><tr><th class="key">{{t "common.task"}}</th><th>{{t "common.name"}}</th><th>{{t "common.status"}}</th><th class="right">{{t "common.score"}}</th><th class="right">{{t "common.attempts"}}</th><th class="right">{{t "common.deadline"}}</th></tr></thead>
   <tbody>
   {{range .Tasks}}{{template "task-row" .}}{{end}}
   </tbody>

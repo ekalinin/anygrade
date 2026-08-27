@@ -270,3 +270,28 @@ func TestStudentPageRendersKeyDeleteForm(t *testing.T) {
 		t.Errorf("key delete form does not carry the fingerprint (%s):\n%s", want, body)
 	}
 }
+
+// TestAccountStateIsNotAVerdict: an account's state is not a check result. A
+// disabled account used to render with st-failed, borrowing the failure color
+// from the verdict palette; it is a warn stamp now, and an active account a
+// neutral one (SPEC.ui.md 5).
+func TestAccountStateIsNotAVerdict(t *testing.T) {
+	h, _ := newTestSite(t)
+	setCourse(h)
+	_, teacherCookie := newSession(t, h, "prof", "teacher")
+	newSession(t, h, "stud", "student")
+	// SetUserState is keyed by login, not id (store/tokens.go:73).
+	if err := h.DB.SetUserState(t.Context(), "stud", "disabled"); err != nil {
+		t.Fatalf("disable student: %v", err)
+	}
+
+	for _, target := range []string{"/students", "/students/stud"} {
+		body := do(h, http.MethodGet, target, teacherCookie).Body.String()
+		if strings.Contains(body, "st-failed") {
+			t.Errorf("%s: a disabled account must not borrow the failure stamp:\n%s", target, body)
+		}
+		if !strings.Contains(body, "st-partial") {
+			t.Errorf("%s: a disabled account should carry the warn stamp:\n%s", target, body)
+		}
+	}
+}
