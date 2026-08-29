@@ -83,9 +83,10 @@ func localeFuncs(lang string) template.FuncMap {
 		"lang":        tr.Lang,
 		"locales":     i18n.Locales,
 		"upper":       strings.ToUpper,
-		// A function, not page data: the footer lives in base.html and every
-		// page would otherwise have to carry the version in its own struct.
+		// Functions, not page data: the footer lives in base.html and every
+		// page would otherwise have to carry these in its own struct.
 		"version": version.Short,
+		"repoURL": func() string { return version.URL },
 	}
 }
 
