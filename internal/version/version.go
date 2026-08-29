@@ -11,6 +11,10 @@ import (
 	"sync"
 )
 
+// URL is the project home: the `version` command prints it and the web footer
+// links to it. It lives here so those two never drift apart.
+const URL = "https://github.com/ekalinin/anygrade"
+
 // Injected with -ldflags "-X github.com/ekalinin/anygrade/internal/version.Version=v0.1.0".
 var (
 	Version string

@@ -61,8 +61,8 @@ func TestRenderFooter(t *testing.T) {
 			t.Fatalf("render login [%s]: %v", lang, err)
 		}
 		out := buf.String()
-		if !strings.Contains(out, "https://github.com/ekalinin/anygrade") {
-			t.Errorf("footer [%s]: missing the project link", lang)
+		if !strings.Contains(out, version.URL) {
+			t.Errorf("footer [%s]: missing the project link %q", lang, version.URL)
 		}
 		if !strings.Contains(out, version.Short()) {
 			t.Errorf("footer [%s]: missing version %q", lang, version.Short())
