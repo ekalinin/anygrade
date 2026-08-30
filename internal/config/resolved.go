@@ -44,8 +44,10 @@ type ResolvedTask struct {
 	Checks        []Check
 	Workspace     ResolvedWorkspace
 
-	// raw and file support validation (explicit-set detection, diagnostics).
+	// raw, root and file support validation (explicit-set detection, resolving
+	// repo-relative paths, diagnostics).
 	raw  *Task
+	root string // course repo root, exactly as it was passed to LoadAll
 	file string // repo-relative path to task.yaml
 }
 

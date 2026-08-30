@@ -47,6 +47,16 @@ func testValidate(t *testing.T, e *env) {
 	if !strings.Contains(out, "runs after the hidden tests are removed") {
 		t.Fatalf("validate: missing the run-only-beside-a-build-phase warning:\n%s", out)
 	}
+	// The documented workflow runs `validate` from inside the course repo, where
+	// --repo keeps its default. The course root is then relative, and the
+	// workspace.include entries must still resolve against it.
+	out, err = runBinErr(e.courseDir, "validate")
+	if err != nil {
+		t.Fatalf("validate from the course dir: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "OK: course is valid") {
+		t.Fatalf("validate from the course dir: missing success line:\n%s", out)
+	}
 }
 
 // 2. teacher login: the web login form accepts the token from `user add`.

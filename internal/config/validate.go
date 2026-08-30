@@ -254,14 +254,16 @@ func validateTask(t *ResolvedTask, add func(Severity, string, string, string, ..
 	validatePenaltyWarnings(t, add)
 }
 
-// repoRoot derives the course repo root from the task's absolute directory
-// and its repo-relative task.yaml path.
+// repoRoot reports the course repo root that workspace.include is resolved
+// against (SPEC §4.3). LoadAll records it verbatim, so the root holds whatever
+// form the caller passed - absolute or relative - and the task directory below
+// it shares that form. A task assembled without LoadAll has no root to report
+// and falls back to its own directory.
 func (t *ResolvedTask) repoRoot() string {
-	rel := filepath.Dir(t.file)
-	if t.file == "" || rel == "." {
-		return t.Dir
+	if t.root != "" {
+		return t.root
 	}
-	return strings.TrimSuffix(t.Dir, string(filepath.Separator)+filepath.ToSlash(rel))
+	return t.Dir
 }
 
 func validateWorkspace(t *ResolvedTask, add func(Severity, string, string, string, ...any)) {
