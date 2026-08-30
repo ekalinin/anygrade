@@ -35,8 +35,14 @@ type submissionData struct {
 	// A row's own BuildFailed covers the history the metadata has moved on
 	// from.
 	BuildChecks map[string]bool
-	Running     bool
-	Rejected    bool
+	// Note is the worker note this viewer may read. A submission with no check
+	// results has nothing else to explain itself, so the note is rendered on
+	// its own - but only the teacher gets it whole: the student reads the
+	// student-safe projection the writer left behind, empty whenever the note
+	// is operator detail (SPEC §14).
+	Note     string
+	Running  bool
+	Rejected bool
 	// Flash carries a recheck warning from the redirect that landed here
 	// (submissionURL); the fragment renderer leaves it empty.
 	Flash string
@@ -69,8 +75,12 @@ func (h *Handler) submissionData(sub store.Submission, checks []store.CheckRow, 
 		Status:          subDisplayStatus(sub),
 		Checks:          checks,
 		CanDownloadLogs: viewer.Role == "teacher",
+		Note:            sub.StudentNote,
 		Running:         !terminalSubmission(sub),
 		Rejected:        sub.Status == store.StatusRejectedDeadline || sub.Status == store.StatusRejectedLimit,
+	}
+	if viewer.Role == "teacher" {
+		data.Note = sub.WorkerNote
 	}
 	if task, _, ok := h.Course.Get().Task(sub.TaskID); ok {
 		data.TaskName = task.Name

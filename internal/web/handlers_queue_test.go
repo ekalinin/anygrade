@@ -41,26 +41,10 @@ func (f *fakeRechecker) TeacherRecheck(_ context.Context, _ store.User, targetUs
 // erroredRow seeds one submission for a fresh student and drives it to the
 // terminal infra_error state the queue view shows as `error` the way a worker
 // does: claim it, then ScheduleRetry with a nil retryAt (retries exhausted).
+// The note is an operator's, as an unclassified infra failure leaves it.
 func erroredRow(t *testing.T, h *Handler, login string) (store.User, store.Submission) {
 	t.Helper()
-	student, err := h.DB.CreateUser(t.Context(), login, "Student", "student")
-	if err != nil {
-		t.Fatalf("create user: %v", err)
-	}
-	sub, err := h.DB.Enqueue(t.Context(), store.NewSubmission{
-		UserID: student.ID, TaskID: "t1", CommitSHA: "deadbeef",
-		ReceivedAt: time.Now(), Counts: true,
-	})
-	if err != nil {
-		t.Fatalf("enqueue: %v", err)
-	}
-	if _, ok, err := h.DB.ClaimNext(t.Context(), time.Now()); err != nil || !ok {
-		t.Fatalf("claim: ok=%v err=%v", ok, err)
-	}
-	if ok, err := h.DB.ScheduleRetry(t.Context(), sub.ID, nil, "boom"); err != nil || !ok {
-		t.Fatalf("schedule retry: ok=%v err=%v", ok, err)
-	}
-	return student, sub
+	return infraRow(t, h, login, nil, "boom", "")
 }
 
 func post(t *testing.T, h *Handler, path string) *httptest.ResponseRecorder {

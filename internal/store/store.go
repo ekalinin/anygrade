@@ -175,10 +175,14 @@ type Submission struct {
 	FinalScore     *float64
 	LogDir         string
 	WorkerNote     string
-	Retries        int        // infra_error retry counter
-	RetryAt        *time.Time // next eligible claim time; nil = none/terminal
-	StartedAt      *time.Time
-	CanceledAt     *time.Time // teacher cancel timestamp (display only)
+	// StudentNote is the part of WorkerNote its owner may read: "" when the
+	// note is operator detail (docker daemon output, a data-dir path) that
+	// stays with the teacher (SPEC §14).
+	StudentNote string
+	Retries     int        // infra_error retry counter
+	RetryAt     *time.Time // next eligible claim time; nil = none/terminal
+	StartedAt   *time.Time
+	CanceledAt  *time.Time // teacher cancel timestamp (display only)
 }
 
 // NewSubmission is the intake payload; Enqueue assigns ID and AttemptNo.
@@ -250,8 +254,9 @@ type SubmissionStore interface {
 	// retryAt nil marks it terminal (retries exhausted, surfaced in the
 	// teacher queue view). ok=false when the row is no longer running or was
 	// canceled meanwhile - the caller must not report a status it did not
-	// write.
-	ScheduleRetry(ctx context.Context, id int64, retryAt *time.Time, note string) (ok bool, err error)
+	// write. studentNote is the student-safe part of note, "" when the cause
+	// carried none (SPEC §14).
+	ScheduleRetry(ctx context.Context, id int64, retryAt *time.Time, note, studentNote string) (ok bool, err error)
 	// RequeueRunning resets every running row to queued (startup recovery,
 	// SPEC §5). Returns the number of rows requeued.
 	RequeueRunning(ctx context.Context) (int, error)

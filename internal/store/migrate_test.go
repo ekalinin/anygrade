@@ -115,6 +115,76 @@ func TestMigrateGrandfathersSSHKeys(t *testing.T) {
 	}
 }
 
+// TestMigrateSplitsTheWorkerNote: 0009 gives the note a second audience. The
+// upgrade keeps everything a student could already read - the reject reason,
+// the tamper note, the cancel note - and withholds the one class it cannot
+// classify after the fact: a legacy infra_error row, whose note may be the
+// docker daemon's own words (SPEC §14). The teacher's copy is untouched.
+func TestMigrateSplitsTheWorkerNote(t *testing.T) {
+	dir := t.TempDir()
+	seedPre0009DB(t, dir)
+
+	db, err := Open(t.Context(), dir)
+	if err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	for _, c := range []struct {
+		id   int64
+		want string
+	}{
+		{1, "attempt limit reached (2 of 2)"},              // rejected
+		{2, "task.yaml differs; the course copy was used"}, // done, tamper note
+		{3, "canceled by teacher"},                         // canceled
+		{4, ""},                                            // infra_error: unclassified
+	} {
+		got, _, err := db.GetSubmission(t.Context(), c.id)
+		if err != nil {
+			t.Fatalf("submission %d: %v", c.id, err)
+		}
+		if got.StudentNote != c.want {
+			t.Errorf("submission %d: student note = %q, want %q", c.id, got.StudentNote, c.want)
+		}
+		if got.WorkerNote == "" {
+			t.Errorf("submission %d lost the teacher's note", c.id)
+		}
+	}
+}
+
+// seedPre0009DB writes a database as the version before 0009 left it: one
+// submission of every shape that carries a worker note.
+func seedPre0009DB(t *testing.T, dir string) {
+	t.Helper()
+	raw, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "anygrade.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+
+	for _, name := range migrationsBefore(t, 9) {
+		content, cerr := migrationsFS.ReadFile("migrations/" + name)
+		if cerr != nil {
+			t.Fatal(cerr)
+		}
+		exec(t, raw, string(content))
+	}
+	exec(t, raw, `PRAGMA user_version = 8`)
+	exec(t, raw, `INSERT INTO users (id, login, display_name, role, created_at)
+		VALUES (1, 'bob', 'Bob', 'student', '2026-01-01T00:00:00.000000000Z')`)
+	exec(t, raw, `INSERT INTO submissions
+		  (id, user_id, task_id, commit_sha, received_at, status, worker_note, canceled_at)
+		VALUES
+		  (1, 1, 't1', 'a', '2026-01-01T00:00:00.000000000Z', 'rejected_limit',
+		   'attempt limit reached (2 of 2)', NULL),
+		  (2, 1, 't1', 'b', '2026-01-02T00:00:00.000000000Z', 'done',
+		   'task.yaml differs; the course copy was used', NULL),
+		  (3, 1, 't1', 'c', '2026-01-03T00:00:00.000000000Z', 'infra_error',
+		   'canceled by teacher', '2026-01-03T00:00:01.000000000Z'),
+		  (4, 1, 't1', 'd', '2026-01-04T00:00:00.000000000Z', 'infra_error',
+		   'infra error (image_pull): docker pull golang:1.26: no such host', NULL)`)
+}
+
 // seedPre0007DB writes a database as the version before 0007 left it, with one
 // SSH key registered under the old first-come-first-served rule.
 func seedPre0007DB(t *testing.T, dir string) {
