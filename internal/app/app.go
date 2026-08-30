@@ -214,12 +214,8 @@ func Run(ctx context.Context, opts Options) error {
 
 	fmt.Fprintf(logw, "anygrade: course %q, %d task(s), head %.12s\n",
 		course.Resolved.Course.Name, len(course.Resolved.Tasks), course.Head)
-	scheme := "http"
-	if opts.TLSCert != "" {
-		scheme = "https"
-	}
 	fmt.Fprintf(logw, "anygrade: %s %s, ssh %s, data dir %s\n",
-		scheme, opts.HTTPAddr, opts.SSHAddr, opts.DataDir)
+		scheme(opts), opts.HTTPAddr, opts.SSHAddr, opts.DataDir)
 	if w := plaintextWarning(opts); w != "" {
 		fmt.Fprint(logw, w)
 	}
@@ -296,7 +292,21 @@ func ensureLocalUser(ctx context.Context, db store.Store) (store.User, error) {
 	return db.CreateUser(ctx, "local", "Local User", "teacher")
 }
 
-// baseURL derives the submission-link prefix when --base-url is not given.
+// scheme is what this process's own HTTP listener speaks (SPEC §11): --tls-cert
+// and --tls-key together turn it into HTTPS. Deliberately not --behind-proxy:
+// that flag says a proxy terminates TLS in front of us, so the listener here is
+// still plaintext, and the public origin is the proxy's - usually a different
+// host and port than --http-addr, which is exactly what --base-url is for.
+func scheme(opts Options) string {
+	if opts.TLSCert != "" {
+		return "https"
+	}
+	return "http"
+}
+
+// baseURL derives the submission-link prefix when --base-url is not given. The
+// links go into push output (SPEC §11) and onto the activation pages, so the
+// scheme has to be the one the listener answers, not a fixed "http".
 func baseURL(opts Options) string {
 	if opts.BaseURL != "" {
 		return opts.BaseURL
@@ -308,5 +318,5 @@ func baseURL(opts Options) string {
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		host = "localhost"
 	}
-	return "http://" + net.JoinHostPort(host, port)
+	return scheme(opts) + "://" + net.JoinHostPort(host, port)
 }
