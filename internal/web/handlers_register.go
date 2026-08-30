@@ -157,11 +157,21 @@ type registerData struct {
 	Login      string
 	Name       string
 	Error      string
+	// Closed hides the form: enrolment is over, or the course has no places
+	// left, so the only thing the form could do is fail (SPEC §8).
+	Closed bool
 }
 
 // registerLimitKey is the fixed login half of the open-registration failure
 // key, so the budget is per client IP rather than per submitted login.
 const registerLimitKey = "\x00register"
+
+// registerEventKind is the audit kind logged for every self-registration, and
+// therefore the counter `registration.max_accounts` is compared against: it
+// counts exactly the accounts this form created, while the teacher's own
+// roster - created by invite, which logs `user.activate` - never consumes a
+// student's place (SPEC §8).
+const registerEventKind = "user.register"
 
 func (h *Handler) openMode(w http.ResponseWriter, r *http.Request) bool {
 	if h.Course.Get().Resolved.Course.Registration.Mode != "open" {
@@ -175,7 +185,16 @@ func (h *Handler) registerPage(w http.ResponseWriter, r *http.Request) {
 	if !h.openMode(w, r) {
 		return
 	}
-	h.renderPage(w, r, "register", registerData{CourseName: h.Course.Get().Resolved.Course.Name})
+	course := h.Course.Get().Resolved.Course
+	data := registerData{CourseName: course.Name}
+	// The window is a clock comparison, so saying so here is free. The account
+	// cap deliberately is not checked: it needs a COUNT, and this page is
+	// public and unthrottled - a full course still shows the form and is
+	// refused on submit, where the failure budget bounds the cost.
+	if !course.Registration.OpenAt(time.Now()) {
+		data.Closed, data.Error = true, "registration_closed"
+	}
+	h.renderPage(w, r, "register", data)
 }
 
 // registerSubmit is open-mode self-registration, gated by the course code
@@ -191,11 +210,14 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	course := h.Course.Get()
 	login := strings.TrimSpace(r.FormValue("login"))
 	name := strings.TrimSpace(r.FormValue("name"))
-	fail := func(msg string) {
+	// closed hides the form as well as reporting the error: a refusal by the
+	// enrolment window or the account cap cannot be retried into a success,
+	// and every retry spends the shared per-IP budget (SPEC §8).
+	fail := func(msg string, closed bool) {
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		h.renderPage(w, r, "register", registerData{
 			CourseName: course.Resolved.Course.Name,
-			Login:      login, Name: name, Error: msg,
+			Login:      login, Name: name, Error: msg, Closed: closed,
 		})
 	}
 	// The course code is a short shared secret, so this is a credential check
@@ -212,19 +234,51 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rv.Release() // no-op once the outcome below is reported
-	if r.FormValue("course_code") != course.Resolved.Course.Registration.CourseCode {
+	// The enrolment window and the account cap are decided before the code is
+	// compared, so a refusal outside them never depends on whether the code
+	// was right: the code lives in the repo every student clones, and this is
+	// what keeps a leaked one worthless once enrolment is over (SPEC §8).
+	//
+	// Both charge the failure budget. A rejection here is not a wrong
+	// credential, but a free retry would leave a shut course answering an
+	// unbounded poll - waiting for the window to open or for the teacher to
+	// raise the cap, then racing in - and each poll costs a COUNT over the
+	// audit log. Nothing legitimate is lost: while registration is shut no
+	// attempt can succeed anyway, so the only cost of a spent budget is that
+	// the page says "too many attempts" instead of "closed".
+	reg := course.Resolved.Course.Registration
+	if !reg.OpenAt(time.Now()) {
 		rv.Fail()
-		fail("wrong_course_code")
+		fail("registration_closed", true)
+		return
+	}
+	// The count and the CreateUser below are not one transaction, so a burst
+	// of simultaneous valid registrations can overshoot the cap by the number
+	// in flight. That is deliberate: this is an abuse bound, not a licence
+	// count, and making it exact would mean holding one write transaction
+	// across the whole handler, repo provisioning included. A read error
+	// counts as "no room" - a cap that fails open is not a cap.
+	if reg.MaxAccounts > 0 {
+		used, err := h.DB.CountEventsByKind(r.Context(), registerEventKind)
+		if err != nil || used >= reg.MaxAccounts {
+			rv.Fail()
+			fail("registration_full", true)
+			return
+		}
+	}
+	if r.FormValue("course_code") != reg.CourseCode {
+		rv.Fail()
+		fail("wrong_course_code", false)
 		return
 	}
 	rv.Success()
 	if !ident.ValidLogin(login) {
-		fail("invalid_login")
+		fail("invalid_login", false)
 		return
 	}
 	target, err := h.DB.CreateUser(r.Context(), login, name, "student")
 	if err != nil {
-		fail("login_taken")
+		fail("login_taken", false)
 		return
 	}
 	token, err := h.DB.IssueToken(r.Context(), target.ID)
@@ -234,7 +288,7 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	h.ensureRepo(r.Context(), target.Login)
 	_ = h.DB.Log(r.Context(), store.Event{
-		ActorID: &target.ID, Kind: "user.register", Target: target.Login,
+		ActorID: &target.ID, Kind: registerEventKind, Target: target.Login,
 	})
 	if sid, serr := h.DB.CreateSession(r.Context(), target.ID, token, sessionTTL); serr == nil {
 		setSessionCookie(w, r, sid, sessionTTL)

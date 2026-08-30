@@ -63,6 +63,16 @@ func (s *DB) ListEvents(ctx context.Context, kind, target string, limit, offset 
 	return out, rows.Err()
 }
 
+// CountEventsByKind implements AuditStore. The table has no index on kind -
+// the audit page's own kind filter scans it too - which is affordable here
+// because the one caller is a form POST that already spends a rate-limiter
+// slot, not a page anyone can load in a loop.
+func (s *DB) CountEventsByKind(ctx context.Context, kind string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE kind = ?`, kind).Scan(&n)
+	return n, err
+}
+
 // ListEventKinds implements AuditStore: the distinct kinds ever logged, for
 // building the audit page's filter dropdown.
 func (s *DB) ListEventKinds(ctx context.Context) ([]string, error) {
