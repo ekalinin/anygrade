@@ -34,13 +34,20 @@ func listen(t *testing.T, s *Server) string {
 		<-done
 	})
 
+	// Wait for the server to answer, not for the inode to appear. net.Listen
+	// creates the socket world-connectable and ListenAndServe narrows it to
+	// 0700 only afterwards, so returning on os.Stat handed the caller a socket
+	// that could still carry the mode TestSocketIsOwnerOnly is about to assert
+	// on. A round-trip completes only past the first Accept, which is past the
+	// chmod. The kind is deliberately unknown: dispatch answers it without
+	// touching anything, so only the transport decides readiness.
 	for range 100 {
-		if _, err := os.Stat(socket); err == nil {
+		if _, err := hookproto.Call(ctx, socket, hookproto.Request{Kind: "ready-probe"}); err == nil {
 			return socket
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatal("intake socket never appeared")
+	t.Fatal("intake socket never started serving")
 	return ""
 }
 
