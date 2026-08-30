@@ -121,6 +121,7 @@ func LoadAll(repoDir string) (*Resolved, []Diagnostic, error) {
 		diags = append(diags, tDiags...)
 
 		rt := Resolve(rawCourse, rawTask)
+		rt.root = repoDir
 		rt.file = display
 		tasks = append(tasks, rt)
 		return nil

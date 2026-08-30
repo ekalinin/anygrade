@@ -24,6 +24,33 @@ func TestValidateFixtureOK(t *testing.T) {
 	}
 }
 
+// TestValidateFixtureOKRelativeRepo loads the same fixture through a relative
+// repo root, which is what `anygrade validate` does by default when it is run
+// from inside the course repo. workspace.include is resolved against the course
+// root (SPEC §4.3), so the verdict must not depend on the form of the path the
+// course was loaded by.
+func TestValidateFixtureOKRelativeRepo(t *testing.T) {
+	abs, err := filepath.Abs("../../testdata/course-ok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(abs)
+
+	r, loadDiags, err := LoadAll(".")
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	diags := append(loadDiags, Validate(r)...)
+	for _, d := range diags {
+		if d.Severity == SevError {
+			t.Errorf("unexpected error: %s", d)
+		}
+	}
+	if HasErrors(diags) {
+		t.Fatal("course-ok should validate clean when loaded by a relative root")
+	}
+}
+
 func TestValidateFixtureBad(t *testing.T) {
 	r, loadDiags, err := LoadAll("../../testdata/course-bad")
 	if err != nil {
@@ -126,6 +153,7 @@ func TestValidateWorkspaceInclude(t *testing.T) {
 		},
 	}
 	rt := Resolve(&Course{}, task)
+	rt.root = tmp
 	rt.file = "tasks/w/task.yaml"
 	r := &Resolved{
 		Course:    ResolvedCourse{Name: "C", TasksDir: "tasks", Registration: Registration{Mode: "invite"}, ScoringPolicy: "best"},

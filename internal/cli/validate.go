@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/ekalinin/anygrade/internal/config"
 )
@@ -15,7 +16,15 @@ func cmdValidate(args []string) int {
 		return 2
 	}
 
-	resolved, diags, err := config.LoadAll(*repo)
+	// Absolute, like serve/check/export resolve their own --repo: the paths on
+	// the loaded course then stay valid regardless of the working directory.
+	repoDir, err := filepath.Abs(*repo)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "validate: %v\n", err)
+		return 1
+	}
+
+	resolved, diags, err := config.LoadAll(repoDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "validate: %v\n", err)
 		return 1
