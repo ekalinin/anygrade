@@ -232,8 +232,14 @@ func (c *Cache) credArgs(url string) []string {
 }
 
 // git runs one git command against the cache repo, prompts disabled.
+//
+// gc.autoDetach=false for the same reason the bare repos carry it in their own
+// config: a fetch would otherwise return while a detached repack keeps writing
+// into the cache dir, outliving both the context and the process that started
+// it. Nothing but this method ever runs git here, so the flag rides along
+// instead of being persisted.
 func (c *Cache) git(ctx context.Context, dir string, cfg []string, args ...string) (stdout, stderr string, err error) {
-	full := append([]string{"-C", dir}, cfg...)
+	full := append([]string{"-C", dir, "-c", "gc.autoDetach=false"}, cfg...)
 	full = append(full, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
 	cmd.Env = append(os.Environ(),
