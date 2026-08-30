@@ -13,7 +13,8 @@ Guidance for AI coding agents (Claude Code and any tool that reads `AGENTS.md`) 
 ## Commands
 
 - `make check` - build + vet + gofmt + full unit tests; run before handing work off. The docker runner tests skip themselves when no daemon is reachable; `ANYGRADE_REQUIRE_DOCKER=1` turns that absence into a failure, which is how CI keeps the sandbox actually exercised rather than silently unverified
-- `make e2e` - end-to-end regression suite (spawns the real binary, drives CLI/HTTP/git; needs `git`, no docker, ~6s)
+- `make e2e` - end-to-end regression suite (spawns the real binary, drives CLI/HTTP/git; needs `git`, no docker, ~25s)
+- `make e2e-docker` - the same suite plus the docker-gated scenarios (`e2e/docker_test.go`, tags `e2e docker`); needs a reachable daemon (macOS: `colima start`)
 - `make vulncheck` - govulncheck over the module; fails only on vulnerabilities the code can reach
 - `make test-short` - unit tests with `-short`
 - `make binary` - build `./anygrade`
