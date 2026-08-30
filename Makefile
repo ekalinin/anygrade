@@ -1,4 +1,4 @@
-.PHONY: build test test-short vet fmt check binary e2e vulncheck release-check release-snapshot landing-build landing-serve landing-og fonts
+.PHONY: build test test-short vet fmt check binary e2e e2e-docker vulncheck release-check release-snapshot landing-build landing-serve landing-og fonts
 
 # Build metadata stamped into the binary (internal/version). A release build
 # gets these from goreleaser instead; here they describe the working copy.
@@ -32,6 +32,11 @@ binary:
 
 e2e:
 	go test -tags e2e ./e2e -count=1 -timeout 600s
+
+# The docker-gated e2e scenarios plus everything `make e2e` runs: the extra tag
+# only adds files. Needs a reachable daemon (macOS: colima start).
+e2e-docker:
+	go test -tags 'e2e docker' ./e2e -count=1 -timeout 600s
 
 # Reachability-based vulnerability scan: it reports what the code actually
 # calls, so a finding here is work rather than an advisory. Pinned rather than
