@@ -76,6 +76,60 @@ func TestPlaintextWarning(t *testing.T) {
 	}
 }
 
+// TestBaseURL: the derived submission-link prefix must name a scheme the
+// listener actually answers (SPEC §11), so --tls-cert has to make it https.
+// --behind-proxy must not: the public origin is then the proxy's, not this
+// listener's, and only --base-url can name it.
+func TestBaseURL(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts Options
+		want string
+	}{
+		{
+			name: "explicit base URL wins over everything",
+			opts: Options{BaseURL: "https://grades.example.edu", HTTPAddr: ":8080"},
+			want: "https://grades.example.edu",
+		},
+		{
+			name: "plaintext listener",
+			opts: Options{HTTPAddr: ":8080"},
+			want: "http://localhost:8080",
+		},
+		{
+			name: "tls listener is https",
+			opts: Options{HTTPAddr: ":8080", TLSCert: "c.pem", TLSKey: "k.pem"},
+			want: "https://localhost:8080",
+		},
+		{
+			name: "tls listener keeps a named host",
+			opts: Options{HTTPAddr: "grades.example.edu:8443", TLSCert: "c.pem", TLSKey: "k.pem"},
+			want: "https://grades.example.edu:8443",
+		},
+		{
+			name: "wildcard v6 bind becomes localhost",
+			opts: Options{HTTPAddr: "[::]:8080"},
+			want: "http://localhost:8080",
+		},
+		{
+			name: "behind a proxy the local listener is still plaintext",
+			opts: Options{HTTPAddr: "127.0.0.1:8080", BehindProxy: true},
+			want: "http://127.0.0.1:8080",
+		},
+		{
+			name: "unparsable address yields no links",
+			opts: Options{HTTPAddr: "8080"},
+			want: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := baseURL(tc.opts); got != tc.want {
+				t.Errorf("baseURL(%+v) = %q, want %q", tc.opts, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestLeaderboardSecretIsStableAndPrivate: aliases must survive a restart of
 // one instance (SPEC §10), which means the secret is persisted, not per
 // process - and it must not be world-readable next to the database.
