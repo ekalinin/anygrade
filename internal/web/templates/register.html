@@ -2,11 +2,13 @@
 <section class="login">
 <h1>{{t "register.title"}}</h1>
 {{if .Error}}<p class="flash error">{{tFlash .Error}}</p>{{end}}
+{{if not .Closed}}
 <form method="post" action="/register">
   <label>{{t "common.login"}} <input name="login" value="{{.Login}}" required autofocus></label>
   <label>{{t "register.display_name"}} <input name="name" value="{{.Name}}"></label>
   <label>{{t "register.course_code"}} <input name="course_code" required></label>
   <button type="submit">{{t "register.submit"}}</button>
 </form>
+{{end}}
 </section>
 {{end}}

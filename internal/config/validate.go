@@ -100,6 +100,7 @@ func Validate(r *Resolved) []Diagnostic {
 	if c.Registration.Mode == "open" && c.Registration.CourseCode == "" {
 		add(SevError, courseFile, "registration.course_code", "required when registration.mode is open")
 	}
+	validateRegistrationBounds(c.Registration, add)
 	if p := r.rawCourse.Scoring.Policy; p != "" && !validScorePolicy[p] {
 		add(SevError, courseFile, "scoring.policy", "must be one of best|latest, got %q", p)
 	}
@@ -138,6 +139,39 @@ func Validate(r *Resolved) []Diagnostic {
 		}
 	}
 	return diags
+}
+
+// validateRegistrationBounds checks the enrolment window and the account cap
+// (SPEC §8). A window that can never admit anybody and a negative cap are
+// errors, like their deadline and limits counterparts; a bound that simply
+// cannot apply - because the mode is invite, where the teacher creates every
+// account - is a warning, the same verdict `penalty` without a soft deadline
+// gets. It cannot be an error: `course_code` under `mode: invite` has always
+// been accepted (the shipped course-ok fixture does exactly that), so a course
+// switched to invite for a term must not stop loading.
+func validateRegistrationBounds(reg Registration, add func(Severity, string, string, string, ...any)) {
+	// Equal is an error too, not just inverted: [t, t] admits nobody, so it is
+	// a typo rather than a zero-length policy anyone would write on purpose.
+	if reg.Opens != nil && reg.Closes != nil && !reg.Closes.Std().After(reg.Opens.Std()) {
+		add(SevError, courseFile, "registration.closes", "registration.closes must be after registration.opens")
+	}
+	if reg.MaxAccounts < 0 {
+		add(SevError, courseFile, "registration.max_accounts", "must be >= 0 (0 = unlimited)")
+	}
+	if reg.Mode != "open" {
+		const noEffect = "has no effect when registration.mode is invite: the teacher creates every account"
+		if reg.Opens != nil {
+			add(SevWarning, courseFile, "registration.opens", noEffect)
+		}
+		if reg.Closes != nil {
+			add(SevWarning, courseFile, "registration.closes", noEffect)
+		}
+		// A cap of 0 is "unlimited", i.e. exactly what invite mode already
+		// means, so only a real cap is worth reporting.
+		if reg.MaxAccounts > 0 {
+			add(SevWarning, courseFile, "registration.max_accounts", noEffect)
+		}
+	}
 }
 
 func validateTask(t *ResolvedTask, add func(Severity, string, string, string, ...any)) {

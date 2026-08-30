@@ -100,6 +100,19 @@ func testOpenRegistration(t *testing.T, e *env) {
 	if _, err := os.Stat(bare); err != nil {
 		t.Fatalf("register: personal repo not provisioned at %s: %v", bare, err)
 	}
+
+	// SPEC §8: the fixture caps self-registration at one account, so the code
+	// alone is no longer enough - alice already spent the course's only place.
+	// Bob still joins later by invite, which the cap does not count.
+	resp, body = postForm(t, newClient(t), e.baseURL+"/register", url.Values{
+		"login": {"mallory"}, "name": {"Mallory"}, "course_code": {"e2e-code"},
+	})
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("register over max_accounts: status %d, body:\n%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, "registration is closed") {
+		t.Fatalf("register over max_accounts: no cap message:\n%s", body)
+	}
 }
 
 // 4. clone and push over http: alice pushes a correct sum.sh and the push

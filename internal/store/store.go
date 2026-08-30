@@ -126,6 +126,10 @@ type AuditStore interface {
 	ListEvents(ctx context.Context, kind, target string, limit, offset int) ([]EventRow, error)
 	// ListEventKinds returns every distinct kind ever logged, for filters.
 	ListEventKinds(ctx context.Context) ([]string, error)
+	// CountEventsByKind returns how many events of one kind were ever logged.
+	// The log is append-only, so this is a lifetime total: it is what bounds
+	// open registration by `registration.max_accounts` (SPEC §8).
+	CountEventsByKind(ctx context.Context, kind string) (int, error)
 }
 
 // EventRow is one audit entry joined with its actor for display.

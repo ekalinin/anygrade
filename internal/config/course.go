@@ -1,5 +1,7 @@
 package config
 
+import "time"
+
 // Course is the raw, yaml-facing representation of course.yaml (SPEC §4.2).
 // Fields that participate in per-task defaults inheritance are held as pointers
 // inside the nested spec types so that "unset" is distinguishable from "set to
@@ -29,6 +31,39 @@ type CourseLimits struct {
 type Registration struct {
 	Mode       string `yaml:"mode"`        // invite | open
 	CourseCode string `yaml:"course_code"` // required iff mode == open
+	// Opens/Closes bound the enrolment window. The course code lives in the
+	// repo every student clones, so it is public the moment the course starts;
+	// the window is what stops a leaked code from being worth anything for the
+	// rest of the term. Each side is optional and unbounded when unset, which
+	// is what a course.yaml written before these keys existed means.
+	//
+	// They are Timestamps, not a TTL: a TTL needs an anchor, and the only
+	// anchors available here (server start, the commit that pushed the
+	// metadata) would silently move the deadline every time the teacher pushes
+	// an unrelated change. Task deadlines are already absolute RFC3339 with an
+	// explicit offset (SPEC §4.3), so this is the course's one way of writing
+	// a point in time rather than a second convention.
+	Opens  *Timestamp `yaml:"opens"`
+	Closes *Timestamp `yaml:"closes"`
+	// MaxAccounts caps how many accounts self-registration may create over the
+	// life of the course; 0 (or unset) is unlimited, the same "0 = no limit"
+	// convention limits.max_attempts uses. A plain int, not a pointer: nothing
+	// inherits it, and "set to 0" and "unset" mean the same thing.
+	MaxAccounts int `yaml:"max_accounts"`
+}
+
+// OpenAt reports whether self-registration is inside its enrolment window at
+// now (SPEC §8). The window is the closed interval [opens, closes], matching
+// the hard deadline it is written like: `closes: ...T23:59:59+03:00` admits a
+// student arriving on that second, and an unset side is unbounded.
+func (r Registration) OpenAt(now time.Time) bool {
+	if r.Opens != nil && now.Before(r.Opens.Std()) {
+		return false
+	}
+	if r.Closes != nil && now.After(r.Closes.Std()) {
+		return false
+	}
+	return true
 }
 
 // Leaderboard configures the optional ranked score view.

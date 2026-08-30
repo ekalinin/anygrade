@@ -89,6 +89,8 @@ flash.too_many_attempts: "слишком много неудачных попы�
 flash.unknown_login: "неизвестный логин или токен"
 flash.unparseable_ssh_key: "не удалось разобрать SSH-ключ; вставьте одну строку authorized_keys"
 flash.wrong_course_code: "неверный код курса"
+flash.registration_closed: "регистрация закрыта; попросите у преподавателя приглашение"
+flash.registration_full: "регистрация закрыта: исчерпан лимит самостоятельных регистраций; попросите у преподавателя приглашение"
 flash.invalid_login: "недопустимый логин: только строчные буквы, цифры и ._-"
 flash.login_taken: "логин уже занят"
 flash.key_already_registered: "ключ уже зарегистрирован"

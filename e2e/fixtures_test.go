@@ -16,6 +16,9 @@ tasks_dir: "tasks"
 registration:
   mode: open
   course_code: "e2e-code"
+  opens: 2020-01-01T00:00:00+00:00
+  closes: 2100-01-01T00:00:00+00:00
+  max_accounts: 1
 
 scoring:
   policy: best

@@ -53,6 +53,9 @@ timezone: Europe/Berlin   # IANA name the UI renders times in (default UTC)
 registration:
   mode: invite            # invite | open
   # course_code: "go-2026"  # required when mode: open
+  # opens: 2026-09-01T00:00:00+03:00   # optional enrolment window (open mode),
+  # closes: 2026-09-15T23:59:59+03:00  # inclusive on both ends
+  # max_accounts: 40        # optional cap on self-registered accounts (0 = unlimited)
 
 scoring:
   policy: best            # best | latest - which submission counts per task
@@ -147,7 +150,7 @@ go build -o anygrade ./cmd/anygrade
 ./anygrade serve --http-addr :8080 --ssh-addr :2222
 ```
 
-Students are registered by invite links (`anygrade user invite --login alice`, or `--csv roster.csv` for a whole group) or self-register with a course code when `registration.mode: open`. The activation page issues a personal token and prints the git setup. Two transports are available:
+Students are registered by invite links (`anygrade user invite --login alice`, or `--csv roster.csv` for a whole group) or self-register with a course code when `registration.mode: open`. The course code is a shared secret that lives in the repo every student clones, so open mode takes two optional bounds: an enrolment window (`registration.opens` / `registration.closes`) and a cap on how many accounts self-registration may create (`registration.max_accounts`, counting only accounts created by the form - invited ones are free). Both are unset by default, which is the historical unbounded behavior. The activation page issues a personal token and prints the git setup. Two transports are available:
 
 ```sh
 # over HTTP: username = login, password = the token
