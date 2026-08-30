@@ -64,6 +64,11 @@ func TestEnsureCourseCreatesMirror(t *testing.T) {
 	if out := runSrc(t, dir, "config", "receive.maxInputSize"); out != "52428800" {
 		t.Fatalf("receive.maxInputSize = %q, want 52428800", out)
 	}
+	// Left at git's default, a fetch or a push returns while a detached repack
+	// is still writing into the mirror.
+	if out := runSrc(t, dir, "config", "gc.autoDetach"); out != "false" {
+		t.Fatalf("gc.autoDetach = %q, want false", out)
+	}
 
 	branch, err := m.DefaultBranch(ctx, dir)
 	if err != nil {
@@ -126,6 +131,11 @@ func TestEnsureStudent(t *testing.T) {
 	}
 	if out := runSrc(t, dir, "config", "transfer.hideRefs"); out != "refs/anygrade" {
 		t.Fatalf("transfer.hideRefs = %q, want refs/anygrade", out)
+	}
+	// The student repos take pushes, and receive-pack fires the same detached
+	// auto-gc the mirror is protected from.
+	if out := runSrc(t, dir, "config", "gc.autoDetach"); out != "false" {
+		t.Fatalf("gc.autoDetach = %q, want false", out)
 	}
 	if out := runSrc(t, dir, "symbolic-ref", "HEAD"); out != "refs/heads/main" {
 		t.Fatalf("HEAD = %q, want refs/heads/main", out)

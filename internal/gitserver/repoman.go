@@ -123,6 +123,9 @@ func (m *RepoManager) EnsureCourse(ctx context.Context, srcRepo string) error {
 	if _, err := runGit(ctx, dir, "config", "receive.maxInputSize", strconv.FormatInt(m.MaxInputSize(), 10)); err != nil {
 		return err
 	}
+	if err := keepGCInForeground(ctx, dir); err != nil {
+		return err
+	}
 	if err := installHook(dir, "pre-receive", "validate-course", m.HookBin); err != nil {
 		return err
 	}
@@ -171,6 +174,9 @@ func (m *RepoManager) EnsureStudent(ctx context.Context, login string) (string, 
 	if _, err := runGit(ctx, dir, "config", "transfer.hideRefs", "refs/anygrade"); err != nil {
 		return "", err
 	}
+	if err := keepGCInForeground(ctx, dir); err != nil {
+		return "", err
+	}
 
 	branch, err := m.DefaultBranch(ctx, m.CourseDir())
 	if err != nil {
@@ -187,6 +193,24 @@ func (m *RepoManager) EnsureStudent(ctx context.Context, login string) (string, 
 		return "", err
 	}
 	return dir, nil
+}
+
+// keepGCInForeground ties the repo's automatic gc to the process that triggers
+// it. git's default is the opposite: fetch and receive-pack fire `maintenance
+// run --auto --detach`, which setsid()s and keeps repacking - writing gc.pid,
+// packed-refs.lock and new packs - after the command anygrade waited for has
+// exited. That daemon is outside our process tree and outside the context the
+// command was started with, so "the git call returned" stops meaning "git is
+// done with this repo": it survives cancellation and shutdown, and a data dir
+// can be removed with a repack still writing into it. The setting lives in the
+// repo rather than in our argv because receive-pack and upload-pack are spawned
+// by the transports, not through runGit. gc still runs and the repos still get
+// packed; only the fetch or push that triggers it now waits for it.
+// gc.autoDetach is the portable spelling: git 2.48+ prefers
+// maintenance.autoDetach but falls back to this one.
+func keepGCInForeground(ctx context.Context, dir string) error {
+	_, err := runGit(ctx, dir, "config", "gc.autoDetach", "false")
+	return err
 }
 
 // loginLock lazily creates (and reuses) the per-login provisioning mutex.
