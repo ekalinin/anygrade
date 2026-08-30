@@ -634,9 +634,7 @@ func testCancelRunning(t *testing.T, e *env) {
 
 	pollStatus(t, e.aliceClient, e, id, "canceled")
 
-	// The note lives on the queue row, not the submission page: sub_results
-	// renders worker_note only alongside check results, and a cancel leaves
-	// none.
+	// The note reaches the teacher's queue row.
 	status, queue := get(t, e.profClient, e.baseURL+"/queue")
 	if status != http.StatusOK {
 		t.Fatalf("GET /queue: status %d", status)
@@ -651,6 +649,11 @@ func testCancelRunning(t *testing.T, e *env) {
 	_, page := get(t, e.aliceClient, fmt.Sprintf("%s/submissions/%d", e.baseURL, id))
 	if !strings.Contains(page, ">canceled<") {
 		t.Fatalf("canceled submission #%d was re-armed:\n%s", id, page)
+	}
+	// And the student is told, on their own page: a cancel records no check
+	// results, so the note is the only thing the page has to show.
+	if !strings.Contains(page, "canceled by teacher") {
+		t.Errorf("student page for canceled submission #%d missing the note:\n%s", id, page)
 	}
 	// The cancel is a teacher action, so it is in the audit log.
 	_, audit := get(t, e.profClient, e.baseURL+"/audit")
@@ -764,10 +767,14 @@ func testHiddenTestsScrubbed(t *testing.T, e *env) {
 	if strings.Contains(page, gone) || strings.Contains(page, "file://") {
 		t.Errorf("student page leaks the hidden-tests location:\n%s", page)
 	}
+	// The scrubbed message is the whole point of the scrubbing: it is what the
+	// student is meant to read (SPEC §14), from the first retry on - a run that
+	// recorded no check results has nothing else to explain itself with.
+	if !strings.Contains(page, "hidden tests temporarily unavailable") {
+		t.Errorf("student page does not say why the submission is stuck:\n%s", page)
+	}
 
-	// The scrubbed note reaches the teacher's queue row; sub_results only
-	// renders worker_note alongside check results, and an unreachable overlay
-	// produces none, so the student page carries no explanation at all.
+	// The same note reaches the teacher's queue row.
 	status, queue := get(t, e.profClient, e.baseURL+"/queue")
 	if status != http.StatusOK {
 		t.Fatalf("GET /queue: status %d", status)

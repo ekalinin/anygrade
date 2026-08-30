@@ -32,6 +32,31 @@ type terminalError struct{ msg string }
 func (e *terminalError) Error() string { return e.msg }
 func (e *terminalError) Unwrap() error { return ErrTerminal }
 
+// Public marks a retryable failure whose message is student-safe: it is stored
+// as the submission's student note next to the worker note, so the student is
+// told why their submission could not be graded instead of reading a bare "no
+// results" (SPEC §14). Only the package that produced the message can make
+// that promise - hidden scrubs every hidden-tests failure to one fixed
+// wording - so anything unmarked stays operator detail: a docker failure names
+// the image and quotes the daemon, a prepare failure quotes a path inside the
+// data dir, and neither may reach a student.
+func Public(err error) error { return &publicError{err} }
+
+type publicError struct{ err error }
+
+func (e *publicError) Error() string { return e.err.Error() }
+func (e *publicError) Unwrap() error { return e.err }
+
+// publicNote returns the student-safe projection of a failure, "" when it
+// carries none. A marked error wrapped in further context yields only the
+// marked part, so context added on the way out stays with the teacher.
+func publicNote(cause error) string {
+	if pe, ok := errors.AsType[*publicError](cause); ok {
+		return pe.Error()
+	}
+	return ""
+}
+
 // Prepared is everything a worker needs to run one submission.
 type Prepared struct {
 	Assembly runner.Assembly     // sources wired; Dest/TaskRelDir set
@@ -404,30 +429,38 @@ func (q *Queue) retry(sub store.Submission, cause error) {
 	if q.wasCanceled(sub.ID) {
 		return // never resurrect a teacher-canceled row into the queue
 	}
-	note := cause.Error()
+	note, student := cause.Error(), publicNote(cause)
 	if sub.Retries >= q.MaxRetries {
-		q.terminal(sub, note+" (retries exhausted)")
+		const exhausted = " (retries exhausted)"
+		if student != "" {
+			student += exhausted
+		}
+		q.scheduleRetry(sub, nil, note+exhausted, student)
 		return
 	}
 	delay := min(q.BackoffBase<<sub.Retries, q.BackoffCap)
 	// ±10% jitter avoids a thundering herd on a shared cause (docker down).
 	delay += time.Duration((rand.Float64() - 0.5) * 0.2 * float64(delay))
 	at := time.Now().Add(delay)
-	q.scheduleRetry(sub, &at, note)
+	q.scheduleRetry(sub, &at, note, student)
 }
 
+// terminal ends a submission with a note both audiences read: every caller
+// hands over text about the course or the student's own commit - Terminal's
+// own contract, a task that left the repo, an overlay the workspace refused, a
+// runner type the metadata misnames - never infrastructure detail.
 func (q *Queue) terminal(sub store.Submission, note string) {
-	q.scheduleRetry(sub, nil, note)
+	q.scheduleRetry(sub, nil, note, note)
 }
 
 // scheduleRetry publishes only what it managed to write: the store refuses the
 // update once the row stopped being this worker's running submission (a
 // teacher cancel landing after the in-memory marker was read), and an event
 // for a status nobody wrote would contradict the row itself.
-func (q *Queue) scheduleRetry(sub store.Submission, at *time.Time, note string) {
+func (q *Queue) scheduleRetry(sub store.Submission, at *time.Time, note, studentNote string) {
 	wctx, cancel := writeCtx()
 	defer cancel()
-	if ok, err := q.Store.ScheduleRetry(wctx, sub.ID, at, note); err != nil || !ok {
+	if ok, err := q.Store.ScheduleRetry(wctx, sub.ID, at, note, studentNote); err != nil || !ok {
 		return
 	}
 	q.publish(sub, store.StatusInfraError)

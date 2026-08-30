@@ -75,6 +75,117 @@ func getLog(t *testing.T, h *Handler, path string) *httptest.ResponseRecorder {
 	return rec
 }
 
+// infraRow seeds one submission in the state a worker leaves behind when no
+// check ever ran: the operator note the teacher reads, the student-safe
+// projection its owner reads, and retryAt nil for "retries exhausted" or set
+// while a retry is still armed.
+func infraRow(t *testing.T, h *Handler, login string, retryAt *time.Time,
+	note, studentNote string) (store.User, store.Submission) {
+
+	t.Helper()
+	student, err := h.DB.CreateUser(t.Context(), login, "Student", "student")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	sub, err := h.DB.Enqueue(t.Context(), store.NewSubmission{
+		UserID: student.ID, TaskID: "t1", CommitSHA: "deadbeef",
+		ReceivedAt: time.Now(), Counts: true,
+	})
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if _, ok, err := h.DB.ClaimNext(t.Context(), time.Now()); err != nil || !ok {
+		t.Fatalf("claim: ok=%v err=%v", ok, err)
+	}
+	if ok, err := h.DB.ScheduleRetry(t.Context(), sub.ID, retryAt, note, studentNote); err != nil || !ok {
+		t.Fatalf("schedule retry: ok=%v err=%v", ok, err)
+	}
+	return student, sub
+}
+
+// pageBody renders one path as whoever the handler currently logs in.
+func pageBody(t *testing.T, h *Handler, path string) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	New(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s: status %d", path, rec.Code)
+	}
+	return rec.Body.String()
+}
+
+// TestSubmissionPageExplainsItselfWithoutChecks: a submission that recorded no
+// check results has nothing but its note to explain itself - a teacher cancel,
+// a terminal prepare failure, an unreachable hidden-tests overlay - and SPEC
+// §14 makes the scrubbed hidden-tests message the one such failure a student is
+// meant to read. The note has to reach the student in both shapes the queue
+// leaves the row in: terminal, and still waiting on a retry, where the bare
+// "waiting for a worker" would otherwise hold for the whole backoff.
+func TestSubmissionPageExplainsItselfWithoutChecks(t *testing.T) {
+	const note = "hidden tests temporarily unavailable"
+	at := time.Now().Add(time.Minute)
+	for _, c := range []struct {
+		name    string
+		retryAt *time.Time
+	}{
+		{"terminal", nil},
+		{"retrying", &at},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, _ := newTestSite(t)
+			h.DataDir = t.TempDir()
+			student, sub := infraRow(t, h, "bob", c.retryAt, note, note)
+			h.Local = &student
+
+			body := pageBody(t, h, "/submissions/"+itoa(sub.ID))
+			if !strings.Contains(body, note) {
+				t.Errorf("student page does not carry the note:\n%s", body)
+			}
+			// The note is the explanation, so neither status hint may stand in
+			// for it: one would say there is nothing to show, the other that a
+			// worker is still on its way.
+			for _, key := range []string{"sub.no_results", "sub.waiting"} {
+				if hint := i18n.For("en").T(key); strings.Contains(body, hint) {
+					t.Errorf("page still shows %q next to the note:\n%s", key, body)
+				}
+			}
+		})
+	}
+}
+
+// TestSubmissionPageKeepsOperatorNoteFromStudents: the worker note is not
+// student-safe on every path. A docker failure names the image and quotes the
+// daemon, a prepare failure quotes a path inside the data dir; that detail is
+// the teacher's (SPEC §14), and the student is left with "no results", which is
+// exactly what the row has for them.
+func TestSubmissionPageKeepsOperatorNoteFromStudents(t *testing.T) {
+	const note = "infra error (image_pull): docker pull golang:1.26: exit status 1: " +
+		"Cannot connect to the Docker daemon at unix:///var/run/docker.sock"
+	h, _ := newTestSite(t)
+	h.DataDir = t.TempDir()
+	student, sub := infraRow(t, h, "bob", nil, note, "")
+
+	h.Local = &student
+	body := pageBody(t, h, "/submissions/"+itoa(sub.ID))
+	for _, leak := range []string{"image_pull", "docker.sock", "golang:1.26"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("student page leaks %q:\n%s", leak, body)
+		}
+	}
+	if want := i18n.For("en").T("sub.no_results"); !strings.Contains(body, want) {
+		t.Errorf("student page says nothing at all:\n%s", body)
+	}
+
+	teacher, err := h.DB.GetUserByLogin(t.Context(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Local = &teacher
+	if body := pageBody(t, h, "/submissions/"+itoa(sub.ID)); !strings.Contains(body, note) {
+		t.Errorf("teacher page lost the operator note:\n%s", body)
+	}
+}
+
 // TestSubmissionLogAcceptsAnyValidCheckName: metadata allows any non-empty,
 // unique check name, so the download must serve every name the run actually
 // produced - including ones with a slash, a space, or non-ASCII, which the old

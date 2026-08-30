@@ -340,6 +340,64 @@ func TestInfraErrorBackoffToTerminal(t *testing.T) {
 	if got.WorkerNote == "" {
 		t.Error("terminal infra_error must carry a worker note for the teacher view")
 	}
+	// Running out of retries does not turn operator detail into something the
+	// student may read (SPEC §14).
+	if got.StudentNote != "" {
+		t.Errorf("student note = %q, want empty: the cause was never marked public", got.StudentNote)
+	}
+}
+
+// TestRetryableNoteReachesStudentOnlyWhenMarked: a retryable failure is stored
+// for two audiences at once. hidden scrubs its own message and intake marks it
+// Public, so its owner reads why the submission is stuck (SPEC §14); anything
+// unmarked - a docker daemon error, a wrapped filesystem failure - is the
+// teacher's alone and leaves the student note empty.
+func TestRetryableNoteReachesStudentOnlyWhenMarked(t *testing.T) {
+	const scrubbed = "hidden tests temporarily unavailable"
+	cases := []struct {
+		name    string
+		fail    error
+		want    string // the student's note
+		teacher string // the teacher's
+	}{
+		{"marked", Public(errors.New(scrubbed)), scrubbed, scrubbed},
+		{"unmarked", errors.New("student repo: stat /srv/.anygrade/repos/bob.git: no such file"),
+			"", "student repo: stat /srv/.anygrade/repos/bob.git: no such file"},
+		// Context added on the way out is the teacher's; the student keeps
+		// exactly the wording the scrubbing package promised.
+		{"wrapped", fmt.Errorf("hidden tests: %w", Public(errors.New(scrubbed))),
+			scrubbed, "hidden tests: " + scrubbed},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			q, db, u, prep := newTestQueue(t)
+			prep.failErr = c.fail
+
+			ctx, cancel := context.WithCancel(t.Context())
+			done := make(chan struct{})
+			go func() { defer close(done); _ = q.Start(ctx) }()
+
+			sub, err := q.Enqueue(ctx, store.NewSubmission{
+				UserID: u.ID, TaskID: "t1", CommitSHA: "abc", ReceivedAt: time.Now(), Counts: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := waitStatus(t, db, sub.ID, store.StatusInfraError)
+			cancel()
+			<-done
+
+			if got.RetryAt == nil {
+				t.Fatalf("a retryable failure must stay armed: %+v", got)
+			}
+			if got.StudentNote != c.want {
+				t.Errorf("student note = %q, want %q", got.StudentNote, c.want)
+			}
+			if got.WorkerNote != c.teacher {
+				t.Errorf("worker note = %q, want %q", got.WorkerNote, c.teacher)
+			}
+		})
+	}
 }
 
 // TestTerminalPrepareError: a Terminal prepare failure flips the submission
@@ -367,6 +425,11 @@ func TestTerminalPrepareError(t *testing.T) {
 	}
 	if got.WorkerNote != "hidden tests unavailable for this task" {
 		t.Fatalf("worker note %q", got.WorkerNote)
+	}
+	// Terminal's contract is already student-safe text, so its note is the
+	// student's explanation as much as the teacher's (SPEC §14).
+	if got.StudentNote != got.WorkerNote {
+		t.Errorf("student note = %q, want the terminal note", got.StudentNote)
 	}
 }
 

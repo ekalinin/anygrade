@@ -1,7 +1,11 @@
 {{define "sub-results"}}
+{{/* The note is not part of the results branch: a submission that recorded no
+     check results has nothing but its note to explain itself, and that is the
+     shape a canceled, an unprepared and an infra-failed one all take. */}}
 {{if .Rejected}}
-<p class="flash error">{{t "sub.rejected"}} {{.Sub.WorkerNote}}</p>
-{{else if .Checks}}
+<p class="flash error">{{t "sub.rejected"}} {{.Note}}</p>
+{{else}}
+{{if .Checks}}
 <table class="checks">
   <thead><tr><th>{{t "common.check"}}</th><th>{{t "common.result"}}</th><th>{{t "common.time"}}</th>{{if .CanDownloadLogs}}<th>{{t "common.log"}}</th>{{end}}</tr></thead>
   <tbody>
@@ -38,10 +42,14 @@
 </details>
 {{end}}{{end}}
 {{if not .CanDownloadLogs}}<p class="hint">{{t "sub.logs_teacher_only"}}</p>{{end}}
-{{if .Sub.WorkerNote}}<p class="hint note-plain">{{.Sub.WorkerNote}}</p>{{end}}
-{{else if .Running}}
-<p class="hint">{{t "sub.waiting"}}</p>
-{{else}}
-<p class="hint">{{t "sub.no_results"}}</p>
+{{end}}
+{{if .Note}}<p class="hint note-plain">{{.Note}}</p>{{end}}
+{{/* Neither hint may stand in for the note: "waiting for a worker" outlives
+     the truth for the whole retry backoff, and "no results" is only accurate
+     once there is nothing left to say. */}}
+{{if not (or .Checks .Note)}}
+{{if .Running}}<p class="hint">{{t "sub.waiting"}}</p>
+{{else}}<p class="hint">{{t "sub.no_results"}}</p>{{end}}
+{{end}}
 {{end}}
 {{end}}

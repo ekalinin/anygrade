@@ -74,7 +74,9 @@ func (p *Prep) Prepare(ctx context.Context, sub store.Submission) (queue.Prepare
 				return queue.Prepared{}, queue.Terminal("hidden tests unavailable for this task")
 			}
 			if err != nil {
-				return queue.Prepared{}, err // already scrubbed; retryable
+				// Scrubbed by hidden and student-visible by SPEC §14, so the
+				// student reads it too, not only the teacher; retryable.
+				return queue.Prepared{}, queue.Public(err)
 			}
 			hiddenSrc = src
 		case "git":
@@ -84,7 +86,7 @@ func (p *Prep) Prepare(ctx context.Context, sub store.Submission) (queue.Prepare
 				return queue.Prepared{}, queue.Terminal("hidden tests unavailable for this task")
 			}
 			if err != nil {
-				return queue.Prepared{}, err // already scrubbed; retryable
+				return queue.Prepared{}, queue.Public(err) // scrubbed; retryable
 			}
 			hiddenSrc = src
 		}

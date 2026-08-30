@@ -256,7 +256,7 @@ func TestLastByUserTask(t *testing.T) {
 	}
 	// A row that left the queue is still the last thing recorded for the pair.
 	claimUntil(t, db, failed.ID)
-	if ok, err := db.ScheduleRetry(t.Context(), failed.ID, nil, "boom"); err != nil || !ok {
+	if ok, err := db.ScheduleRetry(t.Context(), failed.ID, nil, "boom", ""); err != nil || !ok {
 		t.Fatalf("schedule retry: ok=%v err=%v", ok, err)
 	}
 	got, ok, err := db.LastByUserTask(t.Context(), u.ID, "t1")
@@ -431,7 +431,7 @@ func TestScheduleRetryEligibility(t *testing.T) {
 	}
 
 	at := time.Now().Add(time.Hour)
-	if ok, err := db.ScheduleRetry(t.Context(), sub.ID, &at, "docker down"); err != nil || !ok {
+	if ok, err := db.ScheduleRetry(t.Context(), sub.ID, &at, "docker down", ""); err != nil || !ok {
 		t.Fatalf("schedule retry: ok=%v err=%v", ok, err)
 	}
 	if _, ok, _ := db.ClaimNext(t.Context(), time.Now()); ok {
@@ -442,7 +442,7 @@ func TestScheduleRetryEligibility(t *testing.T) {
 	}
 
 	// Terminal: retry_at nil.
-	if ok, err := db.ScheduleRetry(t.Context(), sub.ID, nil, "retries exhausted"); err != nil || !ok {
+	if ok, err := db.ScheduleRetry(t.Context(), sub.ID, nil, "retries exhausted", ""); err != nil || !ok {
 		t.Fatalf("terminal retry: ok=%v err=%v", ok, err)
 	}
 	if _, ok, _ := db.ClaimNext(t.Context(), time.Now().Add(24*time.Hour)); ok {
@@ -470,7 +470,7 @@ func TestScheduleRetryAfterCancel(t *testing.T) {
 	}
 
 	at := time.Now().Add(time.Hour)
-	if ok, err := db.ScheduleRetry(t.Context(), sub.ID, &at, "docker down"); err != nil || ok {
+	if ok, err := db.ScheduleRetry(t.Context(), sub.ID, &at, "docker down", ""); err != nil || ok {
 		t.Fatalf("retry after cancel: ok=%v err=%v, want false/nil", ok, err)
 	}
 
@@ -493,10 +493,10 @@ func TestScheduleRetryNeedsRunningRow(t *testing.T) {
 	u := testUser(t, db)
 	sub := enqueueN(t, db, u.ID, "t1", 1)[0]
 
-	if ok, err := db.ScheduleRetry(t.Context(), sub.ID, nil, "boom"); err != nil || ok {
+	if ok, err := db.ScheduleRetry(t.Context(), sub.ID, nil, "boom", ""); err != nil || ok {
 		t.Fatalf("retry of a queued row: ok=%v err=%v, want false/nil", ok, err)
 	}
-	if ok, err := db.ScheduleRetry(t.Context(), sub.ID+1000, nil, "boom"); err != nil || ok {
+	if ok, err := db.ScheduleRetry(t.Context(), sub.ID+1000, nil, "boom", ""); err != nil || ok {
 		t.Fatalf("retry of an unknown row: ok=%v err=%v, want false/nil", ok, err)
 	}
 	if got, _, _ := db.GetSubmission(t.Context(), sub.ID); got.Status != StatusQueued {
@@ -516,7 +516,7 @@ func TestClaimWaitsForPendingRetryOfSameTask(t *testing.T) {
 		t.Fatal("claim failed")
 	}
 	at := time.Now().Add(time.Hour)
-	if ok, err := db.ScheduleRetry(t.Context(), first.ID, &at, "docker down"); err != nil || !ok {
+	if ok, err := db.ScheduleRetry(t.Context(), first.ID, &at, "docker down", ""); err != nil || !ok {
 		t.Fatalf("schedule retry: ok=%v err=%v", ok, err)
 	}
 
@@ -566,7 +566,7 @@ func TestClaimIgnoresTerminalInfraError(t *testing.T) {
 	if _, ok, _ := db.ClaimNext(t.Context(), time.Now()); !ok {
 		t.Fatal("claim failed")
 	}
-	if ok, err := db.ScheduleRetry(t.Context(), first.ID, nil, "retries exhausted"); err != nil || !ok {
+	if ok, err := db.ScheduleRetry(t.Context(), first.ID, nil, "retries exhausted", ""); err != nil || !ok {
 		t.Fatalf("terminal retry: ok=%v err=%v", ok, err)
 	}
 

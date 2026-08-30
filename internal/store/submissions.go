@@ -10,7 +10,7 @@ import (
 
 const submissionCols = `id, user_id, task_id, commit_sha, received_at, attempt_no,
 	counts, status, raw_score, penalty_percent, final_score, log_dir,
-	worker_note, retries, retry_at, started_at, canceled_at`
+	worker_note, student_note, retries, retry_at, started_at, canceled_at`
 
 // dbtx is the subset of *sql.DB and *sql.Tx the submission queries need, so
 // one implementation serves both the standalone and the transactional path.
@@ -89,16 +89,20 @@ func enqueueRow(ctx context.Context, q dbtx, ns NewSubmission) (Submission, erro
 // student's history, never queued (SPEC §6 step 4). The reason goes into
 // worker_note - the row never reaches a worker, so nothing overwrites it, and
 // the student sees why the submission was refused instead of a bare status.
+// It is the same text the push output already carried, so it is the student's
+// note too.
 func rejectedRow(ctx context.Context, q dbtx, ns NewSubmission, status, reason string) (Submission, error) {
 	if status != StatusRejectedDeadline && status != StatusRejectedLimit {
 		return Submission{}, fmt.Errorf("rejected submission: invalid status %q", status)
 	}
 	row := q.QueryRowContext(ctx, `
 		INSERT INTO submissions
-		  (user_id, task_id, commit_sha, received_at, counts, attempt_no, status, worker_note)
-		VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+		  (user_id, task_id, commit_sha, received_at, counts, attempt_no, status,
+		   worker_note, student_note)
+		VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)
 		RETURNING `+submissionCols,
-		ns.UserID, ns.TaskID, ns.CommitSHA, fmtTime(ns.ReceivedAt), ns.Counts, status, reason)
+		ns.UserID, ns.TaskID, ns.CommitSHA, fmtTime(ns.ReceivedAt), ns.Counts, status,
+		reason, reason)
 	return scanSubmission(row)
 }
 
@@ -176,11 +180,13 @@ func (s *DB) FinishSubmission(ctx context.Context, id int64, res SubmissionResul
 	}
 	// The status guard closes the teacher-cancel race: once CancelSubmission
 	// flipped the row terminal, a late finish must not resurrect it as done.
+	// A finished run's note is the prep's tamper notes: they describe the
+	// student's own discarded edits, so both audiences read the same text.
 	result, err := tx.ExecContext(ctx, `
 		UPDATE submissions SET status = ?, raw_score = ?, penalty_percent = ?,
-		  final_score = ?, worker_note = ?, log_dir = ?, retry_at = NULL
+		  final_score = ?, worker_note = ?, student_note = ?, log_dir = ?, retry_at = NULL
 		WHERE id = ? AND status = 'running' AND canceled_at IS NULL`,
-		res.Status, res.Raw, res.Penalty, res.Final, res.Note, res.LogDir, id)
+		res.Status, res.Raw, res.Penalty, res.Final, res.Note, res.Note, res.LogDir, id)
 	if err != nil {
 		return err
 	}
@@ -195,12 +201,12 @@ func (s *DB) FinishSubmission(ctx context.Context, id int64, res SubmissionResul
 // row, counts=0, its own note), and an unconditional update would overwrite the
 // note, count a retry and re-arm retry_at - handing the canceled submission
 // back to ClaimNext. ok=false says the row was no longer the caller's to write.
-func (s *DB) ScheduleRetry(ctx context.Context, id int64, retryAt *time.Time, note string) (bool, error) {
+func (s *DB) ScheduleRetry(ctx context.Context, id int64, retryAt *time.Time, note, studentNote string) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE submissions SET status = 'infra_error', retries = retries + 1,
-		  retry_at = ?, worker_note = ?
+		  retry_at = ?, worker_note = ?, student_note = ?
 		WHERE id = ? AND status = 'running' AND canceled_at IS NULL`,
-		fmtTimePtr(retryAt), note, id)
+		fmtTimePtr(retryAt), note, studentNote, id)
 	if err != nil {
 		return false, err
 	}
@@ -335,7 +341,8 @@ func (s *DB) NextRetryAt(ctx context.Context) (*time.Time, error) {
 func (s *DB) CancelSubmission(ctx context.Context, id int64, now time.Time) (Submission, bool, error) {
 	row := s.db.QueryRowContext(ctx, `
 		UPDATE submissions SET status = 'infra_error', retry_at = NULL, counts = 0,
-		  canceled_at = ?, worker_note = 'canceled by teacher'
+		  canceled_at = ?, worker_note = 'canceled by teacher',
+		  student_note = 'canceled by teacher'
 		WHERE id = ? AND status IN ('queued','running')
 		RETURNING `+submissionCols,
 		fmtTime(now), id)
@@ -403,8 +410,8 @@ func scanSubmission(row scanner) (Submission, error) {
 	)
 	err := row.Scan(&sub.ID, &sub.UserID, &sub.TaskID, &sub.CommitSHA, &receivedAt,
 		&sub.AttemptNo, &sub.Counts, &sub.Status, &sub.RawScore, &sub.PenaltyPercent,
-		&sub.FinalScore, &sub.LogDir, &sub.WorkerNote, &sub.Retries, &retryAt, &startedAt,
-		&canceledAt)
+		&sub.FinalScore, &sub.LogDir, &sub.WorkerNote, &sub.StudentNote, &sub.Retries,
+		&retryAt, &startedAt, &canceledAt)
 	if err != nil {
 		return Submission{}, err
 	}
