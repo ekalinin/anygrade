@@ -172,6 +172,31 @@ func TestSubmissionPageStopsRetryingOnTerminalError(t *testing.T) {
 	}
 }
 
+// TestSubmissionPageRefreshesResultsOnEveryStatus: the stream sends `status` on
+// every transition but `done` only on a terminal one, so a results block
+// listening for `done` alone went stale exactly when it had something new to
+// say - a running submission flipping to a retryable infra_error gains the note
+// explaining itself (SPEC §14) while the block still promised a worker that is
+// not coming until retry_at.
+//
+// Only the wiring is assertable here: whether htmx then issues the fetch is the
+// browser's half and no Go test reaches it.
+func TestSubmissionPageRefreshesResultsOnEveryStatus(t *testing.T) {
+	h, _ := newTestSite(t)
+	soon := time.Now().Add(time.Minute)
+	student, sub := infraRow(t, h, "bob", &soon,
+		"infra error (image_pull): docker pull alpine:3", "hidden tests temporarily unavailable")
+	h.Local = &student
+
+	body := pageBody(t, h, "/submissions/"+itoa(sub.ID))
+	if !strings.Contains(body, "sse-connect") {
+		t.Fatalf("a retrying submission must still stream:\n%s", body)
+	}
+	if !strings.Contains(body, `hx-trigger="sse:done, sse:status"`) {
+		t.Errorf("the results block does not refetch on a non-terminal status change:\n%s", body)
+	}
+}
+
 // TestQueueStreamReconcilesRenderedRows: the page renders its snapshot before
 // the EventSource exists, and the Hub may drop on overflow, so a terminal flip
 // in that gap is simply lost. The stream re-renders the rows the page put in

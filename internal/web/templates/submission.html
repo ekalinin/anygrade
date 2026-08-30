@@ -13,8 +13,14 @@
     {{if .Sub.AttemptNo}}<span>{{t "submission.attempt"}} {{.Sub.AttemptNo}}</span>{{end}}
   </p>
 
+  {{/* Both events, because they answer different questions: `done` is the only
+       one the stream sends when the submission was already terminal at connect
+       time, and `status` is the only one it sends when a transition is not
+       terminal - a retryable infra_error, which is exactly when this block
+       gains the note that explains it. Listening for `done` alone left the
+       badge and the results disagreeing until a reload. */}}
   <div id="results"
-       {{if .Running}}hx-trigger="sse:done" hx-get="/submissions/{{.Sub.ID}}/fragment" hx-swap="innerHTML"{{end}}>
+       {{if .Running}}hx-trigger="sse:done, sse:status" hx-get="/submissions/{{.Sub.ID}}/fragment" hx-swap="innerHTML"{{end}}>
     {{template "sub-results" .}}
   </div>
 
