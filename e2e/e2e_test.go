@@ -70,6 +70,13 @@ type env struct {
 	serverCmd *exec.Cmd
 	serverLog *os.File
 
+	// Set only by the TLS scenario's own env: serve the HTTP listener over
+	// TLS and poll readiness with a client that trusts the generated
+	// certificate.
+	tlsCert   string
+	tlsKey    string
+	tlsClient *http.Client
+
 	profClient *http.Client
 
 	// Filled in by later scenarios.
@@ -122,6 +129,7 @@ func TestE2E(t *testing.T) {
 	t.Run("token reset", func(t *testing.T) { testTokenReset(t, e) })
 	t.Run("leaderboard", func(t *testing.T) { testLeaderboard(t, e) })
 	t.Run("max push size", func(t *testing.T) { testMaxPushSize(t, e) })
+	t.Run("tls listener", func(t *testing.T) { testTLSListener(t, e) })
 	t.Run("force push after submission", func(t *testing.T) { testForcePushAfterSubmission(t, e) })
 	t.Run("score override", func(t *testing.T) { testScoreOverride(t, e) })
 	t.Run("tamper notes", func(t *testing.T) { testTamperNotes(t, e) })
@@ -184,20 +192,26 @@ func startEnv(t *testing.T) *env {
 // The log file is opened once by startEnv and appended to by every restart.
 func startServer(t *testing.T, e *env) {
 	t.Helper()
-	cmd := exec.Command(bin, "serve",
+	args := []string{"serve",
 		"--repo", e.courseDir,
 		"--data-dir", e.dataDir,
 		"--http-addr", fmt.Sprintf("127.0.0.1:%d", e.httpPort),
 		"--ssh-addr", fmt.Sprintf("127.0.0.1:%d", e.sshPort),
 		"--workers", "2",
-	)
+	}
+	ready := http.DefaultClient
+	if e.tlsCert != "" {
+		args = append(args, "--tls-cert", e.tlsCert, "--tls-key", e.tlsKey)
+		ready = e.tlsClient
+	}
+	cmd := exec.Command(bin, args...)
 	cmd.Stdout = e.serverLog
 	cmd.Stderr = e.serverLog
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start serve: %v", err)
 	}
 	e.serverCmd = cmd
-	waitReady(t, e.baseURL)
+	waitReadyWith(t, ready, e.baseURL)
 }
 
 // stopServer signals the running server and waits for it to exit, escalating
@@ -231,9 +245,16 @@ func restartServer(t *testing.T, e *env) {
 // waitReady polls GET /login until the server accepts connections.
 func waitReady(t *testing.T, baseURL string) {
 	t.Helper()
+	waitReadyWith(t, http.DefaultClient, baseURL)
+}
+
+// waitReadyWith is waitReady over a caller-supplied client, so an HTTPS
+// listener can be polled with the certificate it was started with.
+func waitReadyWith(t *testing.T, client *http.Client, baseURL string) {
+	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
-		resp, err := http.Get(baseURL + "/login")
+		resp, err := client.Get(baseURL + "/login")
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {

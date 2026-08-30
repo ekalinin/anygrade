@@ -4,11 +4,19 @@ package e2e
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/csv"
+	"encoding/pem"
 	"fmt"
 	"html"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -1031,6 +1039,164 @@ func testMaxPushSize(t *testing.T, e *env) {
 
 	// Drop the blob so later scenarios push a normal-sized history again.
 	git(t, e.aliceDir, nil, "reset", "--hard", "HEAD~1")
+}
+
+// 33. TLS listener: a server started with --tls-cert/--tls-key serves the one
+// HTTP port over HTTPS, and both things that ride it - the web UI and git smart
+// HTTP - work over the encrypted listener (SPEC §11, §14). The certificate is
+// generated here and handed to the Go client as its only root CA and to git as
+// GIT_SSL_CAINFO, so every request below verifies a real chain instead of
+// skipping verification.
+func testTLSListener(t *testing.T, e *env) {
+	certPath, keyPath, certPEM := genTLSCert(t, e.root)
+	client := newTLSClient(t, certPEM)
+	tlsEnv := startTLSServer(t, e, certPath, keyPath, client)
+
+	status, body := get(t, client, tlsEnv.baseURL+"/login")
+	if status != http.StatusOK {
+		t.Fatalf("GET %s/login: status %d, body:\n%s", tlsEnv.baseURL, status, body)
+	}
+	if !strings.Contains(body, "Sign in") {
+		t.Fatalf("GET %s/login did not render the login form:\n%s", tlsEnv.baseURL, body)
+	}
+
+	// Without the generated CA the same URL must be refused; otherwise the
+	// request above would prove nothing about the certificate.
+	if resp, err := newClient(t).Get(tlsEnv.baseURL + "/login"); err == nil {
+		resp.Body.Close()
+		t.Errorf("%s/login verified without the generated CA", tlsEnv.baseURL)
+	}
+
+	// TLS is the only thing the port speaks: a plaintext request does not get
+	// the app back, whatever the transport answers with.
+	if resp, err := newClient(t).Get(fmt.Sprintf("http://127.0.0.1:%d/login", tlsEnv.httpPort)); err == nil {
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			t.Errorf("the TLS port served the app over plaintext http")
+		}
+	}
+
+	// git over the same listener. -c http.sslVerify=true throughout so a
+	// machine that has turned verification off globally cannot turn either
+	// half of this into a pass.
+	out := runBin(t, "", "user", "add", "--login", "tina", "--role", "student", "--data-dir", tlsEnv.dataDir)
+	token := reToken.FindString(out)
+	if token == "" {
+		t.Fatalf("no token in `user add` output:\n%s", out)
+	}
+	cloneURL := fmt.Sprintf("https://tina:%s@127.0.0.1:%d/git/tina/course.git", token, tlsEnv.httpPort)
+	if out, err := gitErr(e.root, nil, "-c", "http.sslVerify=true", "ls-remote", cloneURL); err == nil {
+		t.Fatalf("git verified the certificate without GIT_SSL_CAINFO:\n%s", out)
+	}
+
+	caEnv := []string{"GIT_SSL_CAINFO=" + certPath}
+	cloneDir := filepath.Join(e.root, "tina")
+	git(t, e.root, caEnv, "-c", "http.sslVerify=true", "clone", cloneURL, cloneDir)
+	setIdentity(t, cloneDir)
+	writeFile(t, filepath.Join(cloneDir, "tasks", "sum", "sum.sh"), sumSolution)
+	git(t, cloneDir, nil, "add", "-A")
+	git(t, cloneDir, nil, "commit", "-q", "-m", "solve sum over https")
+	pushOut := git(t, cloneDir, caEnv, "-c", "http.sslVerify=true", "push", "origin", "main")
+	// receive-pack, the hook, and intake all ran behind TLS: the push output is
+	// anygrade's, not git's default.
+	taskSubmissionID(t, pushOut, "sum")
+}
+
+// startTLSServer brings up a second server over HTTPS on its own data dir and
+// ports. It reuses startServer/stopServer through a second env value, so the
+// ordered suite's own server, ports and data dir are left untouched. client
+// must trust certPath: startServer polls readiness with it.
+func startTLSServer(t *testing.T, e *env, certPath, keyPath string, client *http.Client) *env {
+	t.Helper()
+	httpPort := freePort(t)
+
+	logPath := filepath.Join(e.root, "serve-tls.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		t.Fatalf("create serve-tls.log: %v", err)
+	}
+	tlsEnv := &env{
+		root:      e.root,
+		baseURL:   fmt.Sprintf("https://127.0.0.1:%d", httpPort),
+		httpPort:  httpPort,
+		sshPort:   freePort(t),
+		courseDir: e.courseDir,
+		dataDir:   filepath.Join(e.root, "data-tls"),
+		serverLog: logFile,
+		tlsCert:   certPath,
+		tlsKey:    keyPath,
+		tlsClient: client,
+	}
+	t.Cleanup(func() {
+		stopServer(t, tlsEnv, syscall.SIGTERM)
+		logFile.Close()
+		if t.Failed() {
+			if b, err := os.ReadFile(logPath); err == nil {
+				t.Logf("serve-tls.log:\n%s", b)
+			}
+		}
+	})
+	startServer(t, tlsEnv)
+	return tlsEnv
+}
+
+// genTLSCert writes a self-signed ECDSA certificate and its key into dir and
+// returns their paths plus the certificate PEM. The certificate is its own CA
+// so the one file works as a trust anchor for both Go's RootCAs and git's
+// GIT_SSL_CAINFO.
+func genTLSCert(t *testing.T, dir string) (certPath, keyPath string, certPEM []byte) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate tls key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "anygrade e2e"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1)},
+		DNSNames:              []string{"localhost"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create tls certificate: %v", err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal tls key: %v", err)
+	}
+
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	certPath = filepath.Join(dir, "tls-cert.pem")
+	keyPath = filepath.Join(dir, "tls-key.pem")
+	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
+		t.Fatalf("write %s: %v", certPath, err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatalf("write %s: %v", keyPath, err)
+	}
+	return certPath, keyPath, certPEM
+}
+
+// newTLSClient is newClient with caPEM as its only trust anchor, so a request
+// that succeeds against the TLS listener proves the chain verified.
+func newTLSClient(t *testing.T, caPEM []byte) *http.Client {
+	t.Helper()
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		t.Fatalf("the generated certificate is not a usable trust anchor")
+	}
+	c := newClient(t)
+	c.Transport = &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+	}
+	return c
 }
 
 // 14. force push after submission: a graded commit that a force push drops
