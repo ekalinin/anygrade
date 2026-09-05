@@ -396,6 +396,9 @@ button[type="submit"]:not(.linklike):disabled {
 .admin-cell { white-space: nowrap; }
 .override-form input[name="score"] { width: 5rem; }
 .override-form input[name="comment"] { width: 9rem; }
+/* The log column: one line per phase, so "build log" reads as the label of the
+   two actions after it and not as a third one beside them. */
+.checks .logs { display: block; white-space: nowrap; }
 .filelist { list-style: none; padding-left: 0; }
 .filelist li { padding: 0.25rem 0; border-bottom: 1px solid var(--rule); }
 

@@ -125,9 +125,10 @@ func (h *Handler) submissionFragment(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(html))
 }
 
-// submissionLog downloads one full check log from disk (SPEC §13: the DB holds
+// submissionLog serves one full check log from disk (SPEC §13: the DB holds
 // only the excerpt). `?phase=build` asks for the build phase's log instead of
-// the run phase's.
+// the run phase's; `?view=1` hands the bytes to the browser to read instead of
+// to save.
 //
 // Teachers only (SPEC §14: "check logs are shown to students as produced by
 // their tests; teachers see full logs"). Student code runs under the same UID
@@ -175,10 +176,24 @@ func (h *Handler) submissionLog(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	// FormatMediaType quotes and RFC 2231-encodes the file name; building the
-	// header by hand would let a check name carrying a quote break out of it.
-	if cd := mime.FormatMediaType("attachment", map[string]string{"filename": name}); cd != "" {
-		w.Header().Set("Content-Disposition", cd)
+	// A log is student-controlled bytes served from the site's own origin. The
+	// attachment disposition is what keeps a browser from rendering them today,
+	// and the viewer below drops exactly that, so the declared type has to bind
+	// on its own: without nosniff a log opening with "<html>" would be sniffed
+	// into a page running inside the teacher's session.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// The viewer is the download minus one header - same file, same role check,
+	// deliberately the browser's own text viewer rather than a rendered page:
+	// it holds a `runner.log_max`-sized log (10 MB by default) without an
+	// inline cap, and find-in-page keeps working over the whole of it, which is
+	// most of the reason to open a log at all.
+	if r.URL.Query().Get("view") != "1" {
+		// FormatMediaType quotes and RFC 2231-encodes the file name; building
+		// the header by hand would let a check name carrying a quote break out
+		// of it.
+		if cd := mime.FormatMediaType("attachment", map[string]string{"filename": name}); cd != "" {
+			w.Header().Set("Content-Disposition", cd)
+		}
 	}
 	http.ServeContent(w, r, "", modTime(f), f)
 }

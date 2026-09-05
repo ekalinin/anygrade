@@ -265,6 +265,69 @@ func TestSubmissionLogDownloadIsTeacherOnly(t *testing.T) {
 	}
 }
 
+// TestSubmissionLogViewIsTeacherOnly: `?view=1` is the same file past the same
+// role check with one header less, so it inherits the download's gate
+// unchanged (SPEC §14) - for the run phase, and for the build phase, whose log
+// no student may read in any form.
+func TestSubmissionLogViewIsTeacherOnly(t *testing.T) {
+	const buildOut = "hidden_test.go:7: undefined: Solve"
+	h, _ := newTestSite(t)
+	h.DataDir = t.TempDir()
+	student, sub := finishedWithChecks(t, h, "vet")
+	// The same check with a build phase behind it: two files, one route.
+	dir := runner.BuildLogDir(intake.SubmissionLogDir(h.DataDir, sub.ID))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, runner.LogFileName("vet")), []byte(buildOut), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	base := "/submissions/" + itoa(sub.ID) + "/logs/vet"
+	phases := []struct{ name, path, want string }{
+		{"run", base + "?view=1", "log of vet"},
+		{"build", base + "?phase=build&view=1", buildOut},
+	}
+
+	h.Local = &student
+	for _, p := range phases {
+		if rec := getLog(t, h, p.path); rec.Code != http.StatusNotFound {
+			t.Errorf("student viewed the %s log: status %d, body %q", p.name, rec.Code, rec.Body.String())
+		}
+	}
+
+	teacher, err := h.DB.GetUserByLogin(t.Context(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Local = &teacher
+	for _, p := range phases {
+		rec := getLog(t, h, p.path)
+		if rec.Code != http.StatusOK || rec.Body.String() != p.want {
+			t.Errorf("teacher, %s phase: status %d, body %q, want 200 and %q",
+				p.name, rec.Code, rec.Body.String(), p.want)
+			continue
+		}
+		// Read, not saved - and the declared type has to bind on its own: the
+		// disposition that used to stop a browser treating student-written
+		// bytes as a page is exactly what the viewer drops.
+		if cd := rec.Header().Get("Content-Disposition"); cd != "" {
+			t.Errorf("teacher, %s phase: viewer still forces a download: %q", p.name, cd)
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+			t.Errorf("teacher, %s phase: Content-Type %q, want text/plain", p.name, ct)
+		}
+		if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Errorf("teacher, %s phase: X-Content-Type-Options %q, want nosniff", p.name, got)
+		}
+	}
+	// The download is untouched: `?view=1` is the only thing that drops the
+	// attachment.
+	if cd := getLog(t, h, base).Header().Get("Content-Disposition"); cd == "" {
+		t.Errorf("the plain download lost its attachment disposition")
+	}
+}
+
 // TestSubmissionPageHidesLogLinkFromStudent: the page must not offer a download
 // it will 404, and must say where the full log went.
 func TestSubmissionPageHidesLogLinkFromStudent(t *testing.T) {
@@ -290,8 +353,11 @@ func TestSubmissionPageHidesLogLinkFromStudent(t *testing.T) {
 	h.Local = &teacher
 	rec = httptest.NewRecorder()
 	New(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/submissions/"+itoa(sub.ID), nil))
-	if !strings.Contains(rec.Body.String(), "/logs/build") {
-		t.Errorf("teacher page lost the log download:\n%s", rec.Body.String())
+	// Both ways into the same file: the saved copy and the one read in place.
+	for _, want := range []string{`/logs/build"`, "/logs/build?view=1"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("teacher page lost %q:\n%s", want, rec.Body.String())
+		}
 	}
 }
 
@@ -383,8 +449,12 @@ func TestBuildFailurePageExplainsItself(t *testing.T) {
 	}
 	h.Local = &teacher
 	body := page("en")
-	if !strings.Contains(body, "phase=build") {
-		t.Errorf("teacher page lost the build log link:\n%s", body)
+	// The build phase is offered both ways too - the viewer is the reason to
+	// open a build log at all, since no excerpt of it is stored anywhere.
+	for _, want := range []string{`phase=build"`, "phase=build&amp;view=1"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("teacher page lost the build log link %q:\n%s", want, body)
+		}
 	}
 	// The run phase never happened, so its download would only 404.
 	if strings.Contains(body, `/logs/compiled"`) {

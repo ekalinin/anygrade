@@ -117,7 +117,7 @@ Raw score = `score × (passed weight / total weight)`. Weights must be non-negat
 
 A check may also carry an optional `build:` phase before its `run:`; it passes iff both exit 0. That is what keeps a compiled language's hidden tests off the disk while the student's code runs - see [hidden tests](#hidden-tests).
 
-Check output is kept twice: the last `log_excerpt` bytes go to the database and the UI, the whole stream to a file capped at `log_max` and closed with a truncation marker. Students see the excerpt and the live stream; the full log is a teacher-only download.
+Check output is kept twice: the last `log_excerpt` bytes go to the database and the UI, the whole stream to a file capped at `log_max` and closed with a truncation marker. Students see the excerpt and the live stream; the full log is teacher-only, to read in the browser or to download.
 
 ## Install
 
