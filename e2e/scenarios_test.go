@@ -1089,10 +1089,12 @@ func testDeactivateStudent(t *testing.T, e *env) {
 }
 
 // reStateEvent matches the audit row a deactivation writes. It spans actor,
-// kind, target and detail on purpose: the filtered page echoes "user.state" and
-// "bob" back in its own filter widgets, so a looser match would pass with no
-// events at all.
-var reStateEvent = regexp.MustCompile(`<td>prof</td><td>user\.state</td><td>bob</td><td>disabled</td>`)
+// actor role, kind, target and detail on purpose: the filtered page echoes
+// "user.state" and "bob" back in its own filter widgets, so a looser match
+// would pass with no events at all. The role cell is what tells a teacher's
+// deactivation from a TA's, so it is pinned rather than skipped over.
+var reStateEvent = regexp.MustCompile(
+	`<td>prof</td><td>teacher</td><td>user\.state</td><td>bob</td><td>disabled</td>`)
 
 // assertBobAccess exercises the four credential paths a deactivation has to
 // close and requires them to answer the same way. want=true means every path
