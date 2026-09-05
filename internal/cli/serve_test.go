@@ -3,6 +3,9 @@ package cli
 import (
 	"io"
 	"testing"
+	"time"
+
+	"github.com/ekalinin/anygrade/internal/app"
 )
 
 // TestServeLocalAddrDefaults: --local refuses a non-loopback bind, and the
@@ -79,5 +82,42 @@ func TestServeTLSFlags(t *testing.T) {
 	if *f.tlsCert != "c.pem" || *f.tlsKey != "k.pem" || !*f.behindProxy {
 		t.Errorf("flags not parsed: cert=%q key=%q behindProxy=%v",
 			*f.tlsCert, *f.tlsKey, *f.behindProxy)
+	}
+}
+
+// TestServeRetryFlags: the retry schedule reaches the flag set, and an
+// invocation that names none of the three carries the shipped values - the
+// whole point of making it settable is that nobody's existing command line
+// starts behaving differently.
+func TestServeRetryFlags(t *testing.T) {
+	f := newServeFlags()
+	f.fs.SetOutput(io.Discard)
+	if err := f.parse(nil); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if *f.retryBackoff != app.DefaultRetryBackoff ||
+		*f.retryBackoffCap != app.DefaultRetryBackoffCap ||
+		*f.maxRetries != app.DefaultMaxRetries {
+		t.Errorf("the shipped retry schedule changed: backoff=%s cap=%s max=%d",
+			*f.retryBackoff, *f.retryBackoffCap, *f.maxRetries)
+	}
+
+	f = newServeFlags()
+	f.fs.SetOutput(io.Discard)
+	args := []string{"--retry-backoff", "200ms", "--retry-backoff-cap", "1s", "--max-retries", "3"}
+	if err := f.parse(args); err != nil {
+		t.Fatalf("parse(%v): %v", args, err)
+	}
+	if *f.retryBackoff != 200*time.Millisecond || *f.retryBackoffCap != time.Second || *f.maxRetries != 3 {
+		t.Errorf("flags not parsed: backoff=%s cap=%s max=%d",
+			*f.retryBackoff, *f.retryBackoffCap, *f.maxRetries)
+	}
+
+	// A malformed duration must fail the parse rather than reach the queue as
+	// a zero schedule.
+	f = newServeFlags()
+	f.fs.SetOutput(io.Discard)
+	if err := f.parse([]string{"--retry-backoff", "soon"}); err == nil {
+		t.Error("--retry-backoff soon parsed successfully")
 	}
 }

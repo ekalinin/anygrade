@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestHTTPServerTimeouts pins the slowloris budget. The negative half matters
@@ -40,6 +41,66 @@ func TestCheckTLSOptions(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := checkTLSOptions(tc.cert, tc.key)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("unexpected error: %v", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Fatalf("error %v, want containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestCheckRetryOptions: the shipped schedule passes untouched - an invocation
+// that names none of the flags must keep working - and every value that would
+// quietly not do what it says is refused rather than defaulted.
+func TestCheckRetryOptions(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		base       time.Duration
+		backoffCap time.Duration
+		maxRetries int
+		wantErr    string
+	}{
+		{
+			name: "the shipped schedule", base: DefaultRetryBackoff,
+			backoffCap: DefaultRetryBackoffCap, maxRetries: DefaultMaxRetries,
+		},
+		{
+			name: "a sub-second schedule is legitimate", base: 200 * time.Millisecond,
+			backoffCap: time.Second, maxRetries: 3,
+		},
+		{
+			name: "base equal to the cap is a flat schedule, not a broken one",
+			base: time.Minute, backoffCap: time.Minute, maxRetries: 4,
+		},
+		{
+			name: "negative base", base: -time.Second,
+			backoffCap: time.Minute, maxRetries: 8, wantErr: "--retry-backoff must be > 0",
+		},
+		{
+			name: "zero base", base: 0,
+			backoffCap: time.Minute, maxRetries: 8, wantErr: "--retry-backoff must be > 0",
+		},
+		{
+			name: "zero cap", base: time.Second,
+			backoffCap: 0, maxRetries: 8, wantErr: "--retry-backoff-cap must be > 0",
+		},
+		{
+			name: "cap below base", base: time.Minute,
+			backoffCap: time.Second, maxRetries: 8, wantErr: "must be >= --retry-backoff",
+		},
+		{
+			name: "zero budget", base: time.Second,
+			backoffCap: time.Minute, maxRetries: 0, wantErr: "--max-retries must be > 0",
+		},
+		{
+			name: "negative budget", base: time.Second,
+			backoffCap: time.Minute, maxRetries: -1, wantErr: "--max-retries must be > 0",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkRetryOptions(tc.base, tc.backoffCap, tc.maxRetries)
 			switch {
 			case tc.wantErr == "" && err != nil:
 				t.Fatalf("unexpected error: %v", err)

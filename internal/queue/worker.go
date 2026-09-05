@@ -57,6 +57,16 @@ func publicNote(cause error) string {
 	return ""
 }
 
+// The shipped retry schedule for infra errors (SPEC §13). Exported because
+// `serve` lets an operator widen it and has to advertise in its own help what
+// it passes on when they do not: a default that lived only inside init() would
+// drift from the one the flags print.
+const (
+	DefaultBackoffBase = 10 * time.Second
+	DefaultBackoffCap  = 5 * time.Minute
+	DefaultMaxRetries  = 8
+)
+
 // Prepared is everything a worker needs to run one submission.
 type Prepared struct {
 	Assembly runner.Assembly     // sources wired; Dest/TaskRelDir set
@@ -82,11 +92,15 @@ type Queue struct {
 
 	// Backoff schedule for infra errors: min(Base<<retries, Cap), then after
 	// MaxRetries the submission becomes terminal infra_error (SPEC §13).
-	BackoffBase time.Duration // default 10s
-	BackoffCap  time.Duration // default 5m
-	MaxRetries  int           // default 8
+	// Zero means the shipped default; `serve` fills all three from its flags.
+	BackoffBase time.Duration // default DefaultBackoffBase
+	BackoffCap  time.Duration // default DefaultBackoffCap
+	MaxRetries  int           // default DefaultMaxRetries
 
-	PollInterval time.Duration // claim-loop wakeup for retry_at; default 1s
+	// PollInterval is the claim-loop wakeup for retry_at; default 1s. It is
+	// not an operator knob: a scheduled retry is picked up on the next tick,
+	// so it is the floor under every backoff and means nothing on its own.
+	PollInterval time.Duration
 
 	notify chan struct{}
 	once   sync.Once
@@ -108,13 +122,13 @@ func (q *Queue) init() {
 			q.Workers = 4
 		}
 		if q.BackoffBase <= 0 {
-			q.BackoffBase = 10 * time.Second
+			q.BackoffBase = DefaultBackoffBase
 		}
 		if q.BackoffCap <= 0 {
-			q.BackoffCap = 5 * time.Minute
+			q.BackoffCap = DefaultBackoffCap
 		}
 		if q.MaxRetries <= 0 {
-			q.MaxRetries = 8
+			q.MaxRetries = DefaultMaxRetries
 		}
 		if q.PollInterval <= 0 {
 			q.PollInterval = time.Second

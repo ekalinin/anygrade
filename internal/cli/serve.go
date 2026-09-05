@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/ekalinin/anygrade/internal/app"
 )
@@ -32,6 +33,9 @@ type serveFlags struct {
 	tlsCert          *string
 	tlsKey           *string
 	behindProxy      *bool
+	retryBackoff     *time.Duration
+	retryBackoffCap  *time.Duration
+	maxRetries       *int
 }
 
 func newServeFlags() *serveFlags {
@@ -52,6 +56,15 @@ func newServeFlags() *serveFlags {
 		tlsKey:  fs.String("tls-key", "", "PEM private key for --tls-cert"),
 		behindProxy: fs.Bool("behind-proxy", false,
 			"trust X-Forwarded-Proto from a TLS-terminating reverse proxy"),
+		// The infra-error retry schedule (SPEC §13). The defaults are the
+		// queue's own, so an invocation that names none of the three keeps
+		// behaving exactly as it did before the flags existed.
+		retryBackoff: fs.Duration("retry-backoff", app.DefaultRetryBackoff,
+			"delay before the first retry of an infra_error submission; doubles per retry"),
+		retryBackoffCap: fs.Duration("retry-backoff-cap", app.DefaultRetryBackoffCap,
+			"upper bound on that delay"),
+		maxRetries: fs.Int("max-retries", app.DefaultMaxRetries,
+			"infra_error retries before a submission becomes terminal"),
 	}
 }
 
@@ -121,6 +134,9 @@ func cmdServe(args []string) int {
 		TLSCert:          *f.tlsCert,
 		TLSKey:           *f.tlsKey,
 		BehindProxy:      *f.behindProxy,
+		RetryBackoff:     *f.retryBackoff,
+		RetryBackoffCap:  *f.retryBackoffCap,
+		MaxRetries:       *f.maxRetries,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "serve: %v\n", err)

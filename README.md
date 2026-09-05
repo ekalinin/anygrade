@@ -247,7 +247,8 @@ One check with a `build:` turns the boundary on for the whole task, so any check
 anygrade serve   [--repo DIR] [--data-dir DIR] [--http-addr :8080]
                  [--ssh-addr :2222] [--workers 4] [--base-url URL] [--local]
                  [--allow-local-runner] [--tls-cert FILE --tls-key FILE]
-                 [--behind-proxy]
+                 [--behind-proxy] [--retry-backoff 10s]
+                 [--retry-backoff-cap 5m] [--max-retries 8]
 anygrade check   [--runner local|docker] [--timeout D] [--keep] [-v] [TASK ...]
 anygrade validate
 anygrade user    add|list|remove|invite|reset-token|add-key ...
@@ -256,6 +257,8 @@ anygrade version
 ```
 
 `serve --local` runs with a single implicit user and no auth for offline use; it refuses to bind to non-loopback addresses, so the listen addresses default to `127.0.0.1:8080` and `127.0.0.1:2222` in that mode.
+
+A submission that fails on infrastructure - docker down, an image that will not pull, a hidden-tests remote that is unreachable with nothing cached - is not graded and not charged an attempt: it is retried with an exponential backoff, and becomes a terminal `infra_error` once the budget is spent. The schedule is `--retry-backoff` (first delay, doubling per retry), `--retry-backoff-cap` (upper bound on it) and `--max-retries` (how many retries before the row goes terminal); the defaults above are `10s`, `5m` and `8`, which is roughly twenty minutes of trying. Widen them for a course whose registry or hidden-tests remote is slow; a cap below the base, a non-positive delay or a zero budget is refused at startup. The schedule belongs to the deployment, so it is fixed for the life of the process - a teacher pushing `course.yaml` changes the course, never this.
 
 Anything else should be served over TLS: either give `serve` a certificate (`--tls-cert` and `--tls-key`, both or neither), or put it behind a reverse proxy that terminates TLS and add `--behind-proxy`. Without one of the two the personal token - which is both the web login credential and the git password - crosses the network in the clear on every push and every login, and `serve` says so at startup. `--behind-proxy` is also what makes anygrade trust `X-Forwarded-Proto` and mark the session cookie `Secure`, and what makes the failed-login limiter read `X-Forwarded-For`. Set it whenever there really is a proxy: without it every request arrives from the proxy's address, so the whole course shares one budget and a few failed logins lock everyone out. Leave it off when there is not - both headers are forgeable by anyone who reaches the port.
 

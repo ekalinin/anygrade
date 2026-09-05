@@ -81,6 +81,30 @@ func checkTLSOptions(cert, key string) error {
 	return nil
 }
 
+// checkRetryOptions rejects a retry schedule that cannot do what SPEC §13
+// promises. The flags carry the shipped values, so nothing here can fire on an
+// invocation that did not name them - and a value that was named must not be
+// silently replaced by the default the way a non-positive `max_push_size` used
+// to be: an operator who wrote 0 believes retries are off, and the queue would
+// give them eight.
+//
+// A cap below the base is the one non-obvious case. It does not shorten the
+// schedule, it flattens it: min(base<<n, cap) is the cap from the very first
+// retry, so the exponential growth the operator was tuning never happens.
+func checkRetryOptions(base, backoffCap time.Duration, maxRetries int) error {
+	switch {
+	case base <= 0:
+		return fmt.Errorf("--retry-backoff must be > 0, got %s", base)
+	case backoffCap <= 0:
+		return fmt.Errorf("--retry-backoff-cap must be > 0, got %s", backoffCap)
+	case backoffCap < base:
+		return fmt.Errorf("--retry-backoff-cap (%s) must be >= --retry-backoff (%s)", backoffCap, base)
+	case maxRetries <= 0:
+		return fmt.Errorf("--max-retries must be > 0, got %d", maxRetries)
+	}
+	return nil
+}
+
 // checkServeSafety enforces SPEC §14 at startup: --local never binds a
 // non-loopback address, and a public bind with any task resolved to the
 // local runner requires the explicit --allow-local-runner opt-in.
