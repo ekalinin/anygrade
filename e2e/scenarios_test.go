@@ -1389,6 +1389,117 @@ func testTamperNotes(t *testing.T, e *env) {
 	}
 }
 
+// 38. task removed from the course repo: a teacher push deletes a task while a
+// submission for it is still queued. That submission fails terminally with the
+// reason recorded, the graded history stays readable, and everything the course
+// snapshot drives - matrix column, CSV column, task page - drops the task
+// (SPEC §13).
+//
+// Runs last, on a task of its own: it is the only scenario that takes a task
+// away, so nothing may still need it afterwards.
+func testTaskRemoved(t *testing.T, e *env) {
+	notes := filepath.Join(e.aliceDir, "tasks", "retired", "notes.txt")
+	// The task's only check is `sleep "$(cat notes.txt)"`, so the solution file
+	// decides how long a submission occupies its worker.
+	submit := func(sleep, msg string) int {
+		t.Helper()
+		writeFile(t, notes, sleep+"\n")
+		git(t, e.aliceDir, nil, "add", "-A")
+		git(t, e.aliceDir, nil, "commit", "-q", "-m", msg)
+		return taskSubmissionID(t, git(t, e.aliceDir, nil, "push", "origin", "main"), "retired")
+	}
+
+	// The history the removal must not erase: graded and scored while the task
+	// is still part of the course.
+	graded := submit("0", "retired: solve")
+	pollSubmission(t, e.aliceClient, e, graded)
+	if got := fetchScores(t, e)["alice"]["retired"]; got != "10" {
+		t.Fatalf("alice/retired before the removal: got %q, want 10", got)
+	}
+
+	// Catching a submission in `queued` is not a matter of being quick about
+	// the push: the claim query skips a row while an *earlier* submission of
+	// the same (student, task) pair is running (SPEC §13, ordering), so a
+	// submission that sleeps pins the next one in `queued` for as long as this
+	// scenario wants - no worker can take it in the meantime.
+	blocker := submit("30", "retired: hold the pair's queue slot")
+	pollStatus(t, e.aliceClient, e, blocker, "running")
+	victim := submit("0", "retired: still queued when the task disappears")
+	pollStatus(t, e.aliceClient, e, victim, "queued")
+
+	git(t, e.profCloneDir, nil, "rm", "-r", "-q", "tasks/retired")
+	git(t, e.profCloneDir, nil, "commit", "-q", "-m", "retire the task")
+	// The reload line is the confirmation that the snapshot has already been
+	// swapped, so nothing below races the teacher's push.
+	if out := git(t, e.profCloneDir, nil, "push", "origin", "main"); !strings.Contains(out, "course metadata reloaded") {
+		t.Fatalf("the removal push did not reload the course:\n%s", out)
+	}
+
+	// Release the slot: the blocker was only ever scaffolding, and the victim
+	// is the one that now gets prepared against a course without the task.
+	resp, body := postForm(t, e.profClient, fmt.Sprintf("%s/queue/%d/cancel", e.baseURL, blocker), nil)
+	if resp.StatusCode != http.StatusSeeOther && resp.StatusCode != http.StatusFound {
+		t.Fatalf("cancel the blocker #%d: status %d, body:\n%s", blocker, resp.StatusCode, body)
+	}
+
+	// `error`, not `retrying`: the display status is exactly the difference
+	// between a cleared retry_at and a scheduled one, so reaching it proves the
+	// failure is terminal rather than a backoff that will come round again.
+	page := pollStatus(t, e.aliceClient, e, victim, "error")
+	if !strings.Contains(page, "task no longer exists in the course repo") {
+		t.Fatalf("submission #%d does not record why it failed:\n%s", victim, page)
+	}
+	// A prepare that never ran a check has nothing but its note to explain
+	// itself, so the note must not be traded for the empty-results hint.
+	if strings.Contains(page, "No check results recorded.") {
+		t.Errorf("submission #%d shows the empty-results hint instead of its note:\n%s", victim, page)
+	}
+	// The same reason reaches the teacher's queue row.
+	status, queue := get(t, e.profClient, e.baseURL+"/queue")
+	if status != http.StatusOK {
+		t.Fatalf("GET /queue: status %d", status)
+	}
+	if !strings.Contains(queue, "task no longer exists in the course repo") {
+		t.Errorf("queue row for submission #%d missing the reason:\n%s", victim, queue)
+	}
+
+	// The course is the source of truth for every task-keyed view, so all of
+	// them lose the column the moment the snapshot swaps.
+	status, matrix := get(t, e.profClient, e.baseURL+"/matrix")
+	if status != http.StatusOK {
+		t.Fatalf("GET /matrix: status %d", status)
+	}
+	if strings.Contains(matrix, ">retired<") {
+		t.Fatalf("/matrix still has a column for the removed task:\n%s", matrix)
+	}
+	if _, ok := fetchScores(t, e)["alice"]["retired"]; ok {
+		t.Errorf("scores.csv still exports a column for the removed task")
+	}
+	if status, _ := get(t, e.aliceClient, e.baseURL+"/tasks/retired"); status != http.StatusNotFound {
+		t.Fatalf("GET /tasks/retired after the removal: status %d, want 404", status)
+	}
+
+	// The graded submission is the exception: history, not course metadata. It
+	// keeps its status and its score with no course entry left to name it.
+	status, page = get(t, e.aliceClient, fmt.Sprintf("%s/submissions/%d", e.baseURL, graded))
+	if status != http.StatusOK {
+		t.Fatalf("GET the graded submission after the removal: status %d", status)
+	}
+	if !strings.Contains(page, ">done<") || !strings.Contains(page, "raw 10") {
+		t.Fatalf("submission #%d lost its result when the task was removed:\n%s", graded, page)
+	}
+
+	// The terminal row offers the teacher a recheck button, and there is no
+	// task behind it any more: intake refuses (recheck.go, "unknown task") and
+	// queues nothing in its place. Only the refusal is pinned - today's generic
+	// 500 is not the message this deserves.
+	resp, body = postForm(t, e.profClient, fmt.Sprintf("%s/queue/%d/recheck", e.baseURL, victim), nil)
+	if resp.StatusCode < 400 {
+		t.Fatalf("recheck of the removed task: status %d, Location %q, want a refusal:\n%s",
+			resp.StatusCode, resp.Header.Get("Location"), body)
+	}
+}
+
 // regexpRejected matches either push-rejection phrasing intake.go uses.
 var regexpRejected = regexp.MustCompile(`push rejected|validation failed`)
 
