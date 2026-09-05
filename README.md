@@ -175,6 +175,28 @@ printf '%s' 'anygrade-key-proof/v1 user=alice key=SHA256:... nonce=agc_...' \
 
 The page prints the exact line; it names your login and the key, so a line somebody else sends you would register your key to their account. Paste the whole `-----BEGIN SSH SIGNATURE-----` block back and the key is registered. The challenge lasts ten minutes and works once. Keys added by a teacher with `anygrade user add-key`, and keys registered by older versions, carry no such proof: they keep working, are labelled unproven on the settings and student pages, and lose the fingerprint to whoever later proves possession of it.
 
+### Signing in with an identity provider
+
+A course that already has an OpenID Connect provider - a university IdP, Keycloak, Okta, Entra, Google - can let students in with it instead of a second password. It is off unless configured, and it is configured only through the environment, because the client id and secret are credentials and `course.yaml` is cloned by every student:
+
+```sh
+export ANYGRADE_OIDC_ISSUER=https://sso.uni.example/realms/students
+export ANYGRADE_OIDC_CLIENT_ID=anygrade
+export ANYGRADE_OIDC_CLIENT_SECRET=...        # omit for a public client (PKCE only)
+export ANYGRADE_OIDC_NAME="University SSO"    # the login button's label
+anygrade serve --base-url https://grade.uni.example
+```
+
+Register `<base-url>/oidc/callback` as the redirect URI at the provider; it is derived from `--base-url` and is not separately configurable. Two optional knobs: `ANYGRADE_OIDC_SCOPES` (default `openid profile email`) and `ANYGRADE_OIDC_LOGIN_CLAIM` (default `preferred_username`) - the ID token claim matched against an anygrade login. With `email` the provider must also mark the address verified.
+
+Three things are worth knowing before turning it on:
+
+- **It replaces the login form, not the token.** The personal token is also the git-over-HTTP password, and git cannot open a browser. A student who signs in this way still needs a token to push and gets it from settings: the same button, which issues the first one when there is none and rotates it when there is. Rotating invalidates the old token straight away, so a git remote that saved it stops working until the stored password is updated - the page says so.
+- **It binds, it does not enrol.** A successful sign-in attaches the provider identity to an account that already exists; it never creates one, so `registration.mode: invite` keeps meaning what it says. An identity with no account is told to ask its teacher for an invite. The binding is the provider's subject (`iss` + `sub`), so a rename or a new email on the provider's side costs nothing; an account already linked to one identity refuses a second, and `anygrade user unbind-oidc --login alice` is how a teacher undoes a link.
+- **Deactivating still works.** `anygrade user remove` (or the teacher UI) stops the provider login exactly as it stops the token and the SSH key.
+
+Without any of the variables set, the login page is unchanged and `/oidc/callback` does not exist.
+
 Teachers push course updates to `/git/course.git` - every push is validated and rejected with the error list if the metadata is broken.
 
 ### Roles
@@ -293,7 +315,7 @@ anygrade serve   [--repo DIR] [--data-dir DIR] [--http-addr :8080]
                  [--retry-backoff-cap 5m] [--max-retries 8]
 anygrade check   [--runner local|docker] [--timeout D] [--keep] [-v] [TASK ...]
 anygrade validate
-anygrade user    add|list|remove|invite|reset-token|add-key ...
+anygrade user    add|list|remove|invite|reset-token|add-key|unbind-oidc ...
 anygrade export  scores --format csv
                  submissions --task ID [--format dir|zip] [--out PATH]
                              [--all-attempts]
@@ -376,6 +398,7 @@ v1 is deliberately read-only, and says nothing about liveness: poll it. Recheck,
 
 - Student code is untrusted: the docker runner (one ephemeral container per submission) applies memory/cpu/pids limits, no network by default, read-only base image, a non-root user, a tmpfs workspace copied into the container instead of a host bind mount, and a hard wall-clock timeout. Serving on a non-loopback address with any task on the local runner refuses to start unless `--allow-local-runner` is passed explicitly.
 - Tokens, invite links, session cookies and SSH key challenges are stored hashed; registering an SSH key takes a signed challenge, so nobody can claim a classmate's key; SSH is limited to git commands; failed logins are rate limited per client and login across git and the web.
+- The optional OpenID Connect login verifies the ID token's signature against the issuer's published keys, with an allowlist that has no entry for `alg: none` or the HMAC family, and checks `iss`, `aud`, `exp` and the nonce. The state, nonce and PKCE verifier live in one short-lived `HttpOnly` cookie, so a flow belongs to the browser that started it and cannot be replayed; the post-login target is validated as a same-site path, so the callback is not an open redirect. A refusal tells the browser only that sign-in failed or that the identity has no account here - which check failed goes to the server log. The callback draws on the same per-IP failure budget, not because the code is guessable but because it is the one unauthenticated route that makes the server call out to a third party.
 - SSH has no guessable credential to rate limit - it authenticates a key fingerprint, and a client offers every key in its agent until one matches - so it is bounded on connection churn instead: how many connections may sit in the handshake at once, overall and per client address, how long each one has to get through it, and how long an established connection may sit idle. Nothing is tunable and nothing needs to be; the ceilings are far above a whole class pushing at a deadline, and a key that authenticates stops counting against them straight away.
 - Rights checks on every route, and a refusal is a 404 rather than a 403 for every role alike: students can only read their own submissions, and a TA turned away from an account-management route learns no more about it than a student does. The check excerpt and the live stream are the student's; the full check log is a staff-only download, because their code runs beside the hidden tests. A check's `build:` phase is staff-only in full - no excerpt, no live stream - since that is the phase that compiles against the hidden tests. The JSON API is the same checks over the same data and serves no full log at all.
 - CSV export prefixes any cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return with an apostrophe, so a login can never become a spreadsheet formula.

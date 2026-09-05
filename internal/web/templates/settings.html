@@ -3,10 +3,17 @@
 {{if .Flash}}<p class="flash">{{tFlash .Flash}}</p>{{end}}
 
 <h2>{{t "settings.token_heading"}}</h2>
+{{if .HasToken}}
 <p class="hint">{{t "settings.token_hint"}}</p>
 <form method="post" action="/settings/token">
   <button type="submit">{{t "settings.regenerate"}}</button>
 </form>
+{{else}}
+<p class="hint">{{t "settings.no_token_hint"}}</p>
+<form method="post" action="/settings/token">
+  <button type="submit">{{t "settings.create_token"}}</button>
+</form>
+{{end}}
 
 <h2>{{t "common.ssh_keys"}}</h2>
 {{if .Keys}}

@@ -22,22 +22,42 @@ type settingsData struct {
 	User       userView
 	Keys       []store.SSHKey
 	Flash      string
+	// HasToken decides whether the token section offers a rotation or a first
+	// issue. An account that only ever signed in through the identity provider
+	// has no token and cannot push over HTTP until it asks for one (SPEC §8),
+	// so the page has to say something different to it than "regenerate".
+	HasToken bool
 }
 
 func (h *Handler) settingsPage(w http.ResponseWriter, r *http.Request) {
 	u := user(r)
 	keys, _ := h.DB.ListSSHKeys(r.Context(), u.ID)
+	// A read error shows the rotation wording, which is the safe default: it
+	// works whether or not a token exists, where "create one" would be wrong.
+	hasToken, err := h.DB.HasToken(r.Context(), u.ID)
+	if err != nil {
+		hasToken = true
+	}
 	h.renderPage(w, r, "settings", settingsData{
 		CourseName: h.Course.Get().Resolved.Course.Name,
 		User:       h.userViewOf(u),
 		Keys:       keys,
 		Flash:      r.URL.Query().Get("flash"),
+		HasToken:   hasToken,
 	})
 }
 
-// regenToken rotates the personal token and re-binds THIS session to it:
-// every other session dies (its token_hash no longer joins), the current
+// regenToken issues the personal token and re-binds THIS session to it: every
+// other token-bound session dies (its token_hash no longer joins), the current
 // tab stays logged in, and the new token is shown exactly once.
+//
+// It is one handler for two jobs, because they are the same write. For an
+// account that already has a token this is a rotation, and the old token stops
+// working the moment this runs - which is what the page warns about, since a
+// git remote that saved it keeps sending the old one. For an account that came
+// in through the identity provider and never had one, it is the first issue:
+// the provider login gives a session, and only this gives something git can use
+// as a password.
 func (h *Handler) regenToken(w http.ResponseWriter, r *http.Request) {
 	u := user(r)
 	token, err := h.DB.IssueToken(r.Context(), u.ID)

@@ -40,6 +40,8 @@ func cmdUser(args []string) int {
 		err = userAddKey(rest)
 	case "invite":
 		err = userInvite(rest)
+	case "unbind-oidc":
+		err = userUnbindOIDC(rest)
 	default:
 		printUserUsage()
 		return 2
@@ -52,7 +54,7 @@ func cmdUser(args []string) int {
 }
 
 func printUserUsage() {
-	fmt.Fprintln(os.Stderr, "usage: anygrade user <add|list|remove|reset-token|add-key|invite> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: anygrade user <add|list|remove|reset-token|add-key|invite|unbind-oidc> [flags]")
 }
 
 func userAdd(args []string) error {
@@ -178,6 +180,46 @@ func userResetToken(args []string) error {
 	fmt.Printf("token reset for %s\n", u.Login)
 	fmt.Printf("token: %s\n", token)
 	fmt.Println("store this token now; it is shown only once")
+	return nil
+}
+
+// userUnbindOIDC clears the identity provider subject stored on an account
+// (SPEC §8).
+//
+// The web flow deliberately refuses to move a binding: an account already
+// linked to one subject never accepts another silently, or "log in as somebody
+// else" would be one claim away for whoever the provider hands the login to
+// next. That leaves one legitimate case - a student whose provider account
+// genuinely changed, or who was linked to the wrong one - and it needs someone
+// with the data dir to say so, which is what this command is. The next
+// successful login binds the new subject.
+func userUnbindOIDC(args []string) error {
+	fs := flag.NewFlagSet("user unbind-oidc", flag.ContinueOnError)
+	login := fs.String("login", "", "user login")
+	dataDir := fs.String("data-dir", ".anygrade", "anygrade data directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *login == "" {
+		return fmt.Errorf("--login is required")
+	}
+
+	ctx := context.Background()
+	db, err := store.Open(ctx, *dataDir)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	ok, err := db.UnbindOIDC(ctx, *login)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("user %q has no identity provider binding", *login)
+	}
+	fmt.Printf("identity provider binding cleared for %s\n", *login)
+	fmt.Println("the next successful provider login links whichever account signs in")
 	return nil
 }
 

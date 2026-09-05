@@ -9,6 +9,7 @@ import (
 
 	"github.com/ekalinin/anygrade/internal/gradebook"
 	"github.com/ekalinin/anygrade/internal/intake"
+	"github.com/ekalinin/anygrade/internal/oidc"
 	"github.com/ekalinin/anygrade/internal/queue"
 	"github.com/ekalinin/anygrade/internal/ratelimit"
 	"github.com/ekalinin/anygrade/internal/store"
@@ -54,6 +55,12 @@ type Handler struct {
 	// as this user (serve --local; the caller guarantees a loopback bind).
 	// The zero value is the secure one: only the composition root sets it.
 	Local *store.User
+	// OIDC, when non-nil, offers a second way to obtain a session: a login at
+	// an external identity provider (SPEC §8). Nil is the default and means the
+	// site behaves exactly as it did before - no button on the login page, and
+	// no /oidc/ routes at all. It never replaces the personal token, which is
+	// also the git basic-auth password.
+	OIDC *oidc.Provider
 	// BehindProxy makes the site trust X-Forwarded-Proto when deciding whether
 	// the browser's connection is encrypted (session cookie Secure flag). Off
 	// by default: the header is forgeable by anyone who reaches the port.
@@ -64,12 +71,25 @@ type Handler struct {
 	Alias gradebook.Aliaser
 }
 
-// New builds the site mux. Everything except /login, /invite, /register, and
-// /static/ requires a session; staff routes add a rights check (SPEC §14).
+// New builds the site mux. Everything except /login, /invite, /register,
+// /oidc/ and /static/ requires a session; staff routes add a rights check
+// (SPEC §14).
 func New(h *Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", h.loginForm)
 	mux.HandleFunc("POST /login", h.loginSubmit)
+	// Registered only when an identity provider is configured, so an
+	// unconfigured server has no callback to reach at all - a 404, not a route
+	// that answers and then refuses.
+	// Both patterns are literals rather than "GET "+oidc.CallbackPath: the
+	// route table test reads these registrations back out of this file, and a
+	// computed pattern is one it cannot see - which would leave the callback
+	// as the one route in the site nothing accounts for. TestOIDCCallbackPath
+	// keeps the literal and the constant in agreement.
+	if h.OIDC != nil {
+		mux.HandleFunc("GET /oidc/start", h.oidcStart)
+		mux.HandleFunc("GET /oidc/callback", h.oidcCallback)
+	}
 	mux.HandleFunc("GET /invite/{token}", h.invitePage)
 	mux.HandleFunc("POST /invite/{token}", h.inviteSubmit)
 	mux.HandleFunc("GET /register", h.registerPage)

@@ -198,6 +198,81 @@ func TestMigrateSplitsTheWorkerNote(t *testing.T) {
 	}
 }
 
+// TestMigrateKeepsSessionsAndAddsTheOIDCBinding: 0013 rebuilds the sessions
+// table to relax token_hash to nullable, which SQLite cannot do in place. That
+// rebuild must not repeat what 0006 already did once - a live session has to
+// survive the upgrade - and the accounts it upgrades must come out unbound,
+// with room for a binding to be made afterwards.
+func TestMigrateKeepsSessionsAndAddsTheOIDCBinding(t *testing.T) {
+	dir := t.TempDir()
+	plaintext := seedPre0013DB(t, dir)
+
+	db, err := Open(t.Context(), dir)
+	if err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if _, ok, err := db.LookupSession(t.Context(), plaintext); err != nil || !ok {
+		t.Fatalf("a live session did not survive the rebuild: ok=%v err=%v", ok, err)
+	}
+	// Existing accounts carry no binding, and a subject can be attached to one.
+	if _, ok, err := db.UserByOIDC(t.Context(), "https://idp.example", "sub-1"); err != nil || ok {
+		t.Fatalf("an upgraded account already claims a subject: ok=%v err=%v", ok, err)
+	}
+	if bound, err := db.BindOIDC(t.Context(), 1, "https://idp.example", "sub-1"); err != nil || !bound {
+		t.Fatalf("BindOIDC after the upgrade: bound=%v err=%v", bound, err)
+	}
+	// And a second account cannot take that subject over.
+	if _, err := db.CreateUser(t.Context(), "mallory", "M", "student"); err != nil {
+		t.Fatal(err)
+	}
+	other, err := db.GetUserByLogin(t.Context(), "mallory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bound, err := db.BindOIDC(t.Context(), other.ID, "https://idp.example", "sub-1"); err != nil || bound {
+		t.Fatalf("a taken subject was bound to a second account: bound=%v err=%v", bound, err)
+	}
+	// A session bound to no token is the shape a provider login opens.
+	sid, err := db.CreateSession(t.Context(), 1, "", time.Hour)
+	if err != nil {
+		t.Fatalf("tokenless session: %v", err)
+	}
+	if _, ok, err := db.LookupSession(t.Context(), sid); err != nil || !ok {
+		t.Fatalf("a tokenless session does not resolve: ok=%v err=%v", ok, err)
+	}
+}
+
+// seedPre0013DB writes a database as the version before 0013 left it, with one
+// live token-bound session, and returns that session's cookie value.
+func seedPre0013DB(t *testing.T, dir string) string {
+	t.Helper()
+	raw, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "anygrade.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+
+	for _, name := range migrationsBefore(t, 10) {
+		content, cerr := migrationsFS.ReadFile("migrations/" + name)
+		if cerr != nil {
+			t.Fatal(cerr)
+		}
+		exec(t, raw, string(content))
+	}
+	exec(t, raw, `PRAGMA user_version = 9`)
+	exec(t, raw, `INSERT INTO users (id, login, display_name, role, created_at)
+		VALUES (1, 'bob', 'Bob', 'student', '2026-01-01T00:00:00.000000000Z')`)
+	const cookie, token = "the-cookie", "the-token"
+	exec(t, raw, `INSERT INTO tokens (id, user_id, hash, created_at)
+		VALUES (1, 1, '`+hashToken(token)+`', '2026-01-01T00:00:00.000000000Z')`)
+	exec(t, raw, `INSERT INTO sessions (id_hash, user_id, token_hash, created_at, expires_at)
+		VALUES ('`+hashToken(cookie)+`', 1, '`+hashToken(token)+`',
+		        '2026-01-02T00:00:00.000000000Z', '2099-01-01T00:00:00.000000000Z')`)
+	return cookie
+}
+
 // seedPre0009DB writes a database as the version before 0009 left it: one
 // submission of every shape that carries a worker note.
 func seedPre0009DB(t *testing.T, dir string) {
