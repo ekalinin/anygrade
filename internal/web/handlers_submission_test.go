@@ -342,7 +342,7 @@ func TestSubmissionPageHidesLogLinkFromStudent(t *testing.T) {
 	if strings.Contains(body, "/logs/") {
 		t.Errorf("student page still links to the full log:\n%s", body)
 	}
-	if !strings.Contains(body, "full logs are available to teachers") {
+	if !strings.Contains(body, i18n.For("en").T("sub.logs_teacher_only")) {
 		t.Errorf("student page does not explain the missing download:\n%s", body)
 	}
 

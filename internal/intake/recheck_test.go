@@ -106,3 +106,51 @@ func TestTeacherRecheckWarnsOnUnpinnedCommit(t *testing.T) {
 		t.Error("a teacher recheck must not consume an attempt")
 	}
 }
+
+// TestTeacherRecheckTakesEveryReviewer: the entry point is gated on the right
+// to review rather than on the teacher role, so a TA's recheck button works -
+// and it is still closed to the student, whose own rechecks go through Recheck
+// and count (SPEC §6, §8). The audit row is what tells the two apart
+// afterwards, so it carries the actor's role.
+func TestTeacherRecheckTakesEveryReviewer(t *testing.T) {
+	s, work, _, user := newIntakeFixture(t)
+	solveT1(t, s, work)
+
+	ta, err := s.DB.CreateUser(t.Context(), "tara", "Tara", store.RoleTA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, _, err := s.TeacherRecheck(t.Context(), ta, user.ID, "t1")
+	if err != nil {
+		t.Fatalf("a TA may recheck: %v", err)
+	}
+	got, _, err := s.DB.GetSubmission(t.Context(), sub.ID)
+	if err != nil {
+		t.Fatalf("submission #%d not recorded: %v", sub.ID, err)
+	}
+	if got.Counts {
+		t.Error("a staff recheck must not consume an attempt")
+	}
+
+	events, err := s.DB.ListEventsByTarget(t.Context(), user.Login, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logged bool
+	for _, e := range events {
+		if e.Kind != "recheck" {
+			continue
+		}
+		logged = true
+		if e.ActorRole != store.RoleTA {
+			t.Errorf("recheck by %s: actor role %q, want %q", e.ActorLogin, e.ActorRole, store.RoleTA)
+		}
+	}
+	if !logged {
+		t.Error("the recheck was not audited")
+	}
+
+	if _, _, err := s.TeacherRecheck(t.Context(), user, user.ID, "t1"); err == nil {
+		t.Error("a student reached the staff recheck")
+	}
+}

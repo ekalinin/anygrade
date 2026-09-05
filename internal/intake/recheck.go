@@ -32,12 +32,15 @@ func (s *Server) Recheck(ctx context.Context, userID int64, taskID string) (stor
 	return s.recheck(ctx, userID, taskID, false)
 }
 
-// TeacherRecheck re-grades a student's latest counting commit on a teacher's
+// TeacherRecheck re-grades a student's latest counting commit on a reviewer's
 // behalf: Admit(teacherRecheck=true) bypasses limits and deadlines, and the
-// submission never consumes an attempt (SPEC §6).
+// submission never consumes an attempt (SPEC §6). The name is the queue
+// policy's word for "not the student's own attempt", so a TA's recheck is a
+// teacher recheck to everything downstream; who actually asked for it is in
+// the audit row's actor and role.
 func (s *Server) TeacherRecheck(ctx context.Context, actor store.User, targetUserID int64, taskID string) (store.Submission, RecheckWarning, error) {
-	if actor.Role != "teacher" {
-		return store.Submission{}, "", fmt.Errorf("recheck: %q is not a teacher", actor.Login)
+	if !actor.CanReview() {
+		return store.Submission{}, "", fmt.Errorf("recheck: %q may not recheck other students' work", actor.Login)
 	}
 	sub, _, warn, err := s.recheck(ctx, targetUserID, taskID, true)
 	if err != nil {
@@ -48,7 +51,9 @@ func (s *Server) TeacherRecheck(ctx context.Context, actor store.User, targetUse
 		_ = s.DB.Log(ctx, store.Event{
 			ActorID: &actor.ID, Kind: "recheck",
 			Target: target.Login + "/" + taskID,
-			Detail: fmt.Sprintf("teacher recheck #%d", sub.ID),
+			// Not "teacher recheck": the actor's role is its own column now,
+			// and a TA writes this same row.
+			Detail: fmt.Sprintf("staff recheck #%d", sub.ID),
 		})
 	}
 	return sub, warn, nil

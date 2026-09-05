@@ -1,0 +1,14 @@
+-- The audit log recorded who acted and what they did, never what they were
+-- allowed to be while doing it. With a third role that stops being the same
+-- question: a TA's recheck and a teacher's recheck are the same row, and a
+-- later review has to be able to tell them apart (SPEC §10).
+--
+-- The role is written with the event and never joined from users afterwards.
+-- An account promoted from ta to teacher - or demoted - must not rewrite what
+-- its past actions were taken as, and the join would do exactly that.
+--
+-- Rows written before this column keep the empty value and render as unknown.
+-- Backfilling them with 'teacher' would be an invention twice over: students
+-- write audited events too (user.register, key.displaced, key.duplicate), and
+-- an actor's role today is a guess about the past rather than a record of it.
+ALTER TABLE events ADD COLUMN actor_role TEXT NOT NULL DEFAULT '';

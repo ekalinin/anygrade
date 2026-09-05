@@ -46,10 +46,16 @@ func scanUser(row scanner) (User, error) {
 }
 
 // Log implements AuditStore.
+//
+// The actor's role is read here instead of being passed in: Log runs inside
+// the request that took the action, so the subquery records the role held at
+// that moment - which is the point of storing it at all - and no caller can
+// forget it. A system event (nil actor) and an actor whose account is gone
+// both leave the role empty, exactly like rows written before it existed.
 func (s *DB) Log(ctx context.Context, e Event) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO events (actor_id, kind, target, detail, created_at)
-		VALUES (?, ?, ?, ?, ?)`,
-		e.ActorID, e.Kind, e.Target, e.Detail, fmtTime(time.Now()))
+		INSERT INTO events (actor_id, actor_role, kind, target, detail, created_at)
+		VALUES (?, COALESCE((SELECT role FROM users WHERE id = ?), ''), ?, ?, ?, ?)`,
+		e.ActorID, e.ActorID, e.Kind, e.Target, e.Detail, fmtTime(time.Now()))
 	return err
 }

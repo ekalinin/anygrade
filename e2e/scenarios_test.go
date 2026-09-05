@@ -422,6 +422,62 @@ func testTeacherPages(t *testing.T, e *env) {
 	}
 }
 
+// 11a. TA rights: a course assistant reviews work without touching accounts
+// (SPEC §8). The reviewing half answers exactly as it does for a teacher -
+// build-phase log included - and every route that changes the record answers
+// 404, not 403, so the refusal does not confirm the route exists.
+func testTARights(t *testing.T, e *env) {
+	out := runBin(t, "", "user", "add", "--login", "tanya", "--role", "ta", "--data-dir", e.dataDir)
+	token := reToken.FindString(out)
+	if token == "" {
+		t.Fatalf("no token in `user add --role ta` output:\n%s", out)
+	}
+	e.taClient = newClient(t)
+	login(t, e, e.taClient, "tanya", token)
+
+	sub := fmt.Sprintf("/submissions/%d", e.bobGreetSubID)
+	for _, target := range []string{
+		"/matrix", "/queue", "/students", "/students/bob", "/export/scores.csv",
+		sub, sub + "/logs/hidden", sub + "/logs/hidden?phase=build",
+	} {
+		if status, body := get(t, e.taClient, e.baseURL+target); status != http.StatusOK {
+			t.Errorf("ta GET %s: status %d, want 200, body:\n%s", target, status, body)
+		}
+	}
+	// The build phase is the one that compiled against the hidden tests, and
+	// the TA is meant to read it - that is the whole point of the decision.
+	if _, body := get(t, e.taClient, e.baseURL+sub+"/logs/hidden?phase=build"); !strings.Contains(body, hiddenSecret) {
+		t.Errorf("ta build log does not carry the hidden test output:\n%s", body)
+	}
+
+	if status, _ := get(t, e.taClient, e.baseURL+"/audit"); status != http.StatusNotFound {
+		t.Errorf("ta GET /audit: status %d, want 404", status)
+	}
+	for _, c := range []struct {
+		target string
+		form   url.Values
+	}{
+		{"/students/bob/token/reset", nil},
+		{"/students/bob/state", url.Values{"state": {"disabled"}}},
+		{"/students/bob/tasks/greet/override", url.Values{"score": {"100"}, "comment": {"nope"}}},
+	} {
+		resp, body := postForm(t, e.taClient, e.baseURL+c.target, c.form)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("ta POST %s: status %d, want 404, body:\n%s", c.target, resp.StatusCode, body)
+		}
+	}
+	// bob is untouched by the refusals above, and his page - which the TA does
+	// read - offers none of the controls behind them.
+	if status, body := get(t, e.taClient, e.baseURL+"/students/bob"); status != http.StatusOK {
+		t.Errorf("ta GET /students/bob: status %d", status)
+	} else if strings.Contains(body, "/token/reset") || strings.Contains(body, "/override") {
+		t.Errorf("the TA's student page offers account controls:\n%s", body)
+	}
+	if status, _ := get(t, e.bobClient, e.baseURL+"/"); status != http.StatusOK {
+		t.Errorf("bob's account was disabled by a refused request: status %d", status)
+	}
+}
+
 // 11. teacher pushes course update: a broken course push is rejected; the
 // same push, reverted, is accepted and reloads the course metadata.
 func testTeacherCourseUpdate(t *testing.T, e *env) {
@@ -1017,6 +1073,12 @@ func testLeaderboard(t *testing.T, e *env) {
 	if strings.Contains(body, "bob") {
 		t.Errorf("anonymized /leaderboard leaks bob's login to a student:\n%s", body)
 	}
+	// Staff keep the logins: anonymization is there so students cannot rank
+	// each other, and a TA who may open every submission would only be sent to
+	// the matrix for the same names (SPEC §8, §10).
+	if _, staff := get(t, e.taClient, e.baseURL+"/leaderboard"); !strings.Contains(staff, "bob") {
+		t.Errorf("anonymized /leaderboard hides the logins from a TA:\n%s", staff)
+	}
 	_, body = get(t, e.profClient, e.baseURL+"/leaderboard")
 	if !strings.Contains(body, "bob") {
 		t.Errorf("anonymized /leaderboard hides bob from the teacher too:\n%s", body)
@@ -1403,7 +1465,8 @@ func testHiddenTestsBoundary(t *testing.T, e *env) {
 		return fmt.Sprintf("%s/submissions/%d/logs/%s%s", e.baseURL, e.bobGreetSubID, check, query)
 	}
 
-	// The teacher, and only the teacher, can read the build phase.
+	// Staff, and only staff, can read the build phase (the TA scenario checks
+	// the other half of that).
 	status, body := get(t, e.profClient, logURL("hidden", "?phase=build"))
 	if status != http.StatusOK {
 		t.Fatalf("teacher GET build log: status %d, body:\n%s", status, body)

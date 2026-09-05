@@ -175,7 +175,7 @@ Semantics:
 - `$ANYGRADE_ARTIFACTS` is a directory at the workspace root, exported to both phases as an absolute path. It is the one thing the removal is guaranteed not to touch, so it is where a build phase leaves what its run phase executes.
 - Each phase gets the full `runner.timeout`: a phase is one command, and the timeout has always been one command's wall clock. A check with both phases can therefore occupy twice it. The duration the check reports is the sum of its phases - a check that takes 40s to compile and 2s to run is not a 2s check.
 - `required: true` checks are gates: on failure the remaining checks are skipped and the raw score is 0. With two phases the rule is unchanged - the run stops at the first failed gate - and it applies whichever phase the gate failed in. A gate that fails at build time skips the builds and the runs of every later check; a gate that fails at run time skips the runs of every later check even though their builds already happened. That wasted build work is accepted deliberately: reordering the phases to avoid it would put student code back on disk beside the hidden tests. Checks *before* the failed gate keep both of their phases and report a real result.
-- The build phase's output is **teacher-only** (§14). A check that fails there records no excerpt at all; the student is told that the build failed and nothing more.
+- The build phase's output is **staff-only** (§14). A check that fails there records no excerpt at all; the student is told that the build failed and nothing more.
 - Weights are normalized over the non-gate checks: raw score = score × (sum of passed weights / sum of all weights). A single check with any weight therefore behaves as all-or-nothing.
 - Weights must be `>= 0`. Because they are normalized, a negative one pushes the raw score outside `0..score` - weights 60 and -40 score 300 out of 100 - so `validate` rejects a negative weight on a non-gate check. Weight 0 stays legal and is what gates carry.
 - `workspace.include` (course defaults and per-task `workspace:` block, unioned) lists extra repo-relative paths - files or directories - exported into the check workspace alongside the task directory. Needed when tasks share build files, e.g. a course-root `go.mod`. Paths must exist and must not escape the repo.
@@ -222,11 +222,11 @@ Default `./.anygrade` next to the course repo (must be gitignored), overridable 
     students/<login>.git # bare per-student repos
   hidden/<hash>/         # cached clones of hidden-test repos, 0700
   logs/<submission-id>/  # raw check output, 0700
-    build/               # build-phase output, teacher-only (§14)
+    build/               # build-phase output, staff-only (§14)
   workspaces/            # ephemeral check workspaces, 0700
 ```
 
-A submission's log dir holds one file per check, named after the check: a name that is already file-name safe keeps its spelling (`build.log`), anything else - uppercase included, since macOS is case-insensitive by default - is sanitized and tagged with a hash of the original (`Build~<hash>.log`), so two checks of one task can never write to the same file. Build-phase output goes to `logs/<submission-id>/build/<same file name>`. A subdirectory rather than a suffixed name for two reasons: the names stay injective for free (a check `x` and a check `x.build` would otherwise fight over `x.build.log`), and the teacher-only rule becomes structural - everything student-facing reads the log dir itself and never descends into it (§14).
+A submission's log dir holds one file per check, named after the check: a name that is already file-name safe keeps its spelling (`build.log`), anything else - uppercase included, since macOS is case-insensitive by default - is sanitized and tagged with a hash of the original (`Build~<hash>.log`), so two checks of one task can never write to the same file. Build-phase output goes to `logs/<submission-id>/build/<same file name>`. A subdirectory rather than a suffixed name for two reasons: the names stay injective for free (a check `x` and a check `x.build` would otherwise fight over `x.build.log`), and the staff-only rule becomes structural - everything student-facing reads the log dir itself and never descends into it (§14).
 
 ## 6. Submission flow
 
@@ -335,7 +335,30 @@ Registration (configured in `course.yaml`):
   - Both refusals charge the same per-IP failure budget a wrong code does (§14). Neither is a wrong credential, but a free retry would leave a shut course answering an unbounded poll - waiting for the window to open or the cap to be raised, then racing in. Nothing legitimate is lost by charging: while registration is shut no attempt can succeed anyway, so the only effect of a spent budget is that the page says "too many attempts" instead of "registration is closed".
   - `validate` rejects a window that closes before (or exactly when) it opens and a negative cap. Either bound written under `mode: invite` is a *warning*: it can never apply, but it does not make the course unloadable - `course_code` under `mode: invite` has always been tolerated the same way.
 
-Roles: `student` and `teacher`. Teachers see everything, adjust scores, manage users, trigger rechecks, export CSV. The first teacher account is created via CLI.
+Roles: `student`, `ta` and `teacher`. Teachers see everything, adjust scores, manage users, trigger rechecks, export CSV. The first teacher account is created via CLI. Every role is settable from day one: `anygrade user add --role` and `user invite --role` take all three.
+
+A TA is a course assistant with the reviewing half of a teacher's rights and none of the account-management half. The line is not "what a TA may see" but "what a TA may decide":
+
+| | student | ta | teacher |
+|---|---|---|---|
+| own dashboard, task pages, own submissions | yes | yes | yes |
+| matrix, CSV export, students list, any student page | no | yes | yes |
+| any submission, its code, its full check log (build phase included) | no | yes | yes |
+| queue: cancel, recheck | no | yes | yes |
+| leaderboard: real logins when `anonymize` is on | no | yes | yes |
+| score overrides | no | no | yes |
+| token reset, SSH key deletion, deactivation, invites | no | no | yes |
+| audit log | no | no | yes |
+| git transport: push to another account's repo, push the course repo | no | no | yes |
+
+Two of those lines are decisions rather than consequences:
+
+- **The build phase's log** is a TA's too, although it is the phase that compiles against the hidden tests (§14). A reviewer who may read the run log and the student's code but not the compiler's words has to escalate every compile failure, which is most of what the role exists to absorb; and a TA who may recheck already runs the hidden tests and reads their output, so the build log shows them nothing the rest of the role does not.
+- **The anonymized leaderboard** shows a TA real logins, for the same reason it shows them to a teacher: anonymization exists so students cannot rank each other, and a TA who may open every submission would only be sent to the matrix for the same names.
+
+A TA is *not* a teacher on the git transport (§7): it grants read and write together, and the reviewing rights are read-only. The code a TA needs is served by the submission page, from the graded commit.
+
+Rights are asked as two questions - may this account review other people's work, and may it change the record - rather than compared against role names, so the routes are gated by the right they need and a fourth role would be a line in the table rather than an edit in every handler.
 
 ## 9. Scoring and deadlines
 
@@ -357,15 +380,16 @@ Student pages:
 - task page: statement (rendered task README), submission history with attempts left/cooldown state, recheck button;
 - submission page: per-check results, penalty breakdown, live log stream while running, full logs after.
 
-Teacher pages:
+Teacher pages (a TA reaches the reviewing ones; see the table in §8):
 
 - matrix: students × tasks with scores and statuses, filters, click-through to any submission and its code (view of the submitted commit);
-- student page: all submissions, token/key management, deactivate;
-- score adjustment with comment;
+- student page: all submissions, token/key management, deactivate - the account controls are drawn for teachers only, so a TA is never offered a button that refuses them;
+- score adjustment with comment (teacher only);
 - CSV export of the score matrix;
-- queue view: pending/running checks, cancel, recheck.
+- queue view: pending/running checks, cancel, recheck;
+- audit log (teacher only): every recorded action with the login **and the role** of the actor as it was when they acted, so a TA's recheck reads differently from a teacher's. Rows written before the role was recorded render as unknown rather than being backfilled with a guess.
 
-Leaderboard (if enabled): total scores ranked, visible to all authenticated users. `anonymize` replaces logins with stable aliases **for students**; teachers keep seeing logins. An alias is a keyed hash of the login over a per-instance secret kept in the data dir (`leaderboard.key`): stable for as long as that file lives, and not reproducible outside the server. A missing file is regenerated, which reshuffles every alias; a file that is not a hex-encoded secret aborts startup with an instruction to remove it and regenerate, rather than silently reshuffling the board. Anonymization exists so students cannot read each other's standings off the board, and §8 gives teachers full visibility anyway - hiding the names from them would only send them to the matrix for the same information, one click away.
+Leaderboard (if enabled): total scores ranked, visible to all authenticated users. `anonymize` replaces logins with stable aliases **for students**; teachers and TAs keep seeing logins. An alias is a keyed hash of the login over a per-instance secret kept in the data dir (`leaderboard.key`): stable for as long as that file lives, and not reproducible outside the server. A missing file is regenerated, which reshuffles every alias; a file that is not a hex-encoded secret aborts startup with an instruction to remove it and regenerate, rather than silently reshuffling the board. Anonymization exists so students cannot read each other's standings off the board, and §8 gives every reviewer full visibility anyway - hiding the names from them would only send them to the matrix for the same information, one click away.
 
 ### 10.1 Localization
 
@@ -393,10 +417,11 @@ anygrade user    add|list|remove|reset-token|add-key|invite ...
                               #      shown once (first teacher, scripted setup)
                               # invite: create an account and print a one-time
                               #      activation link; --csv for a whole roster
+                              # both take --role student|ta|teacher (§8)
 anygrade export  scores --format csv
 ```
 
-- `check` with no arguments detects tasks changed against upstream/HEAD; with arguments checks the named tasks. It uses the same runner code path as the server (docker or local per metadata) but never fetches hidden tests unless they are locally available - it is the student self-check and course-authoring tool. Build phases run there exactly as they do on the server, boundary included, so a course author gets the real behavior of a two-phase check on the machine they are authoring it on; usually there is simply nothing to remove. Nothing is teacher-only locally: both phases print their log paths, since the author owns the whole tree either way.
+- `check` with no arguments detects tasks changed against upstream/HEAD; with arguments checks the named tasks. It uses the same runner code path as the server (docker or local per metadata) but never fetches hidden tests unless they are locally available - it is the student self-check and course-authoring tool. Build phases run there exactly as they do on the server, boundary included, so a course author gets the real behavior of a two-phase check on the machine they are authoring it on; usually there is simply nothing to remove. Nothing is staff-only locally: both phases print their log paths, since the author owns the whole tree either way.
 - `check --runner local` overrides the per-task runner for students without docker; it runs task code unsandboxed on the host, which is acceptable at the self-check trust level (own machine, own code). No `--allow-local-runner` gate applies here - that gate is only for a non-loopback server.
 - `--tls-cert` and `--tls-key` are required together and make the web/git HTTP listener serve HTTPS. `--behind-proxy` trusts `X-Forwarded-Proto` from a proxy that terminates TLS instead, and is also what makes the failure limiter read `X-Forwarded-For`: without it every request behind a proxy shares one client address, and a few failed logins would exhaust the per-IP budget for the whole course. Both headers are forgeable by anyone who reaches the port, which is why neither is read without the flag. Without one of the two the token travels in the clear (§14).
 - Secrets (hidden-tests repo credentials) come from the environment (`ANYGRADE_HIDDEN_GIT_TOKEN`) or standard git credential helpers, never from the course repo; `validate` enforces that rule by rejecting a `hidden_tests.url` with credentials embedded in it.
@@ -415,9 +440,9 @@ SQLite tables:
 - `sessions` (id_hash, user_id, token_hash, created_at, expires_at) - web sessions; the cookie value is stored hashed, like tokens and invites, so the table is not a set of usable cookies. A hash cannot be derived from the values already stored, so the migration that introduced it empties the table: an upgrade signs everybody out once
 - `pushes` (id, user_id, ref, old_sha, new_sha, received_at, processed_at) - the intake log: every accepted push to a graded branch, recorded on arrival and graded afterwards, so a push is an event with its own boundaries and arrival time rather than a ref position
 - `submissions` (id, user_id, task_id, commit_sha, received_at, attempt_no, counts, status: queued|running|done|infra_error|rejected_deadline|rejected_limit, raw_score, penalty_percent, final_score, log_dir, worker_note, student_note, retries, retry_at, started_at, canceled_at) - `worker_note` is the teacher's, `student_note` the part its owner may read. They hold the same text wherever the writer produces nothing else (reject reason, tamper note, cancel, terminal prepare failure, the scrubbed hidden-tests message), and `student_note` is empty when the note is operator detail - a docker failure names the image and quotes the daemon, a prepare failure quotes a path inside the data dir (§14). A submission with no check results has nothing but its note to explain itself, so the submission page renders it on its own
-- `check_results` (submission_id, name, passed, exit_code, duration_ms, weight, skipped, timed_out, log_excerpt, build_failed) - `build_failed` says the check never reached its run phase, which is why `log_excerpt` is empty: the build phase's output is teacher-only (§14), so the row carries the fact and the UI renders a localized explanation, rather than storing a message
+- `check_results` (submission_id, name, passed, exit_code, duration_ms, weight, skipped, timed_out, log_excerpt, build_failed) - `build_failed` says the check never reached its run phase, which is why `log_excerpt` is empty: the build phase's output is staff-only (§14), so the row carries the fact and the UI renders a localized explanation, rather than storing a message
 - `score_overrides` (user_id, task_id, score, comment, teacher_id, created_at)
-- `events` (audit log: user/teacher actions)
+- `events` (audit log: id, actor_id, actor_role, kind, target, detail, created_at) - `actor_role` is the role the actor held at the moment of the action, written with the row rather than joined from `users` afterwards: a promotion must not rewrite what a past action was taken as. It is empty for system events and for rows written before the column existed (§8)
 
 There is no `canceled` status. A cancel writes `infra_error` with `retry_at` cleared, `counts` set to 0, `canceled_at` stamped and the worker note `canceled by teacher` - which is exactly what keeps the retry loop from re-arming it and the attempt from being consumed (§13).
 
@@ -436,8 +461,8 @@ Task definitions are not mirrored into the DB; metadata is always read from the 
 - Student pushes a branch other than the default: accepted and stored, but only default-branch pushes create submissions (stated in the push output).
 - Clock and timezones: all comparisons in UTC on the server clock; deadlines carry explicit offsets; UI renders in the course timezone.
 - `max_push_size` (course-wide, default 50 MB) guards against giant blobs. The server stops reading the pack itself, on top of git's own `receive.maxInputSize`, and the rejection is anygrade's own message: it names the limit and says how to recover (drop the large files from the commit and push again). A teacher pushing a new value gets it applied without a restart.
-- Very long logs: the on-disk log is capped at `runner.log_max` (default 10 MB per check) and ends with an explicit truncation marker; the excerpt in the DB/UI (default 64 KB per check) carries the same marker. A log the server could not write does not fail the check - the excerpt says the full log is missing. The full log is teacher-only (§14), offered both as a download and as an inline read in the browser - the same bytes behind the same check, served as plain text with `X-Content-Type-Options: nosniff` rather than inlined into a page, because a 10 MB log is what the browser's own text viewer is for; so is the build phase's, which is a separate file of the same check.
-- A check that failed in its build phase: no excerpt is stored - the phase's output is teacher-only - and no run-phase log file exists at all, so there is nothing for the live stream to tail either. The submission page says the check failed while being built and why the output is not there; the teacher gets the build log next to the ordinary one.
+- Very long logs: the on-disk log is capped at `runner.log_max` (default 10 MB per check) and ends with an explicit truncation marker; the excerpt in the DB/UI (default 64 KB per check) carries the same marker. A log the server could not write does not fail the check - the excerpt says the full log is missing. The full log is staff-only (§14), offered both as a download and as an inline read in the browser - the same bytes behind the same check, served as plain text with `X-Content-Type-Options: nosniff` rather than inlined into a page, because a 10 MB log is what the browser's own text viewer is for; so is the build phase's, which is a separate file of the same check.
+- A check that failed in its build phase: no excerpt is stored - the phase's output is staff-only - and no run-phase log file exists at all, so there is nothing for the live stream to tail either. The submission page says the check failed while being built and why the output is not there; the teacher gets the build log next to the ordinary one.
 
 ## 14. Security considerations
 
@@ -451,8 +476,8 @@ Student code is untrusted:
 Hidden tests are confidential against the network and the UI, not against the code they test:
 
 - They never enter student-visible repos, push output, or the student-visible parts of the UI, and every hidden-tests failure a student can see is scrubbed to a fixed message.
-- Check logs are shown to students as produced by their tests - the stored excerpt and the live stream - while the raw full log is teacher-only in every form it is served - downloaded or read in the browser - because student code runs beside the hidden tests.
-- A build phase's log is teacher-only in full, not merely as a download: it is the phase that compiles against the hidden tests, so a compiler quoting a hidden source line lands in it. No excerpt of it is stored, the live stream does not tail it (it lives in a subdirectory of the log dir, §5.1), and a check that failed there reaches the student as the bare fact that the build failed. The cost is real - a student whose own code does not compile is told nothing about why - so a course that wants compile errors visible keeps a run-only gate over the student's own code (`go build ./...`, which does not compile `_test.go` files and therefore cannot quote a hidden one) and puts only the hidden-test compilation in a build phase.
+- Check logs are shown to students as produced by their tests - the stored excerpt and the live stream - while the raw full log is staff-only in every form it is served - downloaded or read in the browser - because student code runs beside the hidden tests. "Staff" is teachers and TAs (§8): the line the log is on is between the student and the people reviewing their work, not between the two staff roles.
+- A build phase's log is staff-only in full, not merely as a download: it is the phase that compiles against the hidden tests, so a compiler quoting a hidden source line lands in it. No excerpt of it is stored, the live stream does not tail it (it lives in a subdirectory of the log dir, §5.1), and a check that failed there reaches the student as the bare fact that the build failed. The cost is real - a student whose own code does not compile is told nothing about why - so a course that wants compile errors visible keeps a run-only gate over the student's own code (`go build ./...`, which does not compile `_test.go` files and therefore cannot quote a hidden one) and puts only the hidden-test compilation in a build phase.
 - With build phases the filesystem *is* a boundary for the run phase: the hidden sources are removed from the workspace before any run phase starts (§6.1), so a solution that dumps files finds nothing to dump. What that buys, exactly, is that the sources are not on disk while the student's code executes - not secrecy against a determined student, since the compiled artifact still carries test names, string literals and line numbers, and a process can read its own executable. It is reverse engineering instead of `cat`, and it is worth having for that reason alone.
 - Without build phases - and always, for an interpreted language, where the test source must be present at run time - the sandbox is the boundary, not the filesystem. Hidden tests are placed read-only, but they sit in the same workspace as the solution and run under the same uid, because the compiler or interpreter has to read them; a student who deliberately dumps them into their own output reads them back through the excerpt and the live stream. Course authors are advised to keep hidden-test sources out of error output.
 
@@ -471,7 +496,7 @@ On the server's own filesystem:
 - The data dir is created 0700 and the database with its WAL siblings 0600. An existing wider data dir is tightened at startup, but only at the top level: the trees underneath - repos, hidden-test cache, logs, workspaces - are owner-only because each package creates them that way, which is also what covers git's own modes inside a repo.
 - The intake hook socket is owner-only and refuses peers of any other uid, so a local account cannot feed the server submissions through it. The uid check is implemented on linux and darwin, the only released platforms; anywhere else it reports itself unsupported and the socket mode is the whole guard.
 
-The web UI enforces role checks on every route; students can only read their own submissions.
+The web UI enforces a rights check on every route that is not open to any authenticated account; students can only read their own submissions. A refusal is a 404, never a 403, for every role alike - a TA turned away from an account-management route learns no more about it than a student does.
 
 ## 15. Key decisions and tradeoffs
 
@@ -487,13 +512,13 @@ The web UI enforces role checks on every route; students can only read their own
 | Scoring | Weighted check groups | Partial credit without per-test output parsing; one group degrades to all-or-nothing |
 | Storage | SQLite + files for logs | Single-binary ops, transactions, easy backup; enough for course-sized load |
 | UI | SSR + htmx + SSE, embedded | No frontend toolchain; SPA/JSON API deferred |
-| Scope | 1 instance = 1 course, student+teacher roles | Simplest possible model; multi-course via multiple instances |
+| Scope | 1 instance = 1 course, student/ta/teacher roles | Simplest possible model; multi-course via multiple instances |
+| Rights | Two predicates (review, administer) rather than role comparisons | A role is a row in one table instead of a literal in every handler; the cost is that a right cannot be granted to one account alone |
 
 ## 16. Future work
 
 - Plagiarism detection (or an export hook for MOSS/JPlag).
 - Per-test-case parsers (`go test -json`, JUnit XML, TAP) for finer UI detail and proportional scoring.
-- TA role with limited teacher rights.
 - JSON API as a stable contract for scripts and bots.
 - OAuth login.
 - Webhooks/notifications (Telegram, email) on check completion.

@@ -89,6 +89,10 @@ type env struct {
 	bobKey    string // path to the ed25519 private key (no extension)
 	bobClient *http.Client
 
+	// The course assistant, created by the TA scenario and reused by the
+	// leaderboard one (staff see real logins on an anonymized board).
+	taClient *http.Client
+
 	profCloneDir string
 
 	// Submission ids threaded between ordered subtests.
@@ -110,6 +114,7 @@ func TestE2E(t *testing.T) {
 	t.Run("invite and ssh transport", func(t *testing.T) { testInviteAndSSH(t, e) })
 	t.Run("hidden tests boundary", func(t *testing.T) { testHiddenTestsBoundary(t, e) })
 	t.Run("teacher pages", func(t *testing.T) { testTeacherPages(t, e) })
+	t.Run("ta rights", func(t *testing.T) { testTARights(t, e) })
 	t.Run("teacher pushes course update", func(t *testing.T) { testTeacherCourseUpdate(t, e) })
 	t.Run("language switcher", func(t *testing.T) { testLanguageSwitcher(t, e) })
 	t.Run("auth and rate limit", func(t *testing.T) { testAuthAndRateLimit(t, e) })

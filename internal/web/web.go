@@ -65,7 +65,7 @@ type Handler struct {
 }
 
 // New builds the site mux. Everything except /login, /invite, /register, and
-// /static/ requires a session; teacher routes add a role check (SPEC §14).
+// /static/ requires a session; staff routes add a rights check (SPEC §14).
 func New(h *Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", h.loginForm)
@@ -96,32 +96,47 @@ func New(h *Handler) http.Handler {
 	mux.Handle("POST /settings/keys/verify", h.requireAuth(h.proveOwnKey))
 	mux.Handle("POST /settings/keys/{id}/delete", h.requireAuth(h.delOwnKey))
 
-	// Teacher only.
-	mux.Handle("GET /matrix", h.requireTeacher(h.matrixPage))
-	mux.Handle("GET /matrix/stream", h.requireTeacher(h.matrixStream))
-	mux.Handle("GET /export/scores.csv", h.requireTeacher(h.exportCSV))
-	mux.Handle("GET /queue", h.requireTeacher(h.queuePage))
-	mux.Handle("GET /queue/stream", h.requireTeacher(h.queueStream))
-	mux.Handle("POST /queue/{id}/cancel", h.requireTeacher(h.cancelSubmission))
-	mux.Handle("POST /queue/{id}/recheck", h.requireTeacher(h.recheckSubmission))
-	mux.Handle("GET /students", h.requireTeacher(h.studentsPage))
-	mux.Handle("GET /students/{login}", h.requireTeacher(h.studentPage))
-	mux.Handle("POST /students/{login}/tasks/{id}/recheck", h.requireTeacher(h.teacherRecheck))
+	// Reviewing other people's work: teachers and TAs (store.User.CanReview).
+	mux.Handle("GET /matrix", h.requireReview(h.matrixPage))
+	mux.Handle("GET /matrix/stream", h.requireReview(h.matrixStream))
+	mux.Handle("GET /export/scores.csv", h.requireReview(h.exportCSV))
+	mux.Handle("GET /queue", h.requireReview(h.queuePage))
+	mux.Handle("GET /queue/stream", h.requireReview(h.queueStream))
+	mux.Handle("POST /queue/{id}/cancel", h.requireReview(h.cancelSubmission))
+	mux.Handle("POST /queue/{id}/recheck", h.requireReview(h.recheckSubmission))
+	mux.Handle("GET /students", h.requireReview(h.studentsPage))
+	mux.Handle("GET /students/{login}", h.requireReview(h.studentPage))
+	mux.Handle("POST /students/{login}/tasks/{id}/recheck", h.requireReview(h.teacherRecheck))
+	mux.Handle("GET /students/{login}/submissions/{id}/code", h.requireReview(h.codeList))
+	mux.Handle("GET /students/{login}/submissions/{id}/code/{path...}", h.requireReview(h.codeFile))
+
+	// Changing the record: teachers only (store.User.CanAdminister).
 	mux.Handle("POST /students/{login}/tasks/{id}/override", h.requireTeacher(h.setOverride))
 	mux.Handle("POST /students/{login}/tasks/{id}/override/delete", h.requireTeacher(h.clearOverride))
 	mux.Handle("POST /students/{login}/token/reset", h.requireTeacher(h.adminResetToken))
 	mux.Handle("POST /students/{login}/state", h.requireTeacher(h.adminSetState))
 	mux.Handle("POST /students/{login}/keys/{id}/delete", h.requireTeacher(h.adminDeleteKey))
-	mux.Handle("GET /students/{login}/submissions/{id}/code", h.requireTeacher(h.codeList))
-	mux.Handle("GET /students/{login}/submissions/{id}/code/{path...}", h.requireTeacher(h.codeFile))
 	mux.Handle("GET /audit", h.requireTeacher(h.auditPage))
 	return h.secureContext(mux)
 }
 
-// requireTeacher layers the role check over requireAuth (SPEC §14).
+// requireReview and requireTeacher are the two rights of the role table
+// (store/roles.go) as middleware; a route is gated by the right it needs, not
+// by the roles that happen to hold it today.
+func (h *Handler) requireReview(next http.HandlerFunc) http.Handler {
+	return h.requireRight(store.User.CanReview, next)
+}
+
 func (h *Handler) requireTeacher(next http.HandlerFunc) http.Handler {
+	return h.requireRight(store.User.CanAdminister, next)
+}
+
+// requireRight layers one right over requireAuth (SPEC §14). A refusal is a
+// 404 for a TA exactly as it is for a student: the answer must not tell the
+// caller that the route exists and they are merely not allowed on it.
+func (h *Handler) requireRight(has func(store.User) bool, next http.HandlerFunc) http.Handler {
 	return h.requireAuth(func(w http.ResponseWriter, r *http.Request) {
-		if user(r).Role != "teacher" {
+		if !has(user(r)) {
 			http.NotFound(w, r) // do not leak the route's existence
 			return
 		}
@@ -129,7 +144,7 @@ func (h *Handler) requireTeacher(next http.HandlerFunc) http.Handler {
 	})
 }
 
-// canSee is the per-object access rule: own data, or teacher (SPEC §14).
+// canSee is the per-object access rule: own data, or a reviewer (SPEC §14).
 func canSee(u store.User, ownerID int64) bool {
-	return u.ID == ownerID || u.Role == "teacher"
+	return u.ID == ownerID || u.CanReview()
 }

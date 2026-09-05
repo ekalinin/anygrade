@@ -5,6 +5,9 @@
 </h1>
 {{if .Flash}}<p class="flash">{{tFlash .Flash}}</p>{{end}}
 
+{{/* Account management is the teacher's half of the page; a TA reads the same
+     page without it, so no control here ever leads to a 404 (SPEC §8). */}}
+{{if .User.Admin}}
 <section class="admin-actions">
   <form method="post" action="/students/{{.Student.Login}}/token/reset" class="inline">
     <button type="submit">{{t "student.reset_token"}}</button>
@@ -17,6 +20,7 @@
     {{end}}
   </form>
 </section>
+{{end}}
 
 <h2>{{t "common.tasks"}}</h2>
 <table>
@@ -32,6 +36,7 @@
       {{if .Override}}<span class="pen">{{score .Override.Score}}</span>{{if .Override.Comment}} <span class="note">{{.Override.Comment}}</span>{{end}}{{else}}<span class="den">&mdash;</span>{{end}}
     </td>
     <td class="admin-cell">
+      {{if $.User.Admin}}
       <form method="post" action="/students/{{$login}}/tasks/{{.Task.ID}}/override" class="inline override-form">
         <input name="score" type="number" step="0.1" min="0" placeholder="{{t "student.score_placeholder"}}" required>
         <input name="comment" placeholder="{{t "student.comment_placeholder"}}" required>
@@ -41,6 +46,7 @@
       <form method="post" action="/students/{{$login}}/tasks/{{.Task.ID}}/override/delete" class="inline">
         <button type="submit" class="linklike">{{t "common.clear"}}</button>
       </form>
+      {{end}}
       {{end}}
       <form method="post" action="/students/{{$login}}/tasks/{{.Task.ID}}/recheck" class="inline">
         <button type="submit" class="linklike">{{t "common.recheck"}}</button>
@@ -83,17 +89,17 @@
 {{if .Keys}}
 <ul>{{range .Keys}}<li><code>{{.Fingerprint}}</code> <span class="hint">{{t "common.added"}} {{fmtTime .CreatedAt}}</span>
   {{if not .VerifiedAt}}<span class="hint" title="{{t "common.unproven_hint"}}">{{t "common.unproven"}}</span>{{end}}
-  <form method="post" action="/students/{{$login}}/keys/{{.ID}}/delete" class="inline"><input type="hidden" name="fingerprint" value="{{.Fingerprint}}"><button type="submit" class="linklike">{{t "settings.remove"}}</button></form>
+  {{if $.User.Admin}}<form method="post" action="/students/{{$login}}/keys/{{.ID}}/delete" class="inline"><input type="hidden" name="fingerprint" value="{{.Fingerprint}}"><button type="submit" class="linklike">{{t "settings.remove"}}</button></form>{{end}}
 </li>{{end}}</ul>
 {{else}}<p class="hint">{{t "common.no_keys"}}</p>{{end}}
 
 <h2>{{t "student.recent_activity"}}</h2>
 {{if .Events}}
 <table>
-  <thead><tr><th>{{t "common.when"}}</th><th>{{t "common.actor"}}</th><th>{{t "student.action_col"}}</th><th>{{t "common.target"}}</th><th>{{t "common.detail"}}</th></tr></thead>
+  <thead><tr><th>{{t "common.when"}}</th><th>{{t "common.actor"}}</th><th>{{t "common.role"}}</th><th>{{t "student.action_col"}}</th><th>{{t "common.target"}}</th><th>{{t "common.detail"}}</th></tr></thead>
   <tbody>
   {{range .Events}}
-  <tr><td>{{fmtTime .CreatedAt}}</td><td>{{if .ActorLogin}}{{.ActorLogin}}{{else}}{{t "common.system"}}{{end}}</td><td>{{.Kind}}</td><td>{{.Target}}</td><td>{{.Detail}}</td></tr>
+  <tr><td>{{fmtTime .CreatedAt}}</td><td>{{if .ActorLogin}}{{.ActorLogin}}{{else}}{{t "common.system"}}{{end}}</td><td>{{template "actor-role" .ActorRole}}</td><td>{{.Kind}}</td><td>{{.Target}}</td><td>{{.Detail}}</td></tr>
   {{end}}
   </tbody>
 </table>

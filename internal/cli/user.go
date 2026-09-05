@@ -59,7 +59,7 @@ func userAdd(args []string) error {
 	fs := flag.NewFlagSet("user add", flag.ContinueOnError)
 	login := fs.String("login", "", "user login")
 	name := fs.String("name", "", "display name")
-	role := fs.String("role", "student", "role: student|teacher")
+	role := fs.String("role", "student", "role: student|ta|teacher")
 	dataDir := fs.String("data-dir", ".anygrade", "anygrade data directory")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -70,8 +70,8 @@ func userAdd(args []string) error {
 	if !ident.ValidLogin(*login) {
 		return fmt.Errorf("invalid login %q (lowercase letters, digits, ._-)", *login)
 	}
-	if *role != "student" && *role != "teacher" {
-		return fmt.Errorf("--role must be student or teacher, got %q", *role)
+	if !store.ValidRole(*role) {
+		return fmt.Errorf("--role must be student, ta or teacher, got %q", *role)
 	}
 
 	ctx := context.Background()
@@ -252,15 +252,15 @@ func userInvite(args []string) error {
 	login := fs.String("login", "", "user login")
 	name := fs.String("name", "", "display name")
 	csvPath := fs.String("csv", "", "CSV roster file (login[,display_name] per row) instead of --login/--name")
-	role := fs.String("role", "student", "role: student|teacher")
+	role := fs.String("role", "student", "role: student|ta|teacher")
 	expires := fs.Duration("expires", 336*time.Hour, "invite validity duration")
 	baseURL := fs.String("base-url", "http://localhost:8080", "base URL for the invite link")
 	dataDir := fs.String("data-dir", ".anygrade", "anygrade data directory")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *role != "student" && *role != "teacher" {
-		return fmt.Errorf("--role must be student or teacher, got %q", *role)
+	if !store.ValidRole(*role) {
+		return fmt.Errorf("--role must be student, ta or teacher, got %q", *role)
 	}
 
 	var roster []rosterEntry

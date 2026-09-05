@@ -27,17 +27,17 @@ type submissionData struct {
 	// Panes pre-renders one log pane per metadata check, so the SSE stream
 	// never has to create elements dynamically (design risk #4 avoidance).
 	Panes []logPane
-	// CanDownloadLogs gates the raw full-log download to teachers (SPEC §14:
-	// students see the log as their tests produced it, teachers see it whole).
+	// CanDownloadLogs gates the raw full-log download to reviewers (SPEC §14:
+	// students see the log as their tests produced it, staff see it whole).
 	CanDownloadLogs bool
 	// BuildChecks names the checks that currently declare a build phase, so
-	// the teacher gets its (teacher-only) log even when the build succeeded.
+	// a reviewer gets its (staff-only) log even when the build succeeded.
 	// A row's own BuildFailed covers the history the metadata has moved on
 	// from.
 	BuildChecks map[string]bool
 	// Note is the worker note this viewer may read. A submission with no check
 	// results has nothing else to explain itself, so the note is rendered on
-	// its own - but only the teacher gets it whole: the student reads the
+	// its own - but only a reviewer gets it whole: the student reads the
 	// student-safe projection the writer left behind, empty whenever the note
 	// is operator detail (SPEC §14).
 	Note     string
@@ -74,12 +74,12 @@ func (h *Handler) submissionData(sub store.Submission, checks []store.CheckRow, 
 		Sub:             sub,
 		Status:          subDisplayStatus(sub),
 		Checks:          checks,
-		CanDownloadLogs: viewer.Role == "teacher",
+		CanDownloadLogs: viewer.CanReview(),
 		Note:            sub.StudentNote,
 		Running:         !terminalSubmission(sub),
 		Rejected:        sub.Status == store.StatusRejectedDeadline || sub.Status == store.StatusRejectedLimit,
 	}
-	if viewer.Role == "teacher" {
+	if viewer.CanReview() {
 		data.Note = sub.WorkerNote
 	}
 	if task, _, ok := h.Course.Get().Task(sub.TaskID); ok {
@@ -130,8 +130,8 @@ func (h *Handler) submissionFragment(w http.ResponseWriter, r *http.Request) {
 // the run phase's; `?view=1` hands the bytes to the browser to read instead of
 // to save.
 //
-// Teachers only (SPEC §14: "check logs are shown to students as produced by
-// their tests; teachers see full logs"). Student code runs under the same UID
+// Reviewers only (SPEC §14: "check logs are shown to students as produced by
+// their tests; staff see full logs"). Student code runs under the same UID
 // as the hidden tests copied into the workspace, so a solution can read them
 // and print them; handing their own author the raw log would turn that into an
 // exfiltration channel. The stored excerpt and the live stream stay with the
@@ -141,6 +141,10 @@ func (h *Handler) submissionFragment(w http.ResponseWriter, r *http.Request) {
 // the hidden tests, so a compiler quoting a hidden source line lands in its
 // log. Nothing of it reaches the student anywhere - no excerpt is stored and
 // the live stream does not tail it - and this route is the only way to read it.
+// A TA reads it too: the person helping a student through a compile failure is
+// exactly the one who needs the compiler's words, and a reviewer who may run
+// the hidden tests and read their output has no smaller view of them than the
+// build log offers.
 //
 // The check name is validated by membership in this submission's results, not
 // by shape: metadata only requires a name to be non-empty and unique within the
@@ -152,7 +156,7 @@ func (h *Handler) submissionLog(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if user(r).Role != "teacher" {
+	if !user(r).CanReview() {
 		http.NotFound(w, r) // 404, not 403: never leak what exists (SPEC §14)
 		return
 	}
