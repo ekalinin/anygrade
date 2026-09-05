@@ -161,18 +161,32 @@ func DeriveStatus(history []store.Submission, taskScore int, overridden bool) st
 	}
 }
 
-// DisplayScore picks the shown score per the course scoring policy
-// (SPEC §9: best|latest over done submissions).
-func DisplayScore(history []store.Submission, policy string) *float64 {
-	var score *float64
+// Winner is the submission the course scoring policy counts (SPEC §9:
+// best|latest over done submissions), or nil when the history has none. It is
+// the whole rule: DisplayScore reads its score, and the plagiarism corpus
+// export reads its commit, so the tree a teacher is handed for a similarity
+// run is by construction the tree the grade came from. `best` keeps the
+// earliest of equally good submissions, which is the one that earned the
+// score first.
+func Winner(history []store.Submission, policy string) *store.Submission {
+	var win *store.Submission
 	for i := range history {
 		s := &history[i]
 		if s.Status != store.StatusDone || s.FinalScore == nil {
 			continue
 		}
-		if policy == "latest" || score == nil || *s.FinalScore > *score {
-			score = s.FinalScore
+		if policy == "latest" || win == nil || *s.FinalScore > *win.FinalScore {
+			win = s
 		}
 	}
-	return score
+	return win
+}
+
+// DisplayScore picks the shown score per the course scoring policy
+// (SPEC §9: best|latest over done submissions).
+func DisplayScore(history []store.Submission, policy string) *float64 {
+	if win := Winner(history, policy); win != nil {
+		return win.FinalScore
+	}
+	return nil
 }
