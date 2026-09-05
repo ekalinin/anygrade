@@ -206,6 +206,27 @@ checks:
 const limitedReadme = "# Limited\n\nTwo attempts.\n"
 const limitedNotes = "todo\n"
 
+// retiredTaskYAML is the fixture's disposable task: nothing else touches it, so
+// the task-removed scenario can delete it from the course repo without taking
+// another scenario down with it. The check sleeps for whatever the solution
+// file says, which is how that scenario decides how long one submission holds
+// its (student, task) queue slot - and therefore how long the next one stays
+// `queued` while the course is swapped underneath it.
+const retiredTaskYAML = `name: "Retired"
+score: 10
+
+solution_files:
+  - notes.txt
+
+checks:
+  - name: check
+    weight: 1
+    run: sleep "$(cat notes.txt)"
+`
+
+const retiredReadme = "# Retired\n\nDeleted from the course while the suite runs.\n"
+const retiredNotes = "todo\n"
+
 // hiddenSecret is printed by the hidden test and by nothing else, so finding
 // it in a response is proof that hidden-test output reached that reader.
 const hiddenSecret = "hidden-marker-e2e-secret"
@@ -264,6 +285,10 @@ func writeCourseFixture(t *testing.T, root, hiddenDir string) string {
 	writeFile(t, filepath.Join(dir, "tasks", "limited", "task.yaml"), limitedTaskYAML)
 	writeFile(t, filepath.Join(dir, "tasks", "limited", "README.md"), limitedReadme)
 	writeFile(t, filepath.Join(dir, "tasks", "limited", "notes.txt"), limitedNotes)
+
+	writeFile(t, filepath.Join(dir, "tasks", "retired", "task.yaml"), retiredTaskYAML)
+	writeFile(t, filepath.Join(dir, "tasks", "retired", "README.md"), retiredReadme)
+	writeFile(t, filepath.Join(dir, "tasks", "retired", "notes.txt"), retiredNotes)
 
 	git(t, dir, nil, "init", "-q", "-b", "main")
 	git(t, dir, nil, "add", ".")
