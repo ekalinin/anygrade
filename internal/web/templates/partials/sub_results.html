@@ -19,9 +19,15 @@
       {{else}}<span class="badge st-failed">{{t "status.fail"}}</span>{{end}}
     </td>
     <td>{{.Duration}}</td>
+    {{/* Each phase is one file offered two ways, so the phase is the label and
+         read/save are the actions under it - otherwise a build phase leaves
+         four bare links in one cell with no clue which pair is which. */}}
     {{if $.CanDownloadLogs}}<td>
-      {{if not .BuildFailed}}<a href="/submissions/{{$.Sub.ID}}/logs/{{.Name}}">{{t "common.download"}}</a>{{end}}
-      {{if or .BuildFailed (index $.BuildChecks .Name)}}<a href="/submissions/{{$.Sub.ID}}/logs/{{.Name}}?phase=build">{{t "sub.build_log"}}</a>{{end}}
+      {{if not .BuildFailed}}<span class="logs"><a href="/submissions/{{$.Sub.ID}}/logs/{{.Name}}?view=1">{{t "common.view"}}</a>
+      <a href="/submissions/{{$.Sub.ID}}/logs/{{.Name}}">{{t "common.download"}}</a></span>{{end}}
+      {{if or .BuildFailed (index $.BuildChecks .Name)}}<span class="logs">{{t "sub.build_log"}}:
+      <a href="/submissions/{{$.Sub.ID}}/logs/{{.Name}}?phase=build&amp;view=1">{{t "common.view"}}</a>
+      <a href="/submissions/{{$.Sub.ID}}/logs/{{.Name}}?phase=build">{{t "common.download"}}</a></span>{{end}}
     </td>{{end}}
   </tr>
   {{end}}
