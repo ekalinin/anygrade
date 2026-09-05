@@ -252,12 +252,50 @@ anygrade check   [--runner local|docker] [--timeout D] [--keep] [-v] [TASK ...]
 anygrade validate
 anygrade user    add|list|remove|invite|reset-token|add-key ...
 anygrade export  scores --format csv
+                 submissions --task ID [--format dir|zip] [--out PATH]
+                             [--all-attempts]
 anygrade version
 ```
 
 `serve --local` runs with a single implicit user and no auth for offline use; it refuses to bind to non-loopback addresses, so the listen addresses default to `127.0.0.1:8080` and `127.0.0.1:2222` in that mode.
 
 Anything else should be served over TLS: either give `serve` a certificate (`--tls-cert` and `--tls-key`, both or neither), or put it behind a reverse proxy that terminates TLS and add `--behind-proxy`. Without one of the two the personal token - which is both the web login credential and the git password - crosses the network in the clear on every push and every login, and `serve` says so at startup. `--behind-proxy` is also what makes anygrade trust `X-Forwarded-Proto` and mark the session cookie `Secure`, and what makes the failed-login limiter read `X-Forwarded-For`. Set it whenever there really is a proxy: without it every request arrives from the proxy's address, so the whole course shares one budget and a few failed logins lock everyone out. Leave it off when there is not - both headers are forgeable by anyone who reaches the port.
+
+## Plagiarism checks
+
+anygrade does not compare solutions. It hands you the corpus and gets out of the way - similarity detection is a field with real tools in it, and a half-built one in here would be worse than none.
+
+```
+anygrade export submissions --task 01-intro --out /tmp/01-intro
+```
+
+writes one directory per student, holding only that task's `solution_files`, taken from the commit pinned at `refs/anygrade/submissions/<id>` - so a force push cannot rewrite what you are looking at:
+
+```
+/tmp/01-intro/
+  _template/main.go     # the authoritative starter file, for the checker to subtract
+  alice/main.go
+  bob/main.go
+  carol/main.go
+```
+
+The authoritative task files (open tests, `task.yaml`, build files) are identical in every submission by construction, so they are left out; they would be the strongest match in the run and would tell you nothing.
+
+Each student contributes the submission the course scoring policy counts (`best` or `latest`) - the one their grade rests on. `--all-attempts` exports every recorded submission instead, as `alice@142` (the submission id, so a hit links straight back to `/submissions/142`). It catches the student who copied and then rewrote, and it multiplies the corpus by the number of pushes, which is why it is not the default.
+
+`_template/` is the base code. Point the checker at it, or the shared skeleton dominates every pair:
+
+```
+# JPlag: --bc takes the name of a subdirectory of the root
+java -jar jplag.jar -l go --bc=_template /tmp/01-intro
+
+# MOSS: -b marks base files, one -b per file
+moss -l cc -b /tmp/01-intro/_template/main.go /tmp/01-intro/*/main.go
+```
+
+A login can never start with `_`, so `_template` cannot be shadowed by a student directory. `--format zip --out corpus.zip` packs the identical tree into an archive (`--out -` streams it to stdout) for the upload forms that want one file.
+
+The export reads the server's repos, so run it against the data dir (`--data-dir`, or from the course repo where `.anygrade/` lives). A student whose pinned commit has gone missing is named on stderr and the command exits non-zero; a solution file the student never committed is a warning, since grading used the template in its place and copying that into their tree would make every such student look identical.
 
 ## Security
 

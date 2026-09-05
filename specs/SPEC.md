@@ -18,7 +18,7 @@ One running instance serves exactly one course.
 
 ## 2. Non-goals (v1)
 
-- Plagiarism detection. All solutions live in per-student git repos, so the data for later analysis is preserved. Future extension.
+- Plagiarism detection. All solutions live in per-student git repos, so the data for later analysis is preserved; `export submissions` (§11) hands that data to a real checker, and the comparison stays outside anygrade.
 - Multi-course instances. Run one process per course.
 - OAuth / external identity providers.
 - Per-test-case result parsing (JUnit XML, `go test -json`). v1 scores by check groups via exit codes; parsers are a future extension.
@@ -394,6 +394,9 @@ anygrade user    add|list|remove|reset-token|add-key|invite ...
                               # invite: create an account and print a one-time
                               #      activation link; --csv for a whole roster
 anygrade export  scores --format csv
+                 submissions --task ID [--format dir|zip] [--out PATH]
+                             [--all-attempts]
+                              # per-task corpus for a similarity checker
 ```
 
 - `check` with no arguments detects tasks changed against upstream/HEAD; with arguments checks the named tasks. It uses the same runner code path as the server (docker or local per metadata) but never fetches hidden tests unless they are locally available - it is the student self-check and course-authoring tool. Build phases run there exactly as they do on the server, boundary included, so a course author gets the real behavior of a two-phase check on the machine they are authoring it on; usually there is simply nothing to remove. Nothing is teacher-only locally: both phases print their log paths, since the author owns the whole tree either way.
@@ -402,6 +405,7 @@ anygrade export  scores --format csv
 - Secrets (hidden-tests repo credentials) come from the environment (`ANYGRADE_HIDDEN_GIT_TOKEN`) or standard git credential helpers, never from the course repo; `validate` enforces that rule by rejecting a `hidden_tests.url` with credentials embedded in it.
 - `ANYGRADE_HIDDEN_LOCAL_ROOTS` is a colon-separated list of absolute roots (a relative entry is ignored and reported, so it can only narrow the list) that `hidden_tests: source: local` may read from; unset means unrestricted. Recommended whenever the teachers who push `course.yaml` are not the administrators of the machine, since a local hidden-tests path otherwise reaches any directory the server can read. `anygrade check` reads the working copy and is not subject to it.
 - `export scores --format csv`, and the same export in the teacher UI, prefix a cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return with an apostrophe, so a login or task id cannot become a formula in a spreadsheet.
+- `export submissions --task ID` writes one task's solutions as a corpus for MOSS, JPlag or any other similarity checker; anygrade compares nothing itself (§2, §16). One directory per student, holding only the task's `solution_files` read from the commit pinned at `refs/anygrade/submissions/<id>` (§6) - the authoritative files are identical in every submission by construction and would drown the signal. By default each student contributes the submission the scoring policy counts (§9), which is the one a grade would be defended on; `--all-attempts` exports every recorded submission instead, as `<login>@<submission-id>`, which catches "copied, then rewrote" and multiplies the corpus. The task template is written alongside as `_template/` - a login must start with a letter or a digit, so no student directory can take that name - and a checker is pointed at it to subtract the starter files. `--format zip` packs the same tree; `--out -` streams it to stdout. Reading the pinned refs needs the server's repos, so the command works against the data dir, not a working copy. A student whose pin is gone is reported and skipped, and the command exits non-zero; a `solution_file` absent from the submitted commit is a warning - grading used the template there, and writing the template into the student's tree would make every such student look identical.
 
 ## 12. Storage model (sketch)
 
@@ -491,7 +495,7 @@ The web UI enforces role checks on every route; students can only read their own
 
 ## 16. Future work
 
-- Plagiarism detection (or an export hook for MOSS/JPlag).
+- Plagiarism detection itself. The export hook for MOSS/JPlag is done (`export submissions`, §11); comparing is a research area with real tools in it, and a second-rate in-tree implementation would be worse than none.
 - Per-test-case parsers (`go test -json`, JUnit XML, TAP) for finer UI detail and proportional scoring.
 - TA role with limited teacher rights.
 - JSON API as a stable contract for scripts and bots.
