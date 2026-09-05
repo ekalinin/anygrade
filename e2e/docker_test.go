@@ -66,6 +66,61 @@ checks:
     run: test "$(sh sum.sh 0 0)" = "0"
 `
 
+// dockerTimeoutTaskYAML times one check out inside the container. On the host a
+// timeout only kills a process; here it destroys the container, because killing
+// the `docker exec` client leaves the command running inside it. The checks
+// that follow therefore need a rebuilt container seeded from the workspace the
+// dead one carried - which is what `after` proves by reading a file `hang`
+// wrote into the tmpfs before it hung.
+const dockerTimeoutTaskYAML = `name: "Timeout (docker)"
+score: 20
+
+solution_files:
+  - notes.txt
+
+runner:
+  timeout: 5s
+
+checks:
+  - name: hang
+    weight: 1
+    run: echo survived > carried.txt && sleep 300
+  - name: after
+    weight: 1
+    run: test "$(cat carried.txt)" = "survived"
+`
+
+const dockerTimeoutReadme = "# Timeout\n\nOne check hangs inside the container.\n"
+const dockerTimeoutNotes = "todo\n"
+
+// dockerGreetTaskYAMLTmpl is the two-phase task of SPEC §6.1 with the docker
+// runner under it. The boundary is applied differently here than on the host:
+// the workspace the run phase sees is the container's tmpfs, so the hidden
+// sources are removed by taking the container down and seeding a fresh one from
+// what is left. The `hidden` check asserts both halves of that from the inside -
+// the build artifact came across, the hidden source did not.
+const dockerGreetTaskYAMLTmpl = `name: "Greet (docker)"
+score: 50
+
+solution_files:
+  - greet.sh
+
+hidden_tests:
+  source: git
+  url: file://%s
+  ref: main
+  path: greet/
+
+checks:
+  - name: open
+    weight: 1
+    run: test "$(sh greet.sh)" = "hello"
+  - name: hidden
+    weight: 1
+    build: sh hidden_check.sh && echo ok > "$ANYGRADE_ARTIFACTS/greet.ok"
+    run: test -f "$ANYGRADE_ARTIFACTS/greet.ok" && test ! -e hidden_check.sh
+`
+
 // 34. docker runner end to end: a course whose runner is docker grades a real
 // push in an ephemeral container - the whole submission flow of the local
 // suite, with the sandbox of SPEC §14 in the middle instead of `sh -c` on the
@@ -146,6 +201,89 @@ func TestDockerDaemonUnreachable(t *testing.T) {
 	}
 	if !strings.Contains(queue, "infra error (image_pull)") {
 		t.Fatalf("queue row for submission #%d does not name the daemon failure:\n%s", id, queue)
+	}
+}
+
+// 36. check timeout in a container: the timeout of SPEC §13 costs the container
+// rather than a process, so the checks after it run in a rebuilt one. The task
+// still scores what it earned, and the workspace the dead container held is
+// what the new one is seeded from.
+func TestDockerCheckTimeout(t *testing.T) {
+	requireDockerDaemon(t)
+	requireDockerImage(t)
+
+	e := startDockerEnv(t)
+	dir := registerAndClone(t, e, "alice")
+
+	writeFile(t, filepath.Join(dir, "tasks", "timeout", "notes.txt"), "go\n")
+	git(t, dir, nil, "add", "-A")
+	git(t, dir, nil, "commit", "-q", "-m", "trigger the timeout task")
+	out := git(t, dir, nil, "push", "origin", "main")
+	id := taskSubmissionID(t, out, "timeout")
+
+	body := pollSubmission(t, e.aliceClient, e, id)
+	if !strings.Contains(body, "timed out after 5s") {
+		t.Errorf("submission page missing the timeout note:\n%s", body)
+	}
+	// A non-gate timeout stops nothing: `after` ran, in a container that did not
+	// exist when `hang` started.
+	if strings.Contains(body, "st-skipped") {
+		t.Errorf("the check after a non-gate timeout was skipped:\n%s", body)
+	}
+	// hang failed, after passed: half the weight, half the score. `after` can
+	// only pass if the file hang wrote into the tmpfs came out with the dying
+	// container and went back into the new one.
+	if got := fetchScores(t, e)["alice"]["timeout"]; got != "10" {
+		t.Fatalf("alice/timeout: got %q, want 10 (the check after the timeout passed)", got)
+	}
+}
+
+// 37. two-phase check in a container: the build/run boundary of SPEC §6.1 with
+// the docker runner under it. The container is replaced between the phases, so
+// this is where "the hidden sources left the workspace" and "the build
+// artifacts survived" are two different claims about two different containers.
+func TestDockerBuildPhase(t *testing.T) {
+	requireDockerDaemon(t)
+	requireDockerImage(t)
+
+	e := startDockerEnv(t)
+	dir := registerAndClone(t, e, "alice")
+
+	writeFile(t, filepath.Join(dir, "tasks", "greet", "greet.sh"), greetSolution)
+	git(t, dir, nil, "add", "-A")
+	git(t, dir, nil, "commit", "-q", "-m", "solve greet")
+	out := git(t, dir, nil, "push", "origin", "main")
+	id := taskSubmissionID(t, out, "greet")
+
+	body := pollSubmission(t, e.aliceClient, e, id)
+	// The `hidden` check passes only when both halves held inside the second
+	// container: $ANYGRADE_ARTIFACTS/greet.ok came across, hidden_check.sh did
+	// not. A full score is that assertion, made from inside the sandbox.
+	if got := fetchScores(t, e)["alice"]["greet"]; got != "50" {
+		t.Fatalf("alice/greet graded in docker: got %q, want 50", got)
+	}
+	if strings.Contains(body, hiddenSecret) || strings.Contains(body, "phase=build") {
+		t.Fatalf("the student page leaks the build phase:\n%s", body)
+	}
+
+	// The build phase is the one that read the hidden tests, and its log is
+	// teacher-only whatever the runner was (SPEC §14).
+	logURL := fmt.Sprintf("%s/submissions/%d/logs/hidden", e.baseURL, id)
+	status, log := get(t, e.profClient, logURL+"?phase=build")
+	if status != http.StatusOK {
+		t.Fatalf("teacher GET build log: status %d, body:\n%s", status, log)
+	}
+	if !strings.Contains(log, hiddenSecret) {
+		t.Fatalf("build log does not carry the hidden test output:\n%s", log)
+	}
+	if status, _ := get(t, e.aliceClient, logURL+"?phase=build"); status != http.StatusNotFound {
+		t.Fatalf("the student read the build log: status %d", status)
+	}
+	if status, log = get(t, e.profClient, logURL); status != http.StatusOK {
+		t.Fatalf("teacher GET run log: status %d", status)
+	}
+	if strings.Contains(log, hiddenSecret) {
+		t.Fatalf("the run phase saw the hidden tests:\n%s", log)
 	}
 }
 
@@ -260,8 +398,9 @@ func startDockerEnv(t *testing.T, serverEnv ...string) *env {
 }
 
 // writeDockerCourseFixture writes and commits the docker suite's course repo,
-// returning its absolute path. The task template and solution are the local
-// suite's sum fixture; only the course and task metadata differ.
+// returning its absolute path. The task templates and solutions are the local
+// suite's fixtures; only the course and task metadata differ. Each scenario
+// pushes its own task, so the three share nothing but the server.
 func writeDockerCourseFixture(t *testing.T, root string) string {
 	t.Helper()
 	dir := filepath.Join(root, "course")
@@ -269,6 +408,15 @@ func writeDockerCourseFixture(t *testing.T, root string) string {
 	writeFile(t, filepath.Join(dir, "tasks", "sum", "task.yaml"), dockerSumTaskYAML)
 	writeFile(t, filepath.Join(dir, "tasks", "sum", "README.md"), sumReadme)
 	writeFile(t, filepath.Join(dir, "tasks", "sum", "sum.sh"), sumBroken)
+
+	writeFile(t, filepath.Join(dir, "tasks", "timeout", "task.yaml"), dockerTimeoutTaskYAML)
+	writeFile(t, filepath.Join(dir, "tasks", "timeout", "README.md"), dockerTimeoutReadme)
+	writeFile(t, filepath.Join(dir, "tasks", "timeout", "notes.txt"), dockerTimeoutNotes)
+
+	greetTaskYAML := fmt.Sprintf(dockerGreetTaskYAMLTmpl, writeHiddenFixture(t, root))
+	writeFile(t, filepath.Join(dir, "tasks", "greet", "task.yaml"), greetTaskYAML)
+	writeFile(t, filepath.Join(dir, "tasks", "greet", "README.md"), greetReadme)
+	writeFile(t, filepath.Join(dir, "tasks", "greet", "greet.sh"), greetBroken)
 
 	git(t, dir, nil, "init", "-q", "-b", "main")
 	git(t, dir, nil, "add", ".")

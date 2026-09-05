@@ -39,6 +39,13 @@ jobs:
       # End-to-end suite: spawns the real binary and drives CLI, HTTP and git.
       # Needs the git binary (preinstalled on the runner), no docker.
       - run: make e2e
+      # The same suite plus the docker-gated scenarios, which grade real pushes
+      # in real containers. It runs after the docker-free one so a failure that
+      # has nothing to do with the sandbox is reported by the cheaper job first.
+      # There is no skip here: the `docker` build tag is the statement that a
+      # daemon is running, so its absence is a failure, exactly as
+      # ANYGRADE_REQUIRE_DOCKER makes it one for the unit tests above.
+      - run: make e2e-docker
       # Reachability-based dependency scan: it fails only on vulnerabilities
       # the code actually calls, so an advisory in a module we merely require
       # does not turn the build red.
