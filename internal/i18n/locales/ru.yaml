@@ -182,6 +182,10 @@ code.download: "Скачать"
 code.too_big: "Файл больше 256 КБ."
 code.too_large: "Файл слишком велик, чтобы сервер его прочитал; склонируйте репозиторий, чтобы посмотреть."
 code.no_files: "В каталоге задачи на этом коммите нет файлов."
+code.view_diff: "различия"
+code.view_full: "весь файл"
+code.diff_gap: "… без изменений: %d"
+code.diff_none: "Файл совпадает с версией курса."
 
 # leaderboard.html
 leaderboard.title: "Рейтинг"

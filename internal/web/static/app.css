@@ -337,6 +337,25 @@ tbody tr:hover { background: var(--sheet); }
   background: var(--sheet); color: var(--ink-2);
 }
 
+/* Teacher code view: the token spans and diff rows the server writes
+   (internal/web/codeview.go). Token classes are the landing page's, so the two
+   hand-rolled highlighters stay recognizably the same thing. */
+.tok-comment { color: var(--ink-3); font-style: italic; }
+.tok-string { color: var(--pass); }
+.tok-key { color: var(--live); }
+.tok-num { color: var(--warn); }
+
+/* Diff rows. The washes are the machine's palette: --pen (red) is the teacher's
+   own mark and a line the student removed is not that. */
+.diff .dl { display: block; }
+.diff .add { background: var(--pass-w); }
+.diff .del { background: var(--fail-w); }
+.diff .gap { color: var(--ink-3); background: var(--paper); font-style: italic; }
+.diff .dm {
+  display: inline-block; width: 1ch; margin-right: 0.5ch;
+  color: var(--ink-3); user-select: none;
+}
+
 /* Forms */
 input[type="text"], input[type="password"], input[type="search"],
 input[type="email"], input[type="number"], select, textarea {
