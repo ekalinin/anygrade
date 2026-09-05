@@ -14,6 +14,25 @@ type CheckResult struct {
 	Required bool // gate: a failed gate forces the raw score to 0
 	Weight   int
 	Passed   bool
+	// PassedCases and ScoredCases are the per-test-case tally of a check that
+	// declared a `parser:` and whose report was read (SPEC §4.3). Both are 0
+	// otherwise - no parser, an unreadable report, a report of nothing but
+	// skips - and the check is then worth all of its weight or none of it, by
+	// exit code, exactly as every check was before parsers existed.
+	PassedCases int
+	ScoredCases int
+}
+
+// fraction is how much of its weight a check earned: the parsed proportion
+// when there is one, the 0-or-1 of the exit code otherwise.
+func (c CheckResult) fraction() float64 {
+	if c.ScoredCases > 0 {
+		return float64(min(c.PassedCases, c.ScoredCases)) / float64(c.ScoredCases)
+	}
+	if c.Passed {
+		return 1
+	}
+	return 0
 }
 
 // Penalty is the late-submission penalty policy.
@@ -32,7 +51,12 @@ type Deadline struct {
 
 // RawScore computes the raw score in [0, taskScore]. A failed required (gate)
 // check forces 0. Otherwise the score is taskScore weighted by the fraction of
-// passed non-gate weight (SPEC §4.3).
+// non-gate weight the checks earned (SPEC §4.3).
+//
+// Gates are decided by the exit code and by nothing else, parser or no parser.
+// "Partially gated" is not a thing, and the output a parser reads is produced
+// in the same workspace as the student's own code (SPEC §14): a parser may
+// therefore change what a check is worth, never whether it blocks.
 func RawScore(taskScore int, results []CheckResult) float64 {
 	// Gates first: any failed gate zeroes the submission.
 	for _, c := range results {
@@ -41,7 +65,8 @@ func RawScore(taskScore int, results []CheckResult) float64 {
 		}
 	}
 
-	var totalW, passedW int
+	var totalW int
+	var earnedW float64
 	scored := 0
 	for _, c := range results {
 		if c.Required {
@@ -49,16 +74,14 @@ func RawScore(taskScore int, results []CheckResult) float64 {
 		}
 		scored++
 		totalW += c.Weight
-		if c.Passed {
-			passedW += c.Weight
-		}
+		earnedW += float64(c.Weight) * c.fraction()
 	}
 
 	// Valid metadata guarantees at least one non-gate check with positive
 	// weight (validation rule 23). Fall back defensively to all-or-nothing so
 	// the function stays total for relaxed/historical data.
 	if totalW == 0 {
-		if scored > 0 && passedW == scored {
+		if scored > 0 && earnedW == float64(scored) {
 			// unreachable for valid data; keep total.
 			return float64(taskScore)
 		}
@@ -74,7 +97,7 @@ func RawScore(taskScore int, results []CheckResult) float64 {
 		return 0
 	}
 
-	return float64(taskScore) * float64(passedW) / float64(totalW)
+	return float64(taskScore) * earnedW / float64(totalW)
 }
 
 // PenaltyPercent computes the late penalty percentage in [0, MaxPercent] for a

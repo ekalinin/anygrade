@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ekalinin/anygrade/internal/config"
+	"github.com/ekalinin/anygrade/internal/testreport"
 )
 
 // LocalRunner executes check commands as host processes. It enforces only the
@@ -30,6 +31,23 @@ func (r *LocalRunner) Run(ctx context.Context, job Job) ([]Outcome, error) {
 // host workspace itself, so removing the files there is the whole boundary.
 func (r *LocalRunner) dropHiddenTests(_ context.Context, job Job) error {
 	return dropHiddenTests(job)
+}
+
+// readReport implements checkExecutor: the workspace is the host tree itself,
+// read through an os.Root so a path that leaves it - a symlink the check
+// planted, a `parser_file:` that walks up - is refused rather than followed.
+func (r *LocalRunner) readReport(_ context.Context, job Job, rel string) ([]byte, error) {
+	root, err := os.OpenRoot(job.WorkspaceDir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	f, err := root.Open(filepath.FromSlash(rel))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, testreport.MaxInput+1))
 }
 
 func (r *LocalRunner) execCheck(ctx context.Context, job Job, c config.Check, command, logPath string) (Outcome, error) {

@@ -301,6 +301,55 @@ func TestPipelineScoresAndPersists(t *testing.T) {
 	}
 }
 
+// TestPipelineScoresParsedCases: the same pipeline over a check that declares
+// a `parser:`. The command fails - one of its tests did - and the check is
+// still worth the proportion that passed, which is the whole point of the key
+// (SPEC §4.3). The rows behind that number are stored with it.
+func TestPipelineScoresParsedCases(t *testing.T) {
+	q, db, u, prep := newTestQueue(t)
+	prep.task.Deadline = config.ResolvedDeadline{} // no penalty: the raw score is the subject
+	prep.task.Checks = []config.Check{
+		{Name: "gate", Required: true, Run: "test -f solution.txt"},
+		{Name: "unit", Weight: 100, Parser: "tap", Run: "printf '" +
+			`1..5\nok 1 - a\nok 2 - b\nok 3 - c\nnot ok 4 - d\nok 5 - e # SKIP no network\n` +
+			"'; exit 1"},
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = q.Start(ctx) }()
+
+	sub, err := q.Enqueue(ctx, store.NewSubmission{
+		UserID: u.ID, TaskID: "t1", CommitSHA: "abc",
+		ReceivedAt: time.Now(), Counts: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := waitStatus(t, db, sub.ID, store.StatusDone)
+	cancel()
+	<-done
+
+	// 3 of the 4 scored cases passed (the skip counts for neither side), so
+	// the check earns 75 of its 100 weight.
+	if *got.RawScore != 75 {
+		t.Errorf("raw = %v, want 75", *got.RawScore)
+	}
+	_, checks, err := db.GetSubmission(t.Context(), sub.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unit := checks[1]
+	if unit.Passed || unit.ParseFailed {
+		t.Errorf("the command failed and its report was read: %+v", unit)
+	}
+	if len(unit.Cases) != 5 || unit.Cases.Passed() != 3 || unit.Cases.Scored() != 4 {
+		t.Errorf("cases: %+v", unit.Cases)
+	}
+	if len(checks[0].Cases) != 0 {
+		t.Errorf("a check without a parser stores no cases: %+v", checks[0].Cases)
+	}
+}
+
 // TestInfraErrorBackoffToTerminal: Prepare fails → backoff grows, and after
 // MaxRetries the submission is terminal infra_error.
 func TestInfraErrorBackoffToTerminal(t *testing.T) {

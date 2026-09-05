@@ -217,6 +217,51 @@ type CheckRow struct {
 	// LogExcerpt is empty by design rather than by accident, and the UI needs
 	// the fact to say so.
 	BuildFailed bool
+	// ParseFailed marks a check whose `parser:` produced no readable report.
+	// It was scored by its exit code, exactly as a check without a parser is;
+	// like BuildFailed the row carries the fact and the UI the wording.
+	ParseFailed bool
+	// Cases is the per-test-case detail of a check that declared a `parser:`,
+	// in the order the report listed them; empty for every other check.
+	Cases CaseRows
+}
+
+// CaseRow is one persisted test case of a check (SPEC §12). Names and messages
+// come out of the student's own test run, so they arrive here already bounded
+// and stripped of control characters (internal/testreport).
+type CaseRow struct {
+	Name     string
+	Status   string // passed | failed | skipped
+	Duration time.Duration
+	Message  string
+}
+
+// CaseRows is the case list of one check.
+type CaseRows []CaseRow
+
+// Passed and Scored are the fraction the check's score was computed from: a
+// skipped case is neither earned nor lost, so it counts for neither side. They
+// mirror testreport.Tally over the persisted rows - the vocabulary is pinned
+// by the status CHECK constraint - so the page shows the numbers the score was
+// made of instead of numbers of its own.
+func (rs CaseRows) Passed() int {
+	n := 0
+	for _, c := range rs {
+		if c.Status == "passed" {
+			n++
+		}
+	}
+	return n
+}
+
+func (rs CaseRows) Scored() int {
+	n := 0
+	for _, c := range rs {
+		if c.Status != "skipped" {
+			n++
+		}
+	}
+	return n
 }
 
 // SubmissionResult is the terminal outcome written by a worker.

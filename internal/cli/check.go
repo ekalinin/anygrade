@@ -18,6 +18,7 @@ import (
 	"github.com/ekalinin/anygrade/internal/config"
 	"github.com/ekalinin/anygrade/internal/runner"
 	"github.com/ekalinin/anygrade/internal/scoring"
+	"github.com/ekalinin/anygrade/internal/testreport"
 )
 
 // cmdCheck implements `anygrade check [TASK ...]` (SPEC §11): run checks
@@ -291,6 +292,7 @@ func printTaskResult(t config.ResolvedTask, spec config.ResolvedRunner, outcomes
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 3, ' ', 0)
 	fmt.Fprintln(w, "  CHECK\tRESULT\tTIME\t")
 	results := make([]scoring.CheckResult, len(outcomes))
+	var unparsed []string
 	for i, o := range outcomes {
 		res := "pass"
 		note := ""
@@ -310,14 +312,28 @@ func printTaskResult(t config.ResolvedTask, spec config.ResolvedRunner, outcomes
 			res = "build " + res
 			note = o.BuildLogPath
 		}
+		passedCases, scoredCases := testreport.Tally(o.Cases)
+		if scoredCases > 0 {
+			res = fmt.Sprintf("%s %d/%d", res, passedCases, scoredCases)
+		}
+		if o.ParseFailed {
+			// `check` is the course-authoring tool, so a parser that reads
+			// nothing is exactly what its author needs told.
+			unparsed = append(unparsed, o.Name)
+		}
 		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", o.Name, res, o.Duration.Round(10*time.Millisecond), note)
 		results[i] = scoring.CheckResult{
-			Name:     o.Name,
-			Required: t.Checks[i].Required,
-			Weight:   t.Checks[i].Weight,
-			Passed:   o.Passed,
+			Name:        o.Name,
+			Required:    t.Checks[i].Required,
+			Weight:      t.Checks[i].Weight,
+			Passed:      o.Passed,
+			PassedCases: passedCases,
+			ScoredCases: scoredCases,
 		}
 	}
 	w.Flush()
+	for _, name := range unparsed {
+		fmt.Printf("  %s: no test cases could be read from the report; scored by exit code\n", name)
+	}
 	fmt.Printf("  score: %.0f/%d\n\n", scoring.RawScore(t.Score, results), t.Score)
 }

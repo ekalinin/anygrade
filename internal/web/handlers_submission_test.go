@@ -461,3 +461,63 @@ func TestBuildFailurePageExplainsItself(t *testing.T) {
 		t.Errorf("teacher page offers a run log that does not exist:\n%s", body)
 	}
 }
+
+// TestSubmissionPageListsTestCases: a check that declared a `parser:` shows
+// the cases its report carried and the tally its score was a fraction of. The
+// names come out of the student's own test run, so the page has to render them
+// as text - a case called "<img onerror=...>" is a name, not markup.
+func TestSubmissionPageListsTestCases(t *testing.T) {
+	h, _ := newTestSite(t)
+	h.DataDir = t.TempDir()
+	student, sub := finishedWithRows(t, h, store.CheckRow{
+		Name: "unit", Weight: 100, ExitCode: 1, Cases: store.CaseRows{
+			{Name: "TestAdd", Status: "passed"},
+			{Name: `<img src=x onerror="alert(1)">`, Status: "failed", Message: "want <b>2</b>, got 1"},
+			{Name: "TestNet", Status: "skipped", Message: "needs network"},
+		},
+	})
+	h.Local = &student
+
+	rec := httptest.NewRecorder()
+	New(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/submissions/"+itoa(sub.ID), nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "TestAdd") || !strings.Contains(body, "needs network") {
+		t.Errorf("the case list is missing from the page:\n%s", body)
+	}
+	// One passed of two scored: the skip counts for neither side.
+	if !strings.Contains(body, "1/2") {
+		t.Errorf("the tally the score was made of is missing:\n%s", body)
+	}
+	if strings.Contains(body, "<img src=x") || strings.Contains(body, "<b>2</b>") {
+		t.Errorf("student-controlled text reached the page as markup:\n%s", body)
+	}
+	if !strings.Contains(body, "&lt;img src=x") {
+		t.Errorf("the case name is not rendered at all:\n%s", body)
+	}
+}
+
+// A parser that read nothing says so, in the reader's language, and leaves the
+// check scored by its exit code - the excerpt stays the fallback.
+func TestSubmissionPageExplainsAnUnreadableReport(t *testing.T) {
+	h, _ := newTestSite(t)
+	h.DataDir = t.TempDir()
+	student, sub := finishedWithRows(t, h, store.CheckRow{
+		Name: "unit", Weight: 100, ExitCode: 1, ParseFailed: true, LogExcerpt: "not a report",
+	})
+	h.Local = &student
+
+	for _, lang := range []string{"en", "ru"} {
+		req := httptest.NewRequest(http.MethodGet, "/submissions/"+itoa(sub.ID), nil)
+		req.AddCookie(&http.Cookie{Name: langCookie, Value: lang})
+		rec := httptest.NewRecorder()
+		New(h).ServeHTTP(rec, req)
+		body := rec.Body.String()
+		if want := i18n.For(lang).T("sub.parse_failed"); !strings.Contains(body, want) {
+			t.Errorf("page [%s] does not explain the unreadable report:\n%s", lang, body)
+		}
+		if !strings.Contains(body, "not a report") {
+			t.Errorf("page [%s] dropped the excerpt that stands in for the cases:\n%s", lang, body)
+		}
+	}
+}

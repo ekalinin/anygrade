@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,6 +17,9 @@ type fakeExecutor struct {
 	fail    map[string]bool // keyed by the command the phase runs
 	ran     []string        // "<check>" for a run phase, "<check>:build" for a build one
 	dropped int
+	// reports stands in for the workspace a `parser_file:` is read from,
+	// keyed by the workspace-relative path.
+	reports map[string]string
 }
 
 func (f *fakeExecutor) execCheck(_ context.Context, _ Job, c config.Check, cmd, logPath string) (Outcome, error) {
@@ -36,6 +40,13 @@ func (f *fakeExecutor) dropHiddenTests(context.Context, Job) error {
 	f.ran = append(f.ran, "<boundary>")
 	f.dropped++
 	return nil
+}
+
+func (f *fakeExecutor) readReport(_ context.Context, _ Job, rel string) ([]byte, error) {
+	if data, ok := f.reports[rel]; ok {
+		return []byte(data), nil
+	}
+	return nil, os.ErrNotExist
 }
 
 func testJob(t *testing.T, checks []config.Check) Job {

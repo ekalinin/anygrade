@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ekalinin/anygrade/internal/config"
+	"github.com/ekalinin/anygrade/internal/testreport"
 )
 
 // Job describes one submission run: all checks of one task over one assembled
@@ -64,6 +65,15 @@ type Outcome struct {
 	// it for the callers that are allowed to look.
 	BuildFailed  bool
 	BuildLogPath string
+	// Cases are the per-test-case results of a check that declared a
+	// `parser:`, parsed out of its run phase (SPEC §4.3). Empty for every
+	// other check - and for one whose report could not be read, which is what
+	// ParseFailed says.
+	Cases []testreport.Case
+	// ParseFailed marks a check whose parser produced nothing usable. The
+	// check keeps the verdict of its exit code: an unreadable report is the
+	// parser's fault and never the student's.
+	ParseFailed bool
 }
 
 // Runner executes all checks of one submission in order. A non-nil error is
@@ -111,6 +121,11 @@ type checkExecutor interface {
 	// run phases will execute in. It is called once, between the two sweeps of
 	// runAll, and only when there is something to remove.
 	dropHiddenTests(ctx context.Context, job Job) error
+	// readReport returns the contents of a workspace file a check wrote
+	// (`parser_file:`), given a workspace-relative slash path. Only the
+	// executor can reach it: the workspace is a host directory for the local
+	// runner and a tmpfs inside the container for the docker one.
+	readReport(ctx context.Context, job Job, rel string) ([]byte, error)
 }
 
 // runAll is the shared driver. A check is up to two phases (SPEC §4.3): every
@@ -200,6 +215,10 @@ func runAll(ctx context.Context, job Job, ex checkExecutor) ([]Outcome, error) {
 			return nil, err
 		}
 		o.Duration += buildDur[i]
+		// The run phase is the only one a parser ever reads: the build phase's
+		// output is teacher-only, so it cannot feed a student-visible list of
+		// cases (SPEC §14).
+		attachCases(ctx, job, c, &o, ex)
 		outcomes[i] = o
 		if c.Required && !o.Passed {
 			stop = i + 1

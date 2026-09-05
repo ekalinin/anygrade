@@ -753,3 +753,104 @@ checks:
 		t.Error("HasBuildPhase must be false for a run-only list")
 	}
 }
+
+// TestValidateParser: the parser name is metadata like any other, so a typo is
+// an error rather than a silent fallback to "none" - a course that believes it
+// scores per test case and does not would never find out otherwise.
+func TestValidateParser(t *testing.T) {
+	dir := mainGoDir(t)
+
+	for _, name := range []string{"", "none", "go-test-json", "junit-xml", "tap"} {
+		task := taskWithDir(dir)
+		task.Checks[0].Parser = name
+		if diags := validateOneTask(task); len(diags) > 0 {
+			t.Errorf("parser %q should be clean, got: %v", name, diagStrings(diags))
+		}
+	}
+
+	for _, name := range []string{"junit", "go-test", "JUnit-XML", "yes"} {
+		task := taskWithDir(dir)
+		task.Checks[0].Parser = name
+		if !hasFieldError(validateOneTask(task), "checks[0].parser") {
+			t.Errorf("unknown parser %q is not an error", name)
+		}
+	}
+
+	// The report file is read out of the assembled workspace, so it obeys the
+	// path rules the rest of the metadata does.
+	task := taskWithDir(dir)
+	task.Checks[0].Parser = "junit-xml"
+	task.Checks[0].ParserFile = "/tmp/report.xml"
+	if !hasFieldError(validateOneTask(task), "checks[0].parser_file") {
+		t.Error("an absolute parser_file is not an error")
+	}
+
+	task = taskWithDir(dir)
+	task.Checks[0].Parser = "junit-xml"
+	task.Checks[0].ParserFile = "../../etc/passwd"
+	if !hasFieldError(validateOneTask(task), "checks[0].parser_file") {
+		t.Error("an escaping parser_file is not an error")
+	}
+
+	// A file nobody reads is a warning: it does not make the course unloadable,
+	// but it is never what the author meant.
+	task = taskWithDir(dir)
+	task.Checks[0].ParserFile = "report.xml"
+	if !hasFieldWarning(validateOneTask(task), "checks[0].parser_file") {
+		t.Error("parser_file without parser earns no warning")
+	}
+}
+
+// TestLoadTaskParser: both keys have to survive the strict decoder and the
+// merge, and a task without them must stay exactly what it was - parsers are
+// additive, so an existing course keeps its behaviour bit for bit.
+func TestLoadTaskParser(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(repo, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("course.yaml", "name: C\nregistration:\n  mode: invite\ndefaults:\n  runner:\n    type: local\n")
+	write("tasks/p/main.go", "package main\n")
+	write("tasks/p/task.yaml", `name: P
+score: 100
+solution_files: [main.go]
+checks:
+  - name: unit
+    weight: 60
+    parser: go-test-json
+    run: go test -json ./...
+  - name: suite
+    weight: 40
+    parser: junit-xml
+    parser_file: report.xml
+    run: pytest --junitxml=report.xml
+  - name: plain
+    weight: 0
+    run: go vet ./...
+`)
+
+	r, diags, err := LoadAll(repo)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if HasErrors(append(diags, Validate(r)...)) {
+		t.Fatalf("unexpected errors: %v", diagStrings(append(diags, Validate(r)...)))
+	}
+	checks := r.Tasks[0].Checks
+	if checks[0].Parser != "go-test-json" || checks[0].ParserFile != "" {
+		t.Errorf("stdout parser: %+v", checks[0])
+	}
+	if checks[1].Parser != "junit-xml" || checks[1].ParserFile != "report.xml" {
+		t.Errorf("file parser: %+v", checks[1])
+	}
+	if checks[2].Parser != "" {
+		t.Errorf("a check without the key must stay unparsed: %q", checks[2].Parser)
+	}
+}

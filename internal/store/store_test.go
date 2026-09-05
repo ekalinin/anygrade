@@ -420,6 +420,78 @@ func TestFinishSubmissionPersistsScoresAndChecks(t *testing.T) {
 	}
 }
 
+// TestFinishSubmissionPersistsCases: the per-test-case rows of a check with a
+// `parser:` round-trip in the report's order and stay attached to their own
+// check. A re-finish (the double-finish a requeue can cause) replaces them
+// instead of adding a second copy - the cascade is what makes that free.
+func TestFinishSubmissionPersistsCases(t *testing.T) {
+	db := openTestDB(t)
+	u := testUser(t, db)
+	sub := enqueueN(t, db, u.ID, "t1", 1)[0]
+	if _, ok, _ := db.ClaimNext(t.Context(), time.Now()); !ok {
+		t.Fatal("claim failed")
+	}
+
+	result := SubmissionResult{
+		Status: StatusDone, Raw: 50, Final: 50,
+		Checks: []CheckRow{
+			{Name: "unit", Passed: false, ExitCode: 1, Weight: 100, Cases: CaseRows{
+				{Name: "TestAdd", Status: "passed", Duration: 20 * time.Millisecond},
+				{Name: "TestSub", Status: "failed", Message: "want 2, got 1"},
+				{Name: "TestNet", Status: "skipped", Message: "needs network"},
+			}},
+			// No parser at all, and one whose parser found nothing readable:
+			// neither carries cases, and only the second says why.
+			{Name: "vet", Passed: true, Weight: 0},
+			{Name: "suite", Passed: true, Weight: 0, ParseFailed: true},
+		},
+	}
+	if err := db.FinishSubmission(t.Context(), sub.ID, result); err != nil {
+		t.Fatal(err)
+	}
+
+	_, checks, err := db.GetSubmission(t.Context(), sub.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := checks[0].Cases
+	if len(cases) != 3 {
+		t.Fatalf("cases: %+v", cases)
+	}
+	if cases[0].Name != "TestAdd" || cases[1].Name != "TestSub" || cases[2].Name != "TestNet" {
+		t.Errorf("report order lost: %+v", cases)
+	}
+	if cases[0].Duration != 20*time.Millisecond || cases[1].Message != "want 2, got 1" {
+		t.Errorf("case fields: %+v", cases[:2])
+	}
+	if p, s := cases.Passed(), cases.Scored(); p != 1 || s != 2 {
+		t.Errorf("tally = %d/%d, want 1/2: a skipped case counts for neither side", p, s)
+	}
+	if len(checks[1].Cases) != 0 || checks[1].ParseFailed {
+		t.Errorf("a check without a parser carries nothing: %+v", checks[1])
+	}
+	if !checks[2].ParseFailed || len(checks[2].Cases) != 0 {
+		t.Errorf("an unreadable report is a fact without rows: %+v", checks[2])
+	}
+
+	// Re-finish: the row has to be running again for the guard to let it
+	// through, which is exactly the requeue this defends against.
+	if _, err := db.db.ExecContext(t.Context(),
+		`UPDATE submissions SET status = 'running' WHERE id = ?`, sub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.FinishSubmission(t.Context(), sub.ID, result); err != nil {
+		t.Fatal(err)
+	}
+	var total int
+	if err := db.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM check_cases`).Scan(&total); err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 {
+		t.Errorf("a second finish left %d case rows, want 3", total)
+	}
+}
+
 // TestScheduleRetryEligibility: an infra_error row is claimable only after
 // retry_at, and never when terminal (retry_at nil).
 func TestScheduleRetryEligibility(t *testing.T) {

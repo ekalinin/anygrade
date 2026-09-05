@@ -21,7 +21,6 @@ One running instance serves exactly one course.
 - Plagiarism detection. All solutions live in per-student git repos, so the data for later analysis is preserved; `export submissions` (§11) hands that data to a real checker, and the comparison stays outside anygrade.
 - Multi-course instances. Run one process per course.
 - OAuth / external identity providers.
-- Per-test-case result parsing (JUnit XML, `go test -json`). v1 scores by check groups via exit codes; parsers are a future extension.
 - Horizontal scaling. One node, worker pool for parallel checks.
 - LMS integrations (Moodle, Canvas). CSV export is the v1 integration point.
 
@@ -166,6 +165,21 @@ checks:
     run: $ANYGRADE_ARTIFACTS/basic.test -test.run 'TestBasic'
 ```
 
+A check may also name the format its run phase reports in, which splits its weight over the test cases instead of leaving it all-or-nothing:
+
+```yaml
+checks:
+  - name: unit
+    weight: 100
+    parser: go-test-json     # none (default) | go-test-json | junit-xml | tap
+    run: go test -json ./...
+  - name: suite
+    weight: 50
+    parser: junit-xml
+    parser_file: report.xml  # relative to the task dir; default is the run phase's output
+    run: pytest --junitxml=report.xml
+```
+
 Semantics:
 
 - Timestamps are RFC 3339 with explicit offsets.
@@ -176,11 +190,15 @@ Semantics:
 - Each phase gets the full `runner.timeout`: a phase is one command, and the timeout has always been one command's wall clock. A check with both phases can therefore occupy twice it. The duration the check reports is the sum of its phases - a check that takes 40s to compile and 2s to run is not a 2s check.
 - `required: true` checks are gates: on failure the remaining checks are skipped and the raw score is 0. With two phases the rule is unchanged - the run stops at the first failed gate - and it applies whichever phase the gate failed in. A gate that fails at build time skips the builds and the runs of every later check; a gate that fails at run time skips the runs of every later check even though their builds already happened. That wasted build work is accepted deliberately: reordering the phases to avoid it would put student code back on disk beside the hidden tests. Checks *before* the failed gate keep both of their phases and report a real result.
 - The build phase's output is **staff-only** (§14). A check that fails there records no excerpt at all; the student is told that the build failed and nothing more.
-- Weights are normalized over the non-gate checks: raw score = score × (sum of passed weights / sum of all weights). A single check with any weight therefore behaves as all-or-nothing.
+- Weights are normalized over the non-gate checks: raw score = score × (sum of earned weights / sum of all weights). A check earns all of its weight or none of it by exit code - so a single check behaves as all-or-nothing - unless it names a `parser:`.
+- `parser:` names the format the check's run phase reports in; `none`, and the absent key, mean what checks have always meant. A check with a readable report earns `weight × passed cases / scored cases` instead, so 19 of 20 cases is 95% of that check's weight. Skipped cases (`t.Skip`, `<skipped/>`, a TAP `# SKIP` or `# TODO`) are counted on neither side; a report of nothing but skips leaves nothing to be a proportion of and falls back to the exit code. anygrade never sniffs the format - a check is an arbitrary command in an arbitrary language (§1), so the course author is the only one who knows what it prints, and an unknown value is a metadata error like any other.
+- `parser_file:` names a file the check writes its report to, relative to the task directory; without it the report is the run phase's own output. `go test -json` and TAP go to stdout, JUnit XML is a file by convention, and so is anything whose stdout carries something else besides the report.
+- **A parser changes what a check is worth, never whether it gates.** A `required: true` check is decided by its exit code, whatever its cases say: "partially gated" is not a thing, and the report is written in the same workspace as the solution (§14). It also cannot fail a check on its own - an unreadable report is the parser's fault, not the student's, so the check keeps its exit code and the submission page says the report could not be read. A build phase is never parsed (its output is staff-only), and neither is a check that timed out, which was killed mid-report.
+- What a parser reads is bounded, because a test run of student code chooses how much it prints: a report over 4 MB, or with more than 1000 cases, is refused the same way an unreadable one is. Stored case names are capped at 200 bytes, one message at 512 and all messages of a check at 64 KB.
 - Weights must be `>= 0`. Because they are normalized, a negative one pushes the raw score outside `0..score` - weights 60 and -40 score 300 out of 100 - so `validate` rejects a negative weight on a non-gate check. Weight 0 stays legal and is what gates carry.
 - `workspace.include` (course defaults and per-task `workspace:` block, unioned) lists extra repo-relative paths - files or directories - exported into the check workspace alongside the task directory. Needed when tasks share build files, e.g. a course-root `go.mod`. Paths must exist and must not escape the repo.
 - `hidden_tests.url` must not embed credentials: they come from the environment (§11). With `source: local` the `path` is an absolute path on the machine that runs the checks, which is why `validate` only warns - never errors - when it is relative or absent locally: a course repo is usually validated somewhere other than the grading server.
-- `anygrade validate` verifies all metadata (unknown fields, missing files in `solution_files`, symlinked entries in `solution_files`/`workspace.include`, deadline ordering, duplicate task ids, negative check weights, non-positive size limits, credentials embedded in a hidden-tests url, an enrolment window that closes before it opens, a negative `registration.max_accounts`) and is also run at server startup; startup fails on invalid metadata. Warnings are reported by `validate` alone; they never fail a startup or a teacher push.
+- `anygrade validate` verifies all metadata (unknown fields, missing files in `solution_files`, symlinked entries in `solution_files`/`workspace.include`, deadline ordering, duplicate task ids, negative check weights, an unknown `parser:` or an escaping `parser_file:`, non-positive size limits, credentials embedded in a hidden-tests url, an enrolment window that closes before it opens, a negative `registration.max_accounts`) and is also run at server startup; startup fails on invalid metadata. Warnings are reported by `validate` alone; they never fail a startup or a teacher push.
 - Two validate warnings cover the build phase, and only those two, because they are the only patterns that are reliably worth reporting. A task that configures hidden tests and has *some* checks with a build phase gets one warning per check without one, since a single `build:` anywhere turns the boundary on for the whole task and a run-only check will not find the hidden tests any more - and it fails as a wrong answer rather than as an error. A `build:` identical to its own `run:` gets the other. What `validate` deliberately does **not** try to detect is a build command that executes the solution instead of only compiling it (`go test ./...` where `go test -c` was meant): the command is an arbitrary shell line, possibly a `make` target, so any pattern match would be wrong often enough to teach course authors to ignore warnings. That one is documentation's job.
 
 ## 5. Architecture
@@ -362,7 +380,7 @@ Rights are asked as two questions - may this account review other people's work,
 
 ## 9. Scoring and deadlines
 
-- Raw score: `score × (passed weight / total weight)`, with gates as described in 4.3.
+- Raw score: `score × (earned weight / total weight)`, with gates as described in 4.3. A check earns its whole weight or none of it by exit code, or - with a `parser:` and a readable report - `weight × passed cases / scored cases`.
 - Deadline policy per task: none, hard only, soft+hard, or soft only (soft only means penalties accrue up to `max_percent` and submissions stay accepted).
   - on-time (≤ soft, or no soft): no penalty;
   - late (soft < t ≤ hard): `penalty.percent` per each started `penalty.per` interval after soft, capped at `max_percent`;
@@ -378,7 +396,7 @@ Student pages:
 
 - dashboard: task list with status (not started / queued / running / passed / partial / failed / rejected), scores, deadlines with countdowns;
 - task page: statement (rendered task README), submission history with attempts left/cooldown state, recheck button;
-- submission page: per-check results, penalty breakdown, live log stream while running, full logs after.
+- submission page: per-check results (with the per-test-case list of a check that has a `parser:`), penalty breakdown, live log stream while running, full logs after.
 
 Teacher pages (a TA reaches the reviewing ones; see the table in §8):
 
@@ -457,7 +475,8 @@ SQLite tables:
 - `sessions` (id_hash, user_id, token_hash, created_at, expires_at) - web sessions; the cookie value is stored hashed, like tokens and invites, so the table is not a set of usable cookies. A hash cannot be derived from the values already stored, so the migration that introduced it empties the table: an upgrade signs everybody out once
 - `pushes` (id, user_id, ref, old_sha, new_sha, received_at, processed_at) - the intake log: every accepted push to a graded branch, recorded on arrival and graded afterwards, so a push is an event with its own boundaries and arrival time rather than a ref position
 - `submissions` (id, user_id, task_id, commit_sha, received_at, attempt_no, counts, status: queued|running|done|infra_error|rejected_deadline|rejected_limit, raw_score, penalty_percent, final_score, log_dir, worker_note, student_note, retries, retry_at, started_at, canceled_at) - `worker_note` is the teacher's, `student_note` the part its owner may read. They hold the same text wherever the writer produces nothing else (reject reason, tamper note, cancel, terminal prepare failure, the scrubbed hidden-tests message), and `student_note` is empty when the note is operator detail - a docker failure names the image and quotes the daemon, a prepare failure quotes a path inside the data dir (§14). A submission with no check results has nothing but its note to explain itself, so the submission page renders it on its own
-- `check_results` (submission_id, name, passed, exit_code, duration_ms, weight, skipped, timed_out, log_excerpt, build_failed) - `build_failed` says the check never reached its run phase, which is why `log_excerpt` is empty: the build phase's output is staff-only (§14), so the row carries the fact and the UI renders a localized explanation, rather than storing a message
+- `check_results` (submission_id, name, passed, exit_code, duration_ms, weight, skipped, timed_out, log_excerpt, build_failed, parse_failed) - `build_failed` says the check never reached its run phase, which is why `log_excerpt` is empty: the build phase's output is staff-only (§14), so the row carries the fact and the UI renders a localized explanation, rather than storing a message. `parse_failed` says the same about a `parser:` that read no report: the check was scored by its exit code and the excerpt is what stands in for the cases
+- `check_cases` (check_result_id, name, status: passed|failed|skipped, duration_ms, message) - the per-test-case detail of a check with a `parser:` (§4.3), in report order. A table of its own because a `check_results` row is one command's outcome and has no room for a list; the rows cascade with the check they detail, so a re-finished submission replaces them rather than doubling them
 - `score_overrides` (user_id, task_id, score, comment, teacher_id, created_at)
 - `events` (audit log: id, actor_id, actor_role, kind, target, detail, created_at) - `actor_role` is the role the actor held at the moment of the action, written with the row rather than joined from `users` afterwards: a promotion must not rewrite what a past action was taken as. It is empty for system events and for rows written before the column existed (§8)
 
@@ -480,6 +499,7 @@ Task definitions are not mirrored into the DB; metadata is always read from the 
 - `max_push_size` (course-wide, default 50 MB) guards against giant blobs. The server stops reading the pack itself, on top of git's own `receive.maxInputSize`, and the rejection is anygrade's own message: it names the limit and says how to recover (drop the large files from the commit and push again). A teacher pushing a new value gets it applied without a restart.
 - Very long logs: the on-disk log is capped at `runner.log_max` (default 10 MB per check) and ends with an explicit truncation marker; the excerpt in the DB/UI (default 64 KB per check) carries the same marker. A log the server could not write does not fail the check - the excerpt says the full log is missing. The full log is staff-only (§14), offered both as a download and as an inline read in the browser - the same bytes behind the same check, served as plain text with `X-Content-Type-Options: nosniff` rather than inlined into a page, because a 10 MB log is what the browser's own text viewer is for; so is the build phase's, which is a separate file of the same check.
 - A check that failed in its build phase: no excerpt is stored - the phase's output is staff-only - and no run-phase log file exists at all, so there is nothing for the live stream to tail either. The submission page says the check failed while being built and why the output is not there; the teacher gets the build log next to the ordinary one.
+- A check whose `parser:` found no report - the wrong format, no such file, output that parses to no case at all, a report over the bounds of §4.3: the check keeps the verdict of its exit code, the row is marked, and the page says the per-test-case report could not be read. A course that loses its parser this way scores exactly as it did before it had one.
 
 ## 14. Security considerations
 
@@ -496,6 +516,7 @@ Hidden tests are confidential against the network and the UI, not against the co
 - Check logs are shown to students as produced by their tests - the stored excerpt and the live stream - while the raw full log is staff-only in every form it is served - downloaded or read in the browser - because student code runs beside the hidden tests. "Staff" is teachers and TAs (§8): the line the log is on is between the student and the people reviewing their work, not between the two staff roles.
 - A build phase's log is staff-only in full, not merely as a download: it is the phase that compiles against the hidden tests, so a compiler quoting a hidden source line lands in it. No excerpt of it is stored, the live stream does not tail it (it lives in a subdirectory of the log dir, §5.1), and a check that failed there reaches the student as the bare fact that the build failed. The cost is real - a student whose own code does not compile is told nothing about why - so a course that wants compile errors visible keeps a run-only gate over the student's own code (`go build ./...`, which does not compile `_test.go` files and therefore cannot quote a hidden one) and puts only the hidden-test compilation in a build phase.
 - With build phases the filesystem *is* a boundary for the run phase: the hidden sources are removed from the workspace before any run phase starts (§6.1), so a solution that dumps files finds nothing to dump. What that buys, exactly, is that the sources are not on disk while the student's code executes - not secrecy against a determined student, since the compiled artifact still carries test names, string literals and line numbers, and a process can read its own executable. It is reverse engineering instead of `cat`, and it is worth having for that reason alone.
+- A `parser:` reads output produced in the same workspace as the solution, so its numbers are as trustworthy as that workspace is: a student who prints lines that look like test events adds cases nobody wrote. This is why the gate is the exit code and only the exit code (§4.3) - a spoofed report can move what a check is worth, never whether the submission is admitted - and why a course that needs the proportion itself to be trustworthy keeps a `required: true` check over the same tests, which scores 0 the moment a real test fails. The bounds in §4.3 are the other half: a flood of invented cases is refused, which costs the proportional scoring and nothing else.
 - Without build phases - and always, for an interpreted language, where the test source must be present at run time - the sandbox is the boundary, not the filesystem. Hidden tests are placed read-only, but they sit in the same workspace as the solution and run under the same uid, because the compiler or interpreter has to read them; a student who deliberately dumps them into their own output reads them back through the excerpt and the live stream. Course authors are advised to keep hidden-test sources out of error output.
 
 Credentials and transport:
@@ -526,7 +547,7 @@ The web UI enforces a rights check on every route that is not open to any authen
 | Hidden-test secrecy | Optional `build:` phase, then remove the sources before any `run:` | Closes the compiled-language case exactly - the sources are off disk while student code runs - and nothing else: worth nothing for an interpreted language, and it costs the student the build phase's output |
 | Course updates | Student pulls from upstream | Standard git flow; conflicts resolved by the code owner, server never merges |
 | Feedback | Async: push output + UI with SSE | Immediate acknowledgement without hanging pushes on long test runs |
-| Scoring | Weighted check groups | Partial credit without per-test output parsing; one group degrades to all-or-nothing |
+| Scoring | Weighted check groups, optionally split per test case | Partial credit needs no parser at all; a check that names one splits its own weight over the cases it reported, and the gate stays the exit code |
 | Storage | SQLite + files for logs | Single-binary ops, transactions, easy backup; enough for course-sized load |
 | UI | SSR + htmx + SSE, embedded | No frontend toolchain; SPA deferred, and the read-only JSON API (§10.2) covers scripts without one |
 | Scope | 1 instance = 1 course, student/ta/teacher roles | Simplest possible model; multi-course via multiple instances |
@@ -535,7 +556,6 @@ The web UI enforces a rights check on every route that is not open to any authen
 ## 16. Future work
 
 - Plagiarism detection itself. The export hook for MOSS/JPlag is done (`export submissions`, §11); comparing is a research area with real tools in it, and a second-rate in-tree implementation would be worse than none.
-- Per-test-case parsers (`go test -json`, JUnit XML, TAP) for finer UI detail and proportional scoring.
 - Write endpoints for the JSON API (recheck, override, cancel), which need a CSRF story of their own (§10.2).
 - OAuth login.
 - Webhooks/notifications (Telegram, email) on check completion.

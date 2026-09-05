@@ -163,19 +163,33 @@ func (s *DB) FinishSubmission(ctx context.Context, id int64, res SubmissionResul
 	}
 	defer tx.Rollback()
 
-	// Idempotency guard for a rare double-finish after requeue.
+	// Idempotency guard for a rare double-finish after requeue. The case rows
+	// go with it through the cascade: they detail a check result and outlive
+	// it in no reading.
 	if _, err := tx.ExecContext(ctx, `DELETE FROM check_results WHERE submission_id = ?`, id); err != nil {
 		return err
 	}
 	for _, c := range res.Checks {
-		if _, err := tx.ExecContext(ctx, `
+		var checkID int64
+		if err := tx.QueryRowContext(ctx, `
 			INSERT INTO check_results
 			  (submission_id, name, passed, exit_code, duration_ms, weight,
-			   skipped, timed_out, log_excerpt, build_failed)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			   skipped, timed_out, log_excerpt, build_failed, parse_failed)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			RETURNING id`,
 			id, c.Name, c.Passed, c.ExitCode, c.Duration.Milliseconds(),
-			c.Weight, c.Skipped, c.TimedOut, c.LogExcerpt, c.BuildFailed); err != nil {
+			c.Weight, c.Skipped, c.TimedOut, c.LogExcerpt, c.BuildFailed,
+			c.ParseFailed).Scan(&checkID); err != nil {
 			return err
+		}
+		for _, cs := range c.Cases {
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO check_cases
+				  (check_result_id, name, status, duration_ms, message)
+				VALUES (?, ?, ?, ?, ?)`,
+				checkID, cs.Name, cs.Status, cs.Duration.Milliseconds(), cs.Message); err != nil {
+				return err
+			}
 		}
 	}
 	// The status guard closes the teacher-cancel race: once CancelSubmission
@@ -303,26 +317,80 @@ func (s *DB) GetSubmission(ctx context.Context, id int64) (Submission, []CheckRo
 	if err != nil {
 		return Submission{}, nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT name, passed, exit_code, duration_ms, weight, skipped, timed_out,
-		       log_excerpt, build_failed
-		FROM check_results WHERE submission_id = ? ORDER BY id ASC`, id)
+	// Two queries, each closing its rows before the next one starts: the pool
+	// holds a single connection, so a second query issued while the first Rows
+	// is open would wait for a connection this call is holding itself.
+	checks, byID, err := checkRows(ctx, s.db, id)
 	if err != nil {
 		return Submission{}, nil, err
 	}
-	defer rows.Close()
-	var checks []CheckRow
-	for rows.Next() {
-		var c CheckRow
-		var durMS int64
-		if err := rows.Scan(&c.Name, &c.Passed, &c.ExitCode, &durMS, &c.Weight,
-			&c.Skipped, &c.TimedOut, &c.LogExcerpt, &c.BuildFailed); err != nil {
+	if len(checks) > 0 {
+		if err := attachCaseRows(ctx, s.db, id, checks, byID); err != nil {
 			return Submission{}, nil, err
 		}
-		c.Duration = time.Duration(durMS) * time.Millisecond
+	}
+	return sub, checks, nil
+}
+
+// checkRows reads one submission's check results and, alongside them, where
+// each row's id sits in the slice - which is what the case rows are keyed by.
+func checkRows(ctx context.Context, q dbtx, id int64) ([]CheckRow, map[int64]int, error) {
+	rows, err := q.QueryContext(ctx, `
+		SELECT id, name, passed, exit_code, duration_ms, weight, skipped, timed_out,
+		       log_excerpt, build_failed, parse_failed
+		FROM check_results WHERE submission_id = ? ORDER BY id ASC`, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	var checks []CheckRow
+	byID := map[int64]int{}
+	for rows.Next() {
+		var (
+			c        CheckRow
+			checkID  int64
+			duration int64
+		)
+		if err := rows.Scan(&checkID, &c.Name, &c.Passed, &c.ExitCode, &duration, &c.Weight,
+			&c.Skipped, &c.TimedOut, &c.LogExcerpt, &c.BuildFailed, &c.ParseFailed); err != nil {
+			return nil, nil, err
+		}
+		c.Duration = time.Duration(duration) * time.Millisecond
+		byID[checkID] = len(checks)
 		checks = append(checks, c)
 	}
-	return sub, checks, rows.Err()
+	return checks, byID, rows.Err()
+}
+
+// attachCaseRows fills in the per-test-case detail of every check of one
+// submission in a single pass, ordered by the case rows' own ids so the order
+// the report listed them in survives the round trip.
+func attachCaseRows(ctx context.Context, q dbtx, id int64, checks []CheckRow, byID map[int64]int) error {
+	rows, err := q.QueryContext(ctx, `
+		SELECT c.check_result_id, c.name, c.status, c.duration_ms, c.message
+		FROM check_cases c JOIN check_results r ON r.id = c.check_result_id
+		WHERE r.submission_id = ? ORDER BY c.id ASC`, id)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			checkID  int64
+			cs       CaseRow
+			duration int64
+		)
+		if err := rows.Scan(&checkID, &cs.Name, &cs.Status, &duration, &cs.Message); err != nil {
+			return err
+		}
+		i, ok := byID[checkID]
+		if !ok {
+			continue // orphan row: the check it detailed is gone
+		}
+		cs.Duration = time.Duration(duration) * time.Millisecond
+		checks[i].Cases = append(checks[i].Cases, cs)
+	}
+	return rows.Err()
 }
 
 // NextRetryAt implements SubmissionStore.
