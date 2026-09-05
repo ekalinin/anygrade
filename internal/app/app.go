@@ -168,6 +168,12 @@ func Run(ctx context.Context, opts Options) error {
 		BackoffCap:  opts.RetryBackoffCap,
 		MaxRetries:  opts.MaxRetries,
 	}
+	// Optional and off unless the operator put a signing secret in the
+	// environment; nil here means no outbound HTTP anywhere in the process.
+	webhookSink := newWebhookSink(holder, db, log, logw)
+	if webhookSink != nil {
+		q.Notify = webhookNotifier{webhookSink}
+	}
 	ic := &intake.Server{
 		DB: db, Queue: q, Repos: repos, Course: holder,
 		BaseURL: baseURL(opts),
@@ -261,7 +267,7 @@ func Run(ctx context.Context, opts Options) error {
 
 	rctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	errCh := make(chan error, 4)
+	errCh := make(chan error, 5)
 	var wg sync.WaitGroup
 	start := func(name string, fn func() error) {
 		wg.Go(func() {
@@ -270,6 +276,11 @@ func Run(ctx context.Context, opts Options) error {
 				cancel()
 			}
 		})
+	}
+	if webhookSink != nil {
+		// Never returns an error: a delivery failure is the receiver's problem
+		// and must not take the server down with it.
+		start("webhook", func() error { webhookSink.Run(rctx); return nil })
 	}
 	start("intake", func() error { return ic.ListenAndServe(rctx, socket) })
 	start("queue", func() error { return q.Start(rctx) })
