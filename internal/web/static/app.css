@@ -379,6 +379,22 @@ button[type="submit"]:not(.linklike):disabled {
   border-radius: var(--radius-sm); padding: 0.6rem 0.75rem;
 }
 
+/* Copy buttons, injected by static/copy.js - never present without JS, and
+   never in an insecure context where the Clipboard API does not exist. The
+   button follows its block in the flow (margin-left:auto right-aligns it):
+   the token wraps to several lines in the login sheet, so a corner overlay
+   would cover the text it copies. */
+.copy-btn {
+  display: block; margin: 0.35rem 0 0 auto; padding: 0.2rem 0.55rem;
+  border: 1px solid var(--rule); border-radius: var(--radius-sm);
+  background: var(--sheet); color: var(--ink-2); cursor: pointer;
+  font-family: var(--display); font-size: 0.7rem; font-weight: 500;
+  letter-spacing: 0.02em;
+  transition: color 0.15s, border-color 0.15s;
+}
+.copy-btn:hover { color: var(--ink); border-color: var(--ink-2); }
+.copy-btn.copied { color: var(--pass); border-color: var(--pass); }
+
 /* Page-specific bits */
 .filters { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin: 0.75rem 0; }
 

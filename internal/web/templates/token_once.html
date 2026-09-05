@@ -1,5 +1,5 @@
 {{define "content"}}
-<section class="login">
+<section class="login" data-copy data-copy-label="{{t "copy.label"}}" data-copy-done="{{t "copy.done"}}">
 <h1>{{t "token.title"}} {{.Login}}</h1>
 <p class="flash">{{t "token.store_once"}}</p>
 <p><code class="token">{{.Token}}</code></p>
@@ -18,4 +18,7 @@ git remote add upstream {{.URLs.SSHUpstream}}</pre>
 {{end}}
 <p><a href="/">{{t "token.continue"}}</a></p>
 </section>
+{{/* Only this page has values a student must transfer by hand, so the script
+     is pulled in here and not from base.html. */}}
+<script src="/static/copy.js" defer></script>
 {{end}}

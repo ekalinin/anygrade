@@ -231,6 +231,10 @@ token.ssh_hint: "Или по SSH, как только SSH-ключ добавл�
 token.add_key_link: "Добавить SSH-ключ в настройках"
 token.continue: "Перейти к панели"
 
+# Copy buttons (static/copy.js).
+copy.label: "Копировать"
+copy.done: "Скопировано"
+
 # audit.html
 audit.title: "Журнал аудита"
 audit.any_kind: "любой тип"
