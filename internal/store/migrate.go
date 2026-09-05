@@ -15,9 +15,31 @@ var migrationsFS embed.FS
 
 // migrate applies every migrations/*.sql file whose numeric prefix exceeds
 // the database's current PRAGMA user_version, in ascending order.
+//
+// The ledger runs on one pinned connection with foreign keys off, which is
+// what SQLite's own recipe for changing a table's schema requires: PRAGMA
+// foreign_keys is per connection and a no-op inside a transaction, so it
+// cannot be set by the migration that needs it (0010). Enforcement is not
+// missed in the meantime - a migration rewrites whole tables rather than
+// individual rows, and the pragma comes back with the connection, which is
+// released before Open hands the store out.
 func migrate(ctx context.Context, db *sql.DB) error {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("pin connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("disable foreign keys: %w", err)
+	}
+	// Restore the DSN's setting explicitly rather than trusting that this
+	// connection is discarded: it is the only one the pool has.
+	defer func() {
+		_, _ = conn.ExecContext(context.WithoutCancel(ctx), "PRAGMA foreign_keys = ON")
+	}()
+
 	var cur int
-	if err := db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&cur); err != nil {
+	if err := conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&cur); err != nil {
 		return fmt.Errorf("read user_version: %w", err)
 	}
 
@@ -45,7 +67,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("migration %s: read: %w", name, err)
 		}
 
-		tx, err := db.BeginTx(ctx, nil)
+		tx, err := conn.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("migration %s: begin: %w", name, err)
 		}

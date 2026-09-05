@@ -1,0 +1,5 @@
+{{/* One audit row's actor role. The dot is the recorded role string, which is
+     empty for a system event and for every row written before the column
+     existed - unknown rather than "teacher", so it renders as a dash instead
+     of a claim about who acted (SPEC §8). */}}
+{{define "actor-role"}}{{if .}}{{t (print "role." .)}}{{else}}<span class="den">&mdash;</span>{{end}}{{end}}

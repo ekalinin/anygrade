@@ -19,7 +19,7 @@ import (
 type Identity struct {
 	UserID int64
 	Login  string
-	Role   string // student | teacher
+	Role   string // student | ta | teacher
 }
 
 // Authenticator resolves credentials to identities (SPEC §8).
@@ -33,6 +33,12 @@ type Authenticator interface {
 // Authorize is the pure repo-access policy (SPEC §7): students read/write
 // their own repo and read the course repo; teachers do everything.
 // owner "" means the course repo.
+//
+// A TA is deliberately not a teacher here, so this stays a comparison against
+// the one role rather than a call into the rights table. The transport grants
+// read and write together, and a TA's reviewing rights are read-only: the code
+// they need is on the submission page, which serves the graded commit and
+// nothing they could push over.
 func Authorize(id Identity, owner string, write bool) bool {
 	if id.Role == "teacher" {
 		return true

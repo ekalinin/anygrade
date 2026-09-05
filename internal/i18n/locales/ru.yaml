@@ -9,6 +9,7 @@ nav.leaderboard: "рейтинг"
 nav.settings: "настройки"
 nav.logout: "выйти"
 nav.teacher_suffix: " (преподаватель)"
+nav.ta_suffix: " (ассистент)"
 nav.skip: "Перейти к содержимому"
 theme.toggle: "Переключить тему"
 theme.auto: "Авто"
@@ -85,6 +86,11 @@ status.timeout: "таймаут"
 state.active: "активен"
 state.disabled: "отключён"
 
+# Account roles (the students table, the audit log's actor column).
+role.student: "студент"
+role.ta: "ассистент"
+role.teacher: "преподаватель"
+
 # Flash / error codes.
 flash.too_many_attempts: "слишком много неудачных попыток, попробуйте позже"
 flash.unknown_login: "неизвестный логин или токен"
@@ -138,7 +144,7 @@ sub.late_penalty: "штраф за опоздание"
 sub.output: "вывод"
 sub.waiting: "Ожидание воркера…"
 sub.no_results: "Результатов проверок нет."
-sub.logs_teacher_only: "Выше — фрагмент вывода ваших проверок; полные логи доступны преподавателям."
+sub.logs_teacher_only: "Выше — фрагмент вывода ваших проверок; полные логи доступны преподавателям и ассистентам."
 sub.build_log: "лог сборки"
 sub.build_failed: "проверка упала на этапе сборки. Этот этап компилируется вместе со скрытыми тестами, поэтому его вывод виден только преподавателю."
 

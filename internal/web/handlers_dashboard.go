@@ -18,6 +18,11 @@ type userView struct {
 	Login       string
 	DisplayName string
 	Role        string
+	// Review and Admin mirror the role table (store/roles.go) for the
+	// templates: the nav and the admin controls are drawn from the same two
+	// rights the routes are gated by, so a button never leads to a 404.
+	Review bool
+	Admin  bool
 	// Local marks `serve --local`: there is no session, so the header hides
 	// the log out button.
 	Local bool
@@ -25,7 +30,14 @@ type userView struct {
 
 // userViewOf builds the header identity every page carries.
 func (h *Handler) userViewOf(u store.User) userView {
-	return userView{u.Login, u.DisplayName, u.Role, h.Local != nil}
+	return userView{
+		Login:       u.Login,
+		DisplayName: u.DisplayName,
+		Role:        u.Role,
+		Review:      u.CanReview(),
+		Admin:       u.CanAdminister(),
+		Local:       h.Local != nil,
+	}
 }
 
 func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) {

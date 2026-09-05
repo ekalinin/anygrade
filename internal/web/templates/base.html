@@ -27,15 +27,15 @@
   <div class="topbar-right">
   {{if .User.Login}}
   <nav>
-    {{if eq .User.Role "teacher"}}
+    {{if .User.Review}}
     <a href="/matrix">{{t "nav.matrix"}}</a>
     <a href="/queue">{{t "nav.queue"}}</a>
     <a href="/students">{{t "nav.students"}}</a>
-    <a href="/audit">{{t "nav.audit"}}</a>
+    {{if .User.Admin}}<a href="/audit">{{t "nav.audit"}}</a>{{end}}
     {{end}}
     <a href="/leaderboard">{{t "nav.leaderboard"}}</a>
     <a href="/settings">{{t "nav.settings"}}</a>
-    <span class="who">{{if .User.DisplayName}}{{.User.DisplayName}}{{else}}{{.User.Login}}{{end}}{{if eq .User.Role "teacher"}}{{t "nav.teacher_suffix"}}{{end}}</span>
+    <span class="who">{{if .User.DisplayName}}{{.User.DisplayName}}{{else}}{{.User.Login}}{{end}}{{if .User.Review}}{{t (print "nav." .User.Role "_suffix")}}{{end}}</span>
     {{if not .User.Local}}<form method="post" action="/logout" class="inline"><button type="submit" class="linklike">{{t "nav.logout"}}</button></form>{{end}}
   </nav>
   {{end}}

@@ -313,7 +313,10 @@ func (h *Handler) leaderboardPage(w http.ResponseWriter, r *http.Request) {
 		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
 		return
 	}
-	anonymize := lb.Anonymize && u.Role != "teacher"
+	// Anonymization keeps students from ranking each other; staff who may open
+	// any submission lose nothing by being sent to the matrix for the same
+	// names, so it is off for every reviewer (SPEC §10).
+	anonymize := lb.Anonymize && !u.CanReview()
 	rows := make([]leaderboardRow, 0)
 	for _, lr := range gradebook.Leaderboard(m, h.Alias) {
 		name := lr.Login

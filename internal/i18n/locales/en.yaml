@@ -11,6 +11,7 @@ nav.leaderboard: "leaderboard"
 nav.settings: "settings"
 nav.logout: "log out"
 nav.teacher_suffix: " (teacher)"
+nav.ta_suffix: " (TA)"
 nav.skip: "Skip to content"
 theme.toggle: "Toggle color theme"
 theme.auto: "Auto"
@@ -88,6 +89,11 @@ status.timeout: "timeout"
 state.active: "active"
 state.disabled: "disabled"
 
+# Account roles (the students table, the audit log's actor column).
+role.student: "student"
+role.ta: "TA"
+role.teacher: "teacher"
+
 # Flash / error codes rendered inside HTML pages (tFlash). Unknown codes pass
 # through unchanged, so dynamic reject reasons stay in English.
 flash.too_many_attempts: "too many failed attempts, try again later"
@@ -142,7 +148,7 @@ sub.late_penalty: "late penalty"
 sub.output: "output"
 sub.waiting: "Waiting for a worker…"
 sub.no_results: "No check results recorded."
-sub.logs_teacher_only: "The output above is the excerpt your checks produced; full logs are available to teachers."
+sub.logs_teacher_only: "The output above is the excerpt your checks produced; full logs are available to the teaching staff."
 sub.build_log: "build log"
 sub.build_failed: "this check failed while it was being built. That phase compiles against the hidden tests, so its output goes to your teacher only."
 

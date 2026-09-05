@@ -4,8 +4,11 @@ import "context"
 
 // ListEventsByTarget implements AuditStore.
 func (s *DB) ListEventsByTarget(ctx context.Context, login string, limit int) ([]EventRow, error) {
+	// e.actor_role, never a.role: the row records the role its actor held when
+	// they acted, and joining the current one would rewrite history on the
+	// first promotion.
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT e.kind, e.target, e.detail, e.created_at, COALESCE(a.login, '')
+		SELECT e.kind, e.target, e.detail, e.created_at, COALESCE(a.login, ''), e.actor_role
 		FROM events e LEFT JOIN users a ON a.id = e.actor_id
 		WHERE e.target = ? OR e.target LIKE ? || '/%'
 		ORDER BY e.created_at DESC LIMIT ?`,
@@ -21,7 +24,7 @@ func (s *DB) ListEventsByTarget(ctx context.Context, login string, limit int) ([
 			ev        EventRow
 			createdAt string
 		)
-		if err := rows.Scan(&ev.Kind, &ev.Target, &ev.Detail, &createdAt, &ev.ActorLogin); err != nil {
+		if err := rows.Scan(&ev.Kind, &ev.Target, &ev.Detail, &createdAt, &ev.ActorLogin, &ev.ActorRole); err != nil {
 			return nil, err
 		}
 		if ev.CreatedAt, err = parseTime(createdAt); err != nil {
@@ -36,7 +39,7 @@ func (s *DB) ListEventsByTarget(ctx context.Context, login string, limit int) ([
 // filtered by exact kind and/or a target substring, newest first.
 func (s *DB) ListEvents(ctx context.Context, kind, target string, limit, offset int) ([]EventRow, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT e.kind, e.target, e.detail, e.created_at, COALESCE(a.login, '')
+		SELECT e.kind, e.target, e.detail, e.created_at, COALESCE(a.login, ''), e.actor_role
 		FROM events e LEFT JOIN users a ON a.id = e.actor_id
 		WHERE (? = '' OR e.kind = ?) AND (? = '' OR e.target LIKE '%' || ? || '%')
 		ORDER BY e.id DESC LIMIT ? OFFSET ?`,
@@ -52,7 +55,7 @@ func (s *DB) ListEvents(ctx context.Context, kind, target string, limit, offset 
 			ev        EventRow
 			createdAt string
 		)
-		if err := rows.Scan(&ev.Kind, &ev.Target, &ev.Detail, &createdAt, &ev.ActorLogin); err != nil {
+		if err := rows.Scan(&ev.Kind, &ev.Target, &ev.Detail, &createdAt, &ev.ActorLogin, &ev.ActorRole); err != nil {
 			return nil, err
 		}
 		if ev.CreatedAt, err = parseTime(createdAt); err != nil {

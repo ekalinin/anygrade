@@ -33,12 +33,12 @@ type Store interface {
 	io.Closer
 }
 
-// User is a course account (student or teacher).
+// User is a course account (student, TA or teacher).
 type User struct {
 	ID          int64
 	Login       string
 	DisplayName string
-	Role        string // student | teacher
+	Role        string // student | ta | teacher; see roles.go for what each may do
 	State       string // active | disabled
 	CreatedAt   time.Time
 }
@@ -135,10 +135,14 @@ type AuditStore interface {
 // EventRow is one audit entry joined with its actor for display.
 type EventRow struct {
 	ActorLogin string // "" for system
-	Kind       string
-	Target     string
-	Detail     string
-	CreatedAt  time.Time
+	// ActorRole is the role the actor held when they acted, so a review can
+	// tell a TA's recheck from a teacher's (SPEC §8). "" for system events and
+	// for rows written before the column existed - unknown, not "teacher".
+	ActorRole string
+	Kind      string
+	Target    string
+	Detail    string
+	CreatedAt time.Time
 }
 
 // ScoreOverride is a teacher-set manual score for (student, task) (SPEC §9).

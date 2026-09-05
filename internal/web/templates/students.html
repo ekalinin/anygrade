@@ -7,7 +7,7 @@
   <tr>
     <td class="key"><a href="/students/{{.Login}}">{{.Login}}</a></td>
     <td>{{.DisplayName}}</td>
-    <td>{{.Role}}</td>
+    <td>{{t (print "role." .Role)}}</td>
     <td><span class="badge {{if eq .State "active"}}st-not-started{{else}}st-partial{{end}}">{{t (print "state." .State)}}</span></td>
     <td>{{fmtTime .CreatedAt}}</td>
   </tr>

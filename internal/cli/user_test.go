@@ -64,6 +64,43 @@ func TestParseRoster(t *testing.T) {
 	})
 }
 
+// TestUserAddAcceptsEveryRole: --role takes the TA from day one, since a role
+// that can only be set by editing the database is not shipped (SPEC §8). The
+// value is checked before the INSERT, so a typo is a message rather than a
+// CHECK violation - and it leaves no account behind.
+func TestUserAddAcceptsEveryRole(t *testing.T) {
+	dir := t.TempDir()
+	for _, role := range []string{store.RoleStudent, store.RoleTA, store.RoleTeacher} {
+		if err := userAdd([]string{"--login", "u-" + role, "--role", role, "--data-dir", dir}); err != nil {
+			t.Fatalf("user add --role %s: %v", role, err)
+		}
+	}
+	// The invite path takes the same roster of roles.
+	if err := userInvite([]string{"--login", "ta2", "--role", store.RoleTA, "--data-dir", dir}); err != nil {
+		t.Fatalf("user invite --role ta: %v", err)
+	}
+	err := userAdd([]string{"--login", "nope", "--role", "assistant", "--data-dir", dir})
+	if err == nil || !strings.Contains(err.Error(), "student, ta or teacher") {
+		t.Fatalf("err = %v, want the accepted roles named", err)
+	}
+
+	db, oerr := store.Open(t.Context(), dir)
+	if oerr != nil {
+		t.Fatal(oerr)
+	}
+	defer db.Close()
+	ta, gerr := db.GetUserByLogin(t.Context(), "u-ta")
+	if gerr != nil {
+		t.Fatalf("the TA was not created: %v", gerr)
+	}
+	if !ta.CanReview() || ta.CanAdminister() {
+		t.Errorf("stored TA has the wrong rights: %+v", ta)
+	}
+	if _, gerr := db.GetUserByLogin(t.Context(), "nope"); gerr == nil {
+		t.Error("the rejected role still created an account")
+	}
+}
+
 // testAuthorizedKey returns one throwaway authorized_keys line.
 func testAuthorizedKey(t *testing.T) string {
 	t.Helper()

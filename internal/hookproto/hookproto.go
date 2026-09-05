@@ -25,7 +25,7 @@ const (
 	EnvSocket = "ANYGRADE_SOCKET" // unix socket path
 	EnvRepo   = "ANYGRADE_REPO"   // repo owner login, or "course"
 	EnvActor  = "ANYGRADE_ACTOR"  // authenticated login performing the push
-	EnvRole   = "ANYGRADE_ROLE"   // student | teacher
+	EnvRole   = "ANYGRADE_ROLE"   // student | ta | teacher
 )
 
 // RefUpdate is one `old new ref` line git feeds a receive hook on stdin.

@@ -52,7 +52,7 @@ type Row struct {
 // Matrix is the full gradebook.
 type Matrix struct {
 	Tasks []TaskCol
-	Rows  []Row // students only (teachers excluded), ordered by login
+	Rows  []Row // students only (staff excluded), ordered by login
 }
 
 // Build assembles the matrix. Pure: submissions are grouped in Go (course
@@ -77,7 +77,9 @@ func Build(users []store.User, tasks []TaskCol, subs []store.Submission,
 
 	m := Matrix{Tasks: tasks}
 	for _, u := range users {
-		if u.Role != "student" {
+		// Who is graded, not who may look: every staff role - ta included -
+		// is left out of the matrix, the CSV and the leaderboard alike.
+		if u.Role != store.RoleStudent {
 			continue
 		}
 		row := Row{User: u, Cells: make(map[string]Cell, len(tasks))}
