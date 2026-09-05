@@ -127,6 +127,7 @@ func TestE2E(t *testing.T) {
 	t.Run("cross-student access", func(t *testing.T) { testCrossStudentAccess(t, e) })
 	t.Run("cli export against a live server", func(t *testing.T) { testCLIExport(t, e) })
 	t.Run("token reset", func(t *testing.T) { testTokenReset(t, e) })
+	t.Run("deactivate and reactivate a student", func(t *testing.T) { testDeactivateStudent(t, e) })
 	t.Run("leaderboard", func(t *testing.T) { testLeaderboard(t, e) })
 	t.Run("max push size", func(t *testing.T) { testMaxPushSize(t, e) })
 	t.Run("tls listener", func(t *testing.T) { testTLSListener(t, e) })
