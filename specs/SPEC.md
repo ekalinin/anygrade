@@ -82,6 +82,10 @@ scoring:
 limits:                   # course-wide, unrelated to the per-task defaults below
   max_push_size: 50m      # largest pack one student push may carry (default 50m)
 
+webhook:                  # optional; omit the block for no outbound traffic
+  url: https://gradebook.example.edu/anygrade   # target only - the signing
+                          # secret comes from the environment (§16)
+
 defaults:                 # inherited by every task.yaml, overridable per task
   runner:
     type: docker          # docker | local
@@ -310,6 +314,31 @@ Consequences:
 - Hidden tests are copied in with their write bits stripped, so one check cannot rewrite the tests the next check runs against. This is not an isolation boundary: the checks run as the owner of those files (§14).
 - `$ANYGRADE_ARTIFACTS` (`.anygrade-artifacts` at the workspace root) is created with the workspace and exported to every phase, whether or not the task uses build phases. It sits outside the task directory so a task's own build never walks into it, and its leading dot keeps it out of Go's package patterns even for a task that is the repo root itself.
 
+### 6.2 Completion webhook
+
+Results otherwise reach people by pull only. `webhook.url` in `course.yaml` (§4.2) adds one course-wide push: every submission the policy admitted produces exactly one event when it reaches a state it will never leave - graded, terminally failed, or canceled. A rejected submission produces none: it never entered the queue, so nothing is waiting for its outcome. The whole feature is optional; with the block absent, or with no signing secret in the environment, the server makes no outbound HTTP request at all.
+
+```
+POST <webhook.url>
+Content-Type: application/json
+X-Anygrade-Event: submission.completed
+X-Anygrade-Attempt: 1
+X-Anygrade-Timestamp: 1757068800
+X-Anygrade-Signature: v1=<hex hmac-sha256>
+
+{"event":"submission.completed","sent_at":"2026-09-05T09:20:00Z",
+ "submission_id":42,"student":"ivanov","task":"01-intro",
+ "status":"done","score":72,"raw_score":80,"penalty_percent":10}
+```
+
+- **Configuration split.** The target lives in `course.yaml`, because it names a destination and a teacher should be able to move it with a push. The signing secret is a credential and comes from `ANYGRADE_WEBHOOK_SECRET`, never from the repo every student clones - the same rule hidden-tests credentials follow (§11). A target with no secret to sign it is refused rather than delivered unsigned, which also makes the operator, not the teacher, the one who decides that an instance may talk outward at all.
+- **Per course, not per student.** The case this serves is keeping an external gradebook in sync. Per-student notifications ("your check finished") are a different feature, with a subscription model behind them.
+- **Payload.** Identifiers and scores only. Check excerpts, log paths and worker notes are teacher-only material (§14) and a receiver is whatever the teacher pointed it at. `status` is the status stored on the row, so a teacher cancel arrives as `infra_error` like any other terminal failure (§12).
+- **Signature.** `HMAC-SHA256(secret, "<timestamp>.<raw body>")`, hex, re-computed per attempt over a fresh timestamp. The receiver recomputes it over the bytes it read, compares in constant time, and rejects a timestamp outside its own tolerance; that is what stops a captured delivery from being replayed later, since rewriting the timestamp invalidates the signature.
+- **Delivery semantics.** At least once, and only within the life of the process: events are queued in memory, never persisted, so a crash or a shutdown loses what was pending - with a line in the log, never silently. Attempts are capped (5) with exponential backoff; a 5xx, a 408, a 429 or a transport fault is retried, any other 4xx is not. **Order is not guaranteed**: retries of one event overlap the delivery of the next, and a full queue drops rather than blocks. The receiver must be idempotent; `submission_id` plus `status` is the natural key.
+- **A failed delivery never touches the submission.** Delivery happens after the row is written and outside every transaction, on its own goroutines. Grading does not depend on a receiver being up, and a receiver that hangs cannot hold up the next submission.
+- **Target policy** (enforced by `validate` and again at delivery): `http` or `https` only, no credentials in the URL, no redirects followed, a deadline on every attempt, and a bounded read of the response. The target is refused if the address it dials is loopback, link-local, unique-local or RFC 1918 - the check runs on the resolved address immediately before connecting, so a name that answers differently on the second lookup is judged on what is actually dialed. `ANYGRADE_WEBHOOK_ALLOW_PRIVATE` lifts that refusal for an operator running a local relay. The reason for the default is the same asymmetry `ANYGRADE_HIDDEN_LOCAL_ROOTS` exists for: the teacher who edits `course.yaml` need not be the administrator of the machine, and a POST the teacher cannot read the reply to is still a POST to the cloud metadata endpoint. `HTTP_PROXY`/`HTTPS_PROXY` are not honoured, because the dial would then reach the proxy and the address check would judge the proxy instead of the target.
+
 ## 7. Git server
 
 - Per-student bare repos are clones of the course repo, created at account activation. The first git access creates one too, as a fallback: accounts made with `anygrade user add` never go through an activation page, and the activation itself must not fail on a slow clone once the invite is already spent.
@@ -468,8 +497,8 @@ anygrade export  scores --format csv
 - `check --runner local` overrides the per-task runner for students without docker; it runs task code unsandboxed on the host, which is acceptable at the self-check trust level (own machine, own code). No `--allow-local-runner` gate applies here - that gate is only for a non-loopback server.
 - `--retry-backoff`, `--retry-backoff-cap` and `--max-retries` are the infra-error retry schedule of §13: the first delay (doubling per retry), its upper bound, and how many retries a submission gets before it becomes terminal. Defaults `10s`, `5m`, `8`. They are `serve` flags and not `course.yaml` because what makes the defaults wrong is a slow registry or an unreliable hidden-tests remote - a property of the deployment, which the operator knows and the teacher pushing metadata does not; and because the schedule is fixed for the life of the process, so a submission already waiting on a backoff is never re-scheduled under a different one. A non-positive delay or budget, and a cap below the base, are refused at startup rather than replaced by the default.
 - `--tls-cert` and `--tls-key` are required together and make the web/git HTTP listener serve HTTPS. `--behind-proxy` trusts `X-Forwarded-Proto` from a proxy that terminates TLS instead, and is also what makes the failure limiter read `X-Forwarded-For`: without it every request behind a proxy shares one client address, and a few failed logins would exhaust the per-IP budget for the whole course. Both headers are forgeable by anyone who reaches the port, which is why neither is read without the flag. Without one of the two the token travels in the clear (§14).
-- Secrets (hidden-tests repo credentials) come from the environment (`ANYGRADE_HIDDEN_GIT_TOKEN`) or standard git credential helpers, never from the course repo; `validate` enforces that rule by rejecting a `hidden_tests.url` with credentials embedded in it.
 - The OpenID Connect relying party (§8) follows the same rule and for the same reason - a client id and secret are credentials, and `course.yaml` is cloned by every student. It is configured only through the environment, never through `course.yaml` and never through a flag (a secret in argv is in every `ps` listing on the machine): `ANYGRADE_OIDC_ISSUER` (unset = the feature is off), `ANYGRADE_OIDC_CLIENT_ID`, `ANYGRADE_OIDC_CLIENT_SECRET` (omit for a public client - PKCE authenticates it), `ANYGRADE_OIDC_SCOPES` (default `openid profile email`), `ANYGRADE_OIDC_LOGIN_CLAIM` (default `preferred_username`) and `ANYGRADE_OIDC_NAME` (the login button's label; default the issuer's host). The redirect URI is not configurable: it is `--base-url` plus `/oidc/callback`, which is the URI to register at the provider. An issuer must be `https` unless it is loopback, and an issuer set without a client id, or without a public base URL to derive the redirect from, aborts startup - a half-configured provider is a button that cannot work. An issuer that is merely unreachable at startup is a warning: an IdP outage must not stop a course server, and the token login is unaffected.
+- `ANYGRADE_WEBHOOK_ALLOW_PRIVATE` (any non-empty value) lets `webhook.url` name a loopback or private address, which the deliverer otherwise refuses (§6.2). Set it to run a local relay - a Telegram or mail bridge on `127.0.0.1` - and leave it unset whenever the teachers who push `course.yaml` are not the administrators of the machine.
 - `ANYGRADE_HIDDEN_LOCAL_ROOTS` is a colon-separated list of absolute roots (a relative entry is ignored and reported, so it can only narrow the list) that `hidden_tests: source: local` may read from; unset means unrestricted. Recommended whenever the teachers who push `course.yaml` are not the administrators of the machine, since a local hidden-tests path otherwise reaches any directory the server can read. `anygrade check` reads the working copy and is not subject to it.
 - `export scores --format csv`, and the same export in the teacher UI, prefix a cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return with an apostrophe, so a login or task id cannot become a formula in a spreadsheet.
 - `export submissions --task ID` writes one task's solutions as a corpus for MOSS, JPlag or any other similarity checker; anygrade compares nothing itself (§2, §16). One directory per student, holding only the task's `solution_files` read from the commit pinned at `refs/anygrade/submissions/<id>` (§6) - the authoritative files are identical in every submission by construction and would drown the signal. By default each student contributes the submission the scoring policy counts (§9), which is the one a grade would be defended on; `--all-attempts` exports every recorded submission instead, as `<login>@<submission-id>`, which catches "copied, then rewrote" and multiplies the corpus. The task template is written alongside as `_template/` - a login must start with a letter or a digit, so no student directory can take that name - and a checker is pointed at it to subtract the starter files. `--format zip` packs the same tree; `--out -` streams it to stdout. Reading the pinned refs needs the server's repos, so the command works against the data dir, not a working copy. A student whose pin is gone is reported and skipped, and the command exits non-zero; a `solution_file` absent from the submitted commit is a warning - grading used the template there, and writing the template into the student's tree would make every such student look identical.
@@ -542,6 +571,7 @@ Credentials and transport:
 - An established SSH connection has a 10-minute idle timeout and, like the HTTP listener, deliberately no absolute deadline: an absolute one would cut a legitimate slow clone or a large push mid-transfer, while the idle one only reclaims a connection whose peer went away.
 - SSH key registration takes a proof of possession (§8): the key is stored only after its holder signs a server-issued nonce, which is itself hashed at rest, single-use and short-lived. Keys from before that requirement, and keys a teacher adds out of band, are marked unproven; they still authenticate, and they lose the fingerprint to whoever proves it.
 - The HTTP listener sets a header timeout and an idle timeout, and deliberately no read or write timeout: SSE streams and large packs are both long-lived by design.
+- The completion webhook (§6.2) is the only outbound HTTP the server makes, and it is off unless the operator sets a signing secret. Its target is teacher-controlled, so it is bounded in both directions: `http`/`https` only, no credentials in the URL, no redirects followed, a per-attempt deadline, a capped read of the response, a capped number of attempts, and a refusal to dial an address that is not routable on the public internet. Its payload carries identifiers and scores only - no excerpts, no log paths, no notes - because a receiver is not a teacher.
 
 On the server's own filesystem:
 
@@ -572,7 +602,8 @@ The web UI enforces a rights check on every route that is not open to any authen
 - Plagiarism detection itself. The export hook for MOSS/JPlag is done (`export submissions`, §11); comparing is a research area with real tools in it, and a second-rate in-tree implementation would be worse than none.
 - Write endpoints for the JSON API (recheck, override, cancel), which need a CSRF story of their own (§10.2).
 - Sign-in with providers that speak OAuth but not OpenID Connect (GitHub issues no ID token, so §8 does not cover it).
-- Webhooks/notifications (Telegram, email) on check completion.
+- Telegram and email notifications. The generic webhook (§6.2) ships; both are receivers of it, and a small relay outside the tree is less code than two integrations inside it.
+- A second webhook event for a teacher score override, and per-student notifications - the latter needs a subscription model first (§6.2).
 
 ## 17. Implementation milestones
 

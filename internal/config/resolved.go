@@ -22,6 +22,9 @@ type ResolvedCourse struct {
 	Registration  Registration
 	Leaderboard   Leaderboard
 	ScoringPolicy string
+	// Webhook is the optional completion-event target (SPEC §16); an empty URL
+	// means the server makes no outbound request at all.
+	Webhook Webhook
 	// MaxPushSize caps one git push in bytes (SPEC §13); always > 0.
 	MaxPushSize int64
 	// Timezone is the location the UI renders timestamps in (SPEC §13);

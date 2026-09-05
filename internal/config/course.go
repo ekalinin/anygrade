@@ -15,7 +15,22 @@ type Course struct {
 	Leaderboard  Leaderboard  `yaml:"leaderboard"`
 	Scoring      Scoring      `yaml:"scoring"`
 	Limits       CourseLimits `yaml:"limits"`
+	Webhook      Webhook      `yaml:"webhook"`
 	Defaults     Defaults     `yaml:"defaults"`
+}
+
+// Webhook is the optional course-wide delivery target for completion events
+// (SPEC §16). Only the destination lives here: it says where results go, which
+// is the teacher's business and should change with a push. The signing secret
+// is not a destination but a credential, and this file is inside the repo every
+// student clones, so it comes from the server's environment
+// (ANYGRADE_WEBHOOK_SECRET) exactly like the hidden-tests token (SPEC §11).
+//
+// It is per course, not per student: the case it serves is keeping an external
+// gradebook in sync. Per-student notifications are a different feature with a
+// subscription model behind them.
+type Webhook struct {
+	URL string `yaml:"url"`
 }
 
 // CourseLimits are the instance-wide limits (SPEC §13). They sit next to

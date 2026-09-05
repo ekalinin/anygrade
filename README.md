@@ -67,6 +67,9 @@ leaderboard:
 limits:                   # course-wide, unrelated to the per-task defaults below
   max_push_size: 50m      # largest pack one student push may carry (default 50m)
 
+# webhook:                # optional; omit it and nothing is ever sent out
+#   url: https://gradebook.example.edu/anygrade
+
 defaults:                 # inherited by every task.yaml, overridable per task
   runner:
     type: docker          # docker | local
@@ -305,6 +308,69 @@ checks:
 - **A parser can never fail a check.** A report anygrade cannot read - the wrong format, no such file, output that is not a report at all - leaves the check exactly as its exit code decided it, and the page says the report could not be read. The build phase is never parsed, since its output is teacher-only, and neither is a check that timed out: it was killed mid-report.
 - The format is yours to declare, because a check is an arbitrary command: anygrade never guesses it, and `anygrade validate` rejects a name it does not know. Sizes are bounded - a report over 4 MB or over 1000 cases is refused, case names are stored up to 200 bytes and messages up to 512 - so a test that prints a megabyte per case costs the proportional scoring and nothing else.
 
+## Webhook
+
+Results otherwise reach people by pull: the push output acknowledges the submission, and after that everyone watches the UI. One course-wide webhook pushes them instead - to an external gradebook, or to a small relay that forwards them to Telegram or mail.
+
+It takes two things, on purpose in two different places:
+
+```yaml
+# course.yaml - the destination, which is the teacher's to change with a push
+webhook:
+  url: https://gradebook.example.edu/anygrade
+```
+
+```sh
+# the server's environment - the credential, which never belongs in the repo
+export ANYGRADE_WEBHOOK_SECRET=$(openssl rand -hex 32)
+```
+
+`course.yaml` is inside the repo every student clones, so a signing secret cannot live there - the same reason hidden-tests credentials come from the environment. Without the variable nothing is delivered (and `serve` says so at startup if the course configures a URL): a target with nobody to sign for it would reach the receiver indistinguishable from anyone else's POST. With neither, anygrade makes no outbound HTTP request at all.
+
+Every submission that entered the queue produces exactly one event when it reaches a state it will never leave. Submissions the deadline or the attempt limit rejected produce none.
+
+```http
+POST /anygrade HTTP/1.1
+Content-Type: application/json
+X-Anygrade-Event: submission.completed
+X-Anygrade-Attempt: 1
+X-Anygrade-Timestamp: 1757068800
+X-Anygrade-Signature: v1=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+
+{
+  "event": "submission.completed",
+  "sent_at": "2026-09-05T09:20:00Z",
+  "submission_id": 42,
+  "student": "ivanov",
+  "task": "01-intro",
+  "status": "done",
+  "score": 72,
+  "raw_score": 80,
+  "penalty_percent": 10
+}
+```
+
+Identifiers and scores, and nothing else: check excerpts, log paths and worker notes are teacher-only, and a receiver is whatever the URL points at. `status` is what the database holds, so a teacher cancel arrives as `infra_error` like any other terminal failure.
+
+**Verifying a delivery.** The signature is `HMAC-SHA256(secret, "<X-Anygrade-Timestamp>.<raw body>")`, hex-encoded, prefixed with `v1=`:
+
+```python
+mac = hmac.new(secret, f"{timestamp}.".encode() + raw_body, hashlib.sha256)
+if not hmac.compare_digest("v1=" + mac.hexdigest(), signature_header):
+    reject()
+if abs(time.time() - int(timestamp)) > 300:     # your own tolerance
+    reject()
+```
+
+Sign over the bytes you read, not over a re-serialized object, and compare in constant time. The timestamp is inside the signed material, which is what makes a captured delivery useless later: rewriting it invalidates the signature.
+
+**What is guaranteed, and what is not.**
+
+- **At least once, within one server lifetime.** Pending events live in memory, so a restart loses them - with a line in the log, never silently. Failed attempts are retried with backoff and capped at five; a 5xx, 408, 429 or connection failure is retried, any other 4xx is not.
+- **No ordering.** Retries of one event overlap the delivery of the next. Make the receiver idempotent - `submission_id` plus `status` is the natural key - and do not infer sequence from arrival.
+- **Nothing here can affect grading.** Delivery happens after the result is written and outside every transaction. A receiver that is down, slow or broken changes no submission's status and does not hold up the next one.
+- **The target is bounded.** `http` or `https` only, no credentials in the URL, redirects not followed, a deadline on every attempt, a capped read of the response. A URL that resolves to a loopback, link-local or private address is refused, because the teacher who edits `course.yaml` need not be the administrator of the machine and a POST to `169.254.169.254` is still a POST. Set `ANYGRADE_WEBHOOK_ALLOW_PRIVATE=1` to run a relay on localhost. `anygrade validate` checks the same rules, and warns about a plain `http` target - the payload names students and their scores. `HTTP_PROXY`/`HTTPS_PROXY` are deliberately not read: the connection goes to the target itself, which is what makes checking the address it dials mean anything. Behind a mandatory egress proxy, make the proxy the target.
+
 ## CLI
 
 ```
@@ -402,6 +468,7 @@ v1 is deliberately read-only, and says nothing about liveness: poll it. Recheck,
 - SSH has no guessable credential to rate limit - it authenticates a key fingerprint, and a client offers every key in its agent until one matches - so it is bounded on connection churn instead: how many connections may sit in the handshake at once, overall and per client address, how long each one has to get through it, and how long an established connection may sit idle. Nothing is tunable and nothing needs to be; the ceilings are far above a whole class pushing at a deadline, and a key that authenticates stops counting against them straight away.
 - Rights checks on every route, and a refusal is a 404 rather than a 403 for every role alike: students can only read their own submissions, and a TA turned away from an account-management route learns no more about it than a student does. The check excerpt and the live stream are the student's; the full check log is a staff-only download, because their code runs beside the hidden tests. A check's `build:` phase is staff-only in full - no excerpt, no live stream - since that is the phase that compiles against the hidden tests. The JSON API is the same checks over the same data and serves no full log at all.
 - CSV export prefixes any cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return with an apostrophe, so a login can never become a spreadsheet formula.
+- The [webhook](#webhook) is the only outbound HTTP anygrade makes, and it stays off until an operator sets a signing secret. Its target comes from `course.yaml`, so it is bounded in both directions: signed payloads carrying identifiers and scores only, and a target that must be `http`/`https`, must not embed credentials, is not followed through redirects and may not resolve to an address inside the machine's own network.
 
 ## Data directory
 

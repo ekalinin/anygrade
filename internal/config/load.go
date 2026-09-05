@@ -176,6 +176,7 @@ func resolveCourse(c *Course) ResolvedCourse {
 		Registration:  c.Registration,
 		Leaderboard:   c.Leaderboard,
 		ScoringPolicy: policy,
+		Webhook:       c.Webhook,
 		MaxPushSize:   maxPush,
 		Timezone:      loadLocation(c.Timezone),
 	}

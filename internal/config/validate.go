@@ -11,6 +11,7 @@ import (
 
 	"github.com/ekalinin/anygrade/internal/i18n"
 	"github.com/ekalinin/anygrade/internal/testreport"
+	"github.com/ekalinin/anygrade/internal/webhook"
 )
 
 // Severity classifies a Diagnostic. Only SevError makes validation (and server
@@ -102,6 +103,7 @@ func Validate(r *Resolved) []Diagnostic {
 		add(SevError, courseFile, "registration.course_code", "required when registration.mode is open")
 	}
 	validateRegistrationBounds(c.Registration, add)
+	validateWebhook(c.Webhook, add)
 	if p := r.rawCourse.Scoring.Policy; p != "" && !validScorePolicy[p] {
 		add(SevError, courseFile, "scoring.policy", "must be one of best|latest, got %q", p)
 	}
@@ -172,6 +174,37 @@ func validateRegistrationBounds(reg Registration, add func(Severity, string, str
 		if reg.MaxAccounts > 0 {
 			add(SevWarning, courseFile, "registration.max_accounts", noEffect)
 		}
+	}
+}
+
+// validateWebhook checks the optional completion-event target (SPEC §16). This
+// is the one course.yaml key that makes the server open a connection to a host
+// of the teacher's choosing, so the rules are the deliverer's own - CheckURL is
+// what the delivery path enforces, called here so a target that validates is a
+// target the server will actually post to.
+//
+// Neither diagnostic echoes the URL: it is reported back in the teacher's push
+// output, and the target may carry a path that is itself a secret.
+func validateWebhook(w Webhook, add func(Severity, string, string, string, ...any)) {
+	if w.URL == "" {
+		return
+	}
+	if err := webhook.CheckURL(w.URL); err != nil {
+		add(SevError, courseFile, "webhook.url", "%s", err)
+		return
+	}
+	// Warnings, not errors, and for the same reason hidden_tests.path warns
+	// about ANYGRADE_HIDDEN_LOCAL_ROOTS: validate usually runs on the course
+	// author's machine, where neither the network nor the server's environment
+	// is the one that will decide.
+	if u, err := url.Parse(w.URL); err == nil && u.Scheme == "http" {
+		add(SevWarning, courseFile, "webhook.url",
+			"http sends student logins and scores across the network in the clear; use https")
+	}
+	if webhook.PrivateHost(w.URL) {
+		add(SevWarning, courseFile, "webhook.url",
+			"the target is a loopback or private address; a server without %s set refuses to connect to one",
+			webhook.AllowPrivateEnv)
 	}
 }
 

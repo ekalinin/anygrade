@@ -90,6 +90,7 @@ type Queue struct {
 	NewRunner func(config.ResolvedRunner) (runner.Runner, error)
 	Workers   int
 	Events    Publisher // optional live-update sink; nil = disabled
+	Notify    Notifier  // optional terminal-outcome sink; nil = disabled
 
 	// Backoff schedule for infra errors: min(Base<<retries, Cap), then after
 	// MaxRetries the submission becomes terminal infra_error (SPEC §13).
@@ -192,6 +193,19 @@ func (q *Queue) Enqueue(ctx context.Context, ns store.NewSubmission) (store.Subm
 func (q *Queue) publish(sub store.Submission, status string) {
 	if q.Events != nil {
 		q.Events.Publish(Event{SubID: sub.ID, UserID: sub.UserID, TaskID: sub.TaskID, Status: status})
+	}
+}
+
+// complete reports a terminal outcome to the optional completion sink. It is
+// called after the row is written and outside every transaction: a delivery
+// must never be something a submission's status can wait on, let alone depend
+// on (AGENTS.md: no transaction is held across slow work).
+func (q *Queue) complete(sub store.Submission, status string, raw, penalty, final float64) {
+	if q.Notify != nil {
+		q.Notify.Completed(Completion{
+			SubID: sub.ID, UserID: sub.UserID, TaskID: sub.TaskID, Status: status,
+			Raw: raw, Penalty: penalty, Final: final,
+		})
 	}
 }
 
@@ -358,6 +372,7 @@ func (q *Queue) process(ctx context.Context, sub store.Submission) {
 		return
 	}
 	q.publish(sub, store.StatusDone)
+	q.complete(sub, store.StatusDone, raw, pen, final)
 }
 
 // fail records a failed submission. A canceled execution context is not an
@@ -414,6 +429,11 @@ func (q *Queue) Cancel(ctx context.Context, id int64) (bool, error) {
 		cancel()
 	}
 	q.publish(sub, "canceled")
+	// A cancel is a terminal outcome too, and an external system that only ever
+	// hears about completions would otherwise wait on this submission forever.
+	// The status reported is the row's own - infra_error, since there is no
+	// 'canceled' status (SPEC §12) - never the UI's display wording.
+	q.complete(sub, sub.Status, 0, 0, 0)
 	return true, nil
 }
 
@@ -490,6 +510,12 @@ func (q *Queue) scheduleRetry(sub store.Submission, at *time.Time, note, student
 		return
 	}
 	q.publish(sub, store.StatusInfraError)
+	// A nil retry_at is the end of the line - no further attempt will change
+	// this row - so this write is the submission's outcome, not a step on the
+	// way to one. There are no scores: it never produced any.
+	if at == nil {
+		q.complete(sub, store.StatusInfraError, 0, 0, 0)
+	}
 }
 
 // requeue survives ctx cancellation: it must run even during shutdown.
