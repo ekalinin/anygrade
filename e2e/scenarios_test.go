@@ -1106,14 +1106,37 @@ func testTLSListener(t *testing.T, e *env) {
 		}
 	}
 
-	// git over the same listener. -c http.sslVerify=true throughout so a
-	// machine that has turned verification off globally cannot turn either
-	// half of this into a pass.
 	out := runBin(t, "", "user", "add", "--login", "tina", "--role", "student", "--data-dir", tlsEnv.dataDir)
 	token := reToken.FindString(out)
 	if token == "" {
 		t.Fatalf("no token in `user add` output:\n%s", out)
 	}
+
+	// The session cookie is a bearer credential, and the whole point of running
+	// the listener over TLS is that it may then be marked Secure. The flag is
+	// decided from the connection actually being encrypted, so only a real
+	// HTTPS listener can prove the decision - which is what makes this the one
+	// assertion the unit tests cannot make for themselves.
+	resp, body := postForm(t, newTLSClient(t, certPEM), tlsEnv.baseURL+"/login", url.Values{
+		"login": {"tina"}, "token": {token}, "next": {"/"},
+	})
+	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("login tina over https: status %d, body:\n%s", resp.StatusCode, body)
+	}
+	session := findCookie(resp.Cookies(), "ag_session")
+	if session == nil {
+		t.Fatalf("login over https issued no session cookie: %v", resp.Cookies())
+	}
+	if !session.Secure {
+		t.Errorf("the session cookie issued over https is not Secure: %q", session.Raw)
+	}
+	if !session.HttpOnly {
+		t.Errorf("the session cookie issued over https is not HttpOnly: %q", session.Raw)
+	}
+
+	// git over the same listener. -c http.sslVerify=true throughout so a
+	// machine that has turned verification off globally cannot turn either
+	// half of this into a pass.
 	cloneURL := fmt.Sprintf("https://tina:%s@127.0.0.1:%d/git/tina/course.git", token, tlsEnv.httpPort)
 	if out, err := gitErr(e.root, nil, "-c", "http.sslVerify=true", "ls-remote", cloneURL); err == nil {
 		t.Fatalf("git verified the certificate without GIT_SSL_CAINFO:\n%s", out)
@@ -1130,6 +1153,36 @@ func testTLSListener(t *testing.T, e *env) {
 	// receive-pack, the hook, and intake all ran behind TLS: the push output is
 	// anygrade's, not git's default.
 	taskSubmissionID(t, pushOut, "sum")
+
+	// Half a pair is a misconfiguration that must be refused at startup, not
+	// silently served as plaintext: a deployment that believes it is encrypted
+	// and is not is worse than one that failed to come up. The check runs
+	// before anything binds, so neither invocation needs a port or a data dir.
+	for _, tc := range []struct{ args, want string }{
+		{"--tls-cert " + certPath, "--tls-cert requires --tls-key"},
+		{"--tls-key " + keyPath, "--tls-key requires --tls-cert"},
+	} {
+		out, err := runBinErr(e.root, append([]string{"serve"}, strings.Fields(tc.args)...)...)
+		if err == nil {
+			t.Errorf("`serve %s` started without its pair:\n%s", tc.args, out)
+			continue
+		}
+		if !strings.Contains(out, tc.want) {
+			t.Errorf("`serve %s` did not name the missing flag (want %q):\n%s", tc.args, tc.want, out)
+		}
+	}
+}
+
+// findCookie returns the named cookie, or nil. http.Response.Cookies() is the
+// parsed Set-Cookie list, so this reads the attributes the server actually
+// sent rather than what the jar decided to keep.
+func findCookie(cookies []*http.Cookie, name string) *http.Cookie {
+	for _, c := range cookies {
+		if c.Name == name {
+			return c
+		}
+	}
+	return nil
 }
 
 // startTLSServer brings up a second server over HTTPS on its own data dir and
