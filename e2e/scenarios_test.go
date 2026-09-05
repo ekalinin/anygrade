@@ -983,6 +983,105 @@ func testTokenReset(t *testing.T, e *env) {
 	login(t, e, e.bobClient, "bob", fresh)
 }
 
+// 36. deactivate and reactivate a student: disabling bob from the student page
+// closes every credential path at once, and reactivating him reopens all four.
+// The three things that authenticate him - his token, his live session, his SSH
+// key - are three independent `users.state = 'active'` filters in internal/store
+// (tokens.go, sessions.go, sshkeys.go), so what this proves is that they keep
+// agreeing: a disabled student who can still reach one transport is not
+// disabled (SPEC §8, §12).
+//
+// It drives the web surface in both directions because it is the only one that
+// has both: `anygrade user remove` deactivates without recording an event and
+// has no reactivate counterpart, so the CLI cannot close this loop.
+//
+// Bob rather than alice: he is the only student holding all three credentials.
+// Reactivating is one of the scenario's own assertions rather than a courtesy
+// at the end, which is what leaves the shared fixture exactly as it was found.
+func testDeactivateStudent(t *testing.T, e *env) {
+	setState := func(state string) {
+		t.Helper()
+		resp, body := postForm(t, e.profClient, e.baseURL+"/students/bob/state",
+			url.Values{"state": {state}})
+		if resp.StatusCode != http.StatusSeeOther && resp.StatusCode != http.StatusFound {
+			t.Fatalf("set bob's state to %s: status %d, body:\n%s", state, resp.StatusCode, body)
+		}
+	}
+
+	// The baseline every rejection below is measured against: without it a
+	// credential that was already broken would read as a successful lockout.
+	assertBobAccess(t, e, true)
+
+	setState("disabled")
+	// The reactivation further down is the assertion; this is the backstop, so
+	// a failure in between cannot hand a disabled bob to the scenarios after
+	// this one.
+	t.Cleanup(func() { setState("active") })
+
+	assertBobAccess(t, e, false)
+
+	// A deactivation is a teacher action against a student, so it is where a
+	// teacher looks for it - filtered, and with the actor and the new state on
+	// the row rather than just the kind.
+	_, page := get(t, e.profClient, e.baseURL+"/audit?kind=user.state&target=bob")
+	if !reStateEvent.MatchString(page) {
+		t.Fatalf("/audit has no user.state row naming prof, bob and disabled:\n%s", page)
+	}
+
+	setState("active")
+	assertBobAccess(t, e, true)
+}
+
+// reStateEvent matches the audit row a deactivation writes. It spans actor,
+// kind, target and detail on purpose: the filtered page echoes "user.state" and
+// "bob" back in its own filter widgets, so a looser match would pass with no
+// events at all.
+var reStateEvent = regexp.MustCompile(`<td>prof</td><td>user\.state</td><td>bob</td><td>disabled</td>`)
+
+// assertBobAccess exercises the four credential paths a deactivation has to
+// close and requires them to answer the same way. want=true means every path
+// works, want=false that none does.
+//
+// Neither git assertion moves a ref: bob's clone is already up to date, so each
+// push authenticates and then stops at "Everything up-to-date", which keeps the
+// scenario out of the gradebook and the CSV assertions elsewhere in the suite.
+func assertBobAccess(t *testing.T, e *env, want bool) {
+	t.Helper()
+
+	// The token as a web login credential (store.VerifyToken).
+	resp, body := postForm(t, newClient(t), e.baseURL+"/login", url.Values{
+		"login": {"bob"}, "token": {e.bobToken}, "next": {"/"},
+	})
+	if ok := resp.StatusCode == http.StatusFound; ok != want {
+		t.Fatalf("web login with bob's token: status %d, want ok=%v, body:\n%s",
+			resp.StatusCode, want, body)
+	}
+
+	// The session bob is already holding (store.LookupSession). Deactivation
+	// deletes no session row and the failed lookup does not clear the cookie,
+	// so this is that filter alone - and the same cookie has to work again once
+	// he is back.
+	if status, _ := get(t, e.bobClient, e.baseURL+"/"); (status == http.StatusOK) != want {
+		t.Fatalf("bob's existing session: GET / status %d, want ok=%v", status, want)
+	}
+
+	// git over http: basic auth with the same token, against receive-pack.
+	httpURL := fmt.Sprintf("http://bob:%s@127.0.0.1:%d/git/bob/course.git", e.bobToken, e.httpPort)
+	out, err := gitErr(e.bobDir, nil, "push", httpURL, "main")
+	if ok := err == nil; ok != want {
+		t.Fatalf("git push over http: err=%v, want ok=%v\n%s", err, want, out)
+	}
+
+	// git over ssh: the registered key, which the token rotation above never
+	// touched, so this is the ssh_keys lookup and nothing else.
+	sshEnv := []string{"GIT_SSH_COMMAND=ssh -i " + e.bobKey +
+		" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes"}
+	out, err = gitErr(e.bobDir, sshEnv, "push", "origin", "main")
+	if ok := err == nil; ok != want {
+		t.Fatalf("git push over ssh: err=%v, want ok=%v\n%s", err, want, out)
+	}
+}
+
 // 30. leaderboard: with anonymize off every authenticated user sees real
 // logins; flipping anonymize on through a teacher push hides other students'
 // logins from a student but not from the teacher (SPEC §10).
