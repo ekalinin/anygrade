@@ -235,6 +235,11 @@ token.ssh_hint: "Or over SSH, once an SSH key is added in settings:"
 token.add_key_link: "Add an SSH key in settings"
 token.continue: "Continue to the dashboard"
 
+# Copy buttons (static/copy.js). Not named after the page: the script enhances
+# whatever block it is pointed at, and the labels travel with it.
+copy.label: "Copy"
+copy.done: "Copied"
+
 # audit.html
 audit.title: "Audit log"
 audit.any_kind: "any kind"
