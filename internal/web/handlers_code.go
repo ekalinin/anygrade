@@ -2,7 +2,9 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"html/template"
 	"mime"
 	"net/http"
 	"slices"
@@ -27,13 +29,21 @@ type codeData struct {
 	Sub        store.Submission
 	Files      []string
 	// Single-file view; empty Path = the listing.
-	Path    string
-	Content string
+	Path string
+	// Content is the whole file, syntax-highlighted (see highlightLine on why
+	// pre-escaped HTML is safe here).
+	Content template.HTML
 	Binary  bool
 	TooBig  bool
 	// Oversize is TooBig's harder cousin: the file is past what the server will
 	// read at all, so unlike TooBig there is no download to offer.
 	Oversize bool
+	// HasDiff says the file has an authoritative counterpart, so the page shows
+	// the diff/full-file toggle; Diff is the delta itself and is nil when the
+	// file still matches the template. DiffView picks the rendered view.
+	HasDiff  bool
+	Diff     []diffRow
+	DiffView bool
 }
 
 // loadCodeView resolves {login}+{id} and lists the submitted commit's files
@@ -103,15 +113,7 @@ func (h *Handler) codeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data.Path = path
-	switch {
-	case data.Oversize:
-	case len(content) > codeMaxInline:
-		data.TooBig = true
-	case bytes.IndexByte(content[:min(len(content), 8<<10)], 0) >= 0:
-		data.Binary = true
-	default:
-		data.Content = string(content)
-	}
+	// The download is the raw blob and needs none of the rendering below.
 	if r.URL.Query().Get("download") == "1" {
 		if data.Oversize {
 			h.httpError(w, r, "code.too_large", http.StatusRequestEntityTooLarge)
@@ -129,5 +131,47 @@ func (h *Handler) codeFile(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(content)
 		return
 	}
+	switch {
+	case data.Oversize:
+	case len(content) > codeMaxInline:
+		data.TooBig = true
+	case bytes.IndexByte(content[:min(len(content), 8<<10)], 0) >= 0:
+		data.Binary = true
+	default:
+		text := string(content)
+		l := langFor(path)
+		data.Content = highlightFile(text, l)
+		// What the student changed is the reason this page exists, so the diff
+		// is the default view when there is one to show; ?view=full is one
+		// click away and stays the only view when there is not.
+		if base, ok := h.courseVersion(r.Context(), data.Sub.TaskID, path); ok {
+			if ops, ok := lineDiff(splitLines(base), splitLines(text)); ok {
+				data.HasDiff = true
+				data.Diff = renderDiff(ops, l)
+				data.DiffView = r.URL.Query().Get("view") != "full"
+			}
+		}
+	}
 	h.renderPage(w, r, "code", data)
+}
+
+// courseVersion reads the authoritative version of a submitted file: the same
+// repo-relative path in the course mirror, which web reaches through the
+// injected reader the task page already uses for READMEs - no new seam, and
+// still no gitserver import.
+//
+// The comparison is against the course head as it stands now, not as it stood
+// when the student pushed: nothing records the latter, and a teacher reading a
+// submission is reading it against the template they can open today.
+func (h *Handler) courseVersion(ctx context.Context, taskID, relPath string) (string, bool) {
+	course := h.Course.Get()
+	task, relDir, ok := course.Task(taskID)
+	if !ok || !isSolutionFile(relDir, task.SolutionFiles, relPath) {
+		return "", false
+	}
+	raw, ok, err := h.ReadCourseFile(ctx, course.Head, relPath)
+	if err != nil || !ok {
+		return "", false
+	}
+	return string(raw), true
 }

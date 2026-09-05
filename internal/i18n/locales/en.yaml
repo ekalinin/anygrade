@@ -186,6 +186,10 @@ code.download: "Download"
 code.too_big: "File is larger than 256 KB."
 code.too_large: "File is too large for the server to read; clone the repository to see it."
 code.no_files: "No files under the task directory at this commit."
+code.view_diff: "diff"
+code.view_full: "full file"
+code.diff_gap: "… %d unchanged lines"
+code.diff_none: "The file is identical to the course version."
 
 # leaderboard.html
 leaderboard.title: "Leaderboard"

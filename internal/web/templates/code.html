@@ -12,7 +12,21 @@
 {{else if .TooBig}}
 <p class="hint">{{t "code.too_big"}} <a href="?download=1">{{t "code.download"}}</a></p>
 {{else}}
+{{if .HasDiff}}
+<p class="hint">{{if .DiffView}}<strong>{{t "code.view_diff"}}</strong> &middot; <a href="?view=full">{{t "code.view_full"}}</a>
+{{else}}<a href="?view=diff">{{t "code.view_diff"}}</a> &middot; <strong>{{t "code.view_full"}}</strong>{{end}}</p>
+{{end}}
+{{if .DiffView}}
+{{if .Diff}}
+<div class="pane"><pre class="diff">
+{{- range .Diff -}}
+{{if eq .Kind "gap"}}<span class="dl gap">{{t "code.diff_gap" .Skipped}}</span>{{else}}<span class="dl {{.Kind}}"><span class="dm">{{.Mark}}</span>{{.Text}}</span>{{end}}
+{{- end -}}
+</pre></div>
+{{else}}<p class="hint">{{t "code.diff_none"}}</p>{{end}}
+{{else}}
 <div class="pane"><pre>{{.Content}}</pre></div>
+{{end}}
 {{end}}
 {{else}}
 {{if .Files}}
