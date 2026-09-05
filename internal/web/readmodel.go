@@ -69,6 +69,23 @@ func buildDashboard(course *intake.Course, subs []store.Submission,
 	return views
 }
 
+// loadDashboard reads one user's task rows against a course snapshot: the value
+// the dashboard page renders and the API encodes. The snapshot is a parameter
+// rather than a read of the Holder here, so that a caller which also needs the
+// course name takes exactly one - two reads could straddle a teacher's metadata
+// push and describe two different courses in one response.
+func (h *Handler) loadDashboard(ctx context.Context, course *intake.Course, userID int64) ([]TaskView, error) {
+	subs, err := h.DB.ListByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	overrides, err := h.userOverrides(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return buildDashboard(course, subs, overrides), nil
+}
+
 // userOverrides indexes one student's manual overrides by task id. One read
 // per page: the override table is course-sized, so filtering it here beats a
 // query per task.

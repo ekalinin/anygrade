@@ -36,7 +36,7 @@ Submission flow (the path that touches most packages):
 4. `internal/queue` stores submissions in SQLite; a worker pool claims them. Running submissions are re-queued on restart. `queue.Terminal(msg)` marks a prepare failure non-retryable.
 5. Prep assembles an ephemeral workspace: authoritative task files from the course mirror + only the student's `solution_files` from their commit + hidden tests. Student edits to task.yaml/open tests are discarded and noted for the teacher.
 6. `internal/runner` executes each check via `sh -c` (local runner) or in an ephemeral docker container; `internal/scoring` and `internal/gradebook` turn results into scores. A check is one phase or two: when any check of the task declares `build:`, every build phase runs first, the hidden-test files are then removed from the workspace, and only then do the run phases execute (SPEC §6.1). A build phase's log is teacher-only - it is the one that compiles against the hidden tests - and lives in `logs/<id>/build/`.
-7. `internal/web` (SSR html/template + htmx + SSE, all embedded) streams live status via the Hub.
+7. `internal/web` (SSR html/template + htmx + SSE, all embedded) streams live status via the Hub. The read models the pages render are re-encoded as read-only JSON under `/api/v1/` (SPEC §10.2), authenticated by the personal token as a bearer - a second encoder, never a second query layer, and never a way around a teacher-only route.
 
 Package boundaries to preserve:
 

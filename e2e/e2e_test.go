@@ -135,6 +135,7 @@ func TestE2E(t *testing.T) {
 	t.Run("non-default branch", func(t *testing.T) { testNonDefaultBranch(t, e) })
 	t.Run("push without task changes", func(t *testing.T) { testNonTaskPush(t, e) })
 	t.Run("cross-student access", func(t *testing.T) { testCrossStudentAccess(t, e) })
+	t.Run("json api", func(t *testing.T) { testJSONAPI(t, e) })
 	t.Run("cli export against a live server", func(t *testing.T) { testCLIExport(t, e) })
 	t.Run("token reset", func(t *testing.T) { testTokenReset(t, e) })
 	t.Run("deactivate and reactivate a student", func(t *testing.T) { testDeactivateStudent(t, e) })
@@ -421,6 +422,34 @@ func get(t *testing.T, client *http.Client, target string) (int, string) {
 		t.Fatalf("read body from GET %s: %v", target, err)
 	}
 	return resp.StatusCode, string(body)
+}
+
+// apiGet calls one JSON API endpoint with the personal token as a bearer. The
+// client is deliberately jar-less and does not follow redirects: the API has to
+// work with no session at all, must leave none behind, and a redirect to the
+// login form has to be visible here rather than followed into an HTML page.
+func apiGet(t *testing.T, e *env, token, path string) (*http.Response, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, e.baseURL+path, nil)
+	if err != nil {
+		t.Fatalf("new request %s: %v", path, err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body from GET %s: %v", path, err)
+	}
+	return resp, string(body)
 }
 
 // login authenticates client via the web login form.

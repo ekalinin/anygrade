@@ -320,12 +320,42 @@ A login can never start with `_`, so `_template` cannot be shadowed by a student
 
 The export reads the server's repos, so run it against the data dir (`--data-dir`, or from the course repo where `.anygrade/` lives). A student whose pinned commit has gone missing is named on stderr and the command exits non-zero; a solution file the student never committed is a warning, since grading used the template in its place and copying that into their tree would make every such student look identical.
 
+## JSON API
+
+A read-only, machine-readable view of what the pages show, for scripts and bots. It authenticates with the personal token as a bearer - the same token that is the git password and the web login, so there is no second secret to hand out:
+
+```sh
+curl -H "Authorization: Bearer ag_..." https://grade.example.edu/api/v1/tasks
+```
+
+| Endpoint | Who | What |
+|---|---|---|
+| `GET /api/v1/me` | any account | login, display name, role |
+| `GET /api/v1/tasks` | any account | the caller's tasks: status, score, override, attempts, deadlines |
+| `GET /api/v1/submissions/{id}` | its owner, or staff | one submission with its check results |
+| `GET /api/v1/matrix` | staff | the whole gradebook, students × tasks |
+| `GET /api/v1/queue` | staff | queued, running and infra-failed submissions |
+
+Errors carry a stable code beside the human message, and are not localized:
+
+```json
+{"error": {"code": "not_found", "message": "not found"}}
+```
+
+The codes are `unauthorized` (401), `not_found` (404), `rate_limited` (429) and `internal` (500). Asking for something you may not see is `404`, never `403` - the same rule the pages follow, so an id cannot be probed for existence - and a bad bearer draws on the same failure budget as a failed login. An API request never touches the session cookie and is never redirected to the login form.
+
+"Staff" above means the same rights the pages ask for: the reviewing half, so a TA reads the matrix, the queue and every submission here exactly as they do in the UI. The API asks the predicates, not the role, so the two cannot drift apart into one being a way around the other.
+
+Inside `/api/v1/` fields may be added, but an existing field never changes type and never disappears: ignore unknown fields and your script keeps working. A change that cannot honour that would become `/api/v2/`.
+
+v1 is deliberately read-only, and says nothing about liveness: poll it. Recheck, override and cancel stay on the forms - a client that carries its credential in a header needs a CSRF story of its own - and the live path is the UI's SSE.
+
 ## Security
 
 - Student code is untrusted: the docker runner (one ephemeral container per submission) applies memory/cpu/pids limits, no network by default, read-only base image, a non-root user, a tmpfs workspace copied into the container instead of a host bind mount, and a hard wall-clock timeout. Serving on a non-loopback address with any task on the local runner refuses to start unless `--allow-local-runner` is passed explicitly.
 - Tokens, invite links, session cookies and SSH key challenges are stored hashed; registering an SSH key takes a signed challenge, so nobody can claim a classmate's key; SSH is limited to git commands; failed logins are rate limited per client and login across git and the web.
 - SSH has no guessable credential to rate limit - it authenticates a key fingerprint, and a client offers every key in its agent until one matches - so it is bounded on connection churn instead: how many connections may sit in the handshake at once, overall and per client address, how long each one has to get through it, and how long an established connection may sit idle. Nothing is tunable and nothing needs to be; the ceilings are far above a whole class pushing at a deadline, and a key that authenticates stops counting against them straight away.
-- Rights checks on every route, and a refusal is a 404 rather than a 403 for every role alike: students can only read their own submissions, and a TA turned away from an account-management route learns no more about it than a student does. The check excerpt and the live stream are the student's; the full check log is a staff-only download, because their code runs beside the hidden tests. A check's `build:` phase is staff-only in full - no excerpt, no live stream - since that is the phase that compiles against the hidden tests.
+- Rights checks on every route, and a refusal is a 404 rather than a 403 for every role alike: students can only read their own submissions, and a TA turned away from an account-management route learns no more about it than a student does. The check excerpt and the live stream are the student's; the full check log is a staff-only download, because their code runs beside the hidden tests. A check's `build:` phase is staff-only in full - no excerpt, no live stream - since that is the phase that compiles against the hidden tests. The JSON API is the same checks over the same data and serves no full log at all.
 - CSV export prefixes any cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return with an apostrophe, so a login can never become a spreadsheet formula.
 
 ## Data directory

@@ -20,10 +20,13 @@ import (
 )
 
 // The two rights of the role table (store/roles.go), spelled the way the
-// middleware names them.
+// middleware names them - once for the pages, once for the JSON API, which
+// authenticates differently and asks the same predicate.
 const (
-	rightReview = "requireReview"
-	rightAdmin  = "requireTeacher"
+	rightReview    = "requireReview"
+	rightAdmin     = "requireTeacher"
+	rightAPI       = "requireAPI"
+	rightAPIReview = "requireAPIReview"
 )
 
 // staffRoute is one gated route: the pattern exactly as web.go registers it,
@@ -63,10 +66,25 @@ var staffRoutes = []staffRoute{
 	{"GET /audit", "/audit", rightAdmin},
 }
 
+// apiRoutes is the same contract for the JSON API (SPEC §10.2). It is a
+// separate list because the assertions are: an API route is driven by a bearer
+// token, not by a session, so TestStaffRoutesByRole cannot reach it and
+// TestAPIRoleEndpointMatrix owns the role table for these. What this list is
+// for is the scan below - the API must not be a second place where a route can
+// appear ungated.
+var apiRoutes = []staffRoute{
+	{"GET /api/v1/me", "/api/v1/me", rightAPI},
+	{"GET /api/v1/tasks", "/api/v1/tasks", rightAPI},
+	{"GET /api/v1/submissions/{id}", "/api/v1/submissions/1", rightAPI},
+
+	{"GET /api/v1/matrix", "/api/v1/matrix", rightAPIReview},
+	{"GET /api/v1/queue", "/api/v1/queue", rightAPIReview},
+}
+
 // ungatedRoutes are the rest of the mux: public pages and the ones every
 // authenticated account reaches. They are listed only so that the scan below
 // can account for every registration, which is what makes a new route
-// impossible to add without deciding which of the three lists it joins.
+// impossible to add without deciding which of the four lists it joins.
 var ungatedRoutes = []string{
 	"GET /login", "POST /login",
 	"GET /invite/{token}", "POST /invite/{token}",
@@ -94,8 +112,9 @@ func TestRouteTableMatchesTheMux(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	gated := slices.Concat(staffRoutes, apiRoutes)
 	want := map[string]string{}
-	for _, r := range staffRoutes {
+	for _, r := range gated {
 		want[r.pattern] = r.right
 	}
 
@@ -104,24 +123,26 @@ func TestRouteTableMatchesTheMux(t *testing.T) {
 		pattern, handler := m[1], m[2]
 		seen[pattern] = true
 		right := ""
-		switch {
-		case strings.HasPrefix(handler, "h."+rightReview+"("):
-			right = rightReview
-		case strings.HasPrefix(handler, "h."+rightAdmin+"("):
-			right = rightAdmin
+		// The trailing paren is what keeps these apart: "h.requireAPIReview("
+		// does not start with "h.requireAPI(".
+		for _, r := range []string{rightReview, rightAdmin, rightAPIReview, rightAPI} {
+			if strings.HasPrefix(handler, "h."+r+"(") {
+				right = r
+				break
+			}
 		}
 		switch {
 		case right == "" && slices.Contains(ungatedRoutes, pattern):
 		case right == "":
 			t.Errorf("route %q has no rights check and is not listed as ungated: "+
-				"add it to staffRoutes or to ungatedRoutes", pattern)
+				"add it to staffRoutes, apiRoutes or ungatedRoutes", pattern)
 		case want[pattern] != right:
-			t.Errorf("route %q is gated by %s, staffRoutes says %q", pattern, right, want[pattern])
+			t.Errorf("route %q is gated by %s, the table says %q", pattern, right, want[pattern])
 		}
 	}
-	for _, r := range staffRoutes {
+	for _, r := range gated {
 		if !seen[r.pattern] {
-			t.Errorf("staffRoutes lists %q, which web.go no longer registers", r.pattern)
+			t.Errorf("the route table lists %q, which web.go no longer registers", r.pattern)
 		}
 	}
 }

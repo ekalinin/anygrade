@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/csv"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"html"
@@ -950,6 +951,79 @@ func testCrossStudentAccess(t *testing.T, e *env) {
 	}
 	if status, _ := get(t, e.aliceClient, e.baseURL+"/students/bob"); status != http.StatusNotFound {
 		t.Fatalf("alice GET /students/bob: status %d, want 404", status)
+	}
+}
+
+// 34. json api: the token a student pushes with is also the bearer that reads
+// the machine-readable contract, with no login form in between - and the role
+// boundary of the pages holds there too (SPEC §10.2, §14).
+func testJSONAPI(t *testing.T, e *env) {
+	resp, body := apiGet(t, e, e.aliceToken, "/api/v1/me")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("alice GET /api/v1/me: status %d, body:\n%s", resp.StatusCode, body)
+	}
+	var me struct {
+		Login string `json:"login"`
+		Role  string `json:"role"`
+	}
+	if err := json.Unmarshal([]byte(body), &me); err != nil {
+		t.Fatalf("decode /api/v1/me: %v\n%s", err, body)
+	}
+	if me.Login != "alice" || me.Role != "student" {
+		t.Errorf("/api/v1/me: %+v, want alice/student", me)
+	}
+	// The API never starts a session: a bot polling it must not accumulate one.
+	if c := resp.Header.Get("Set-Cookie"); c != "" {
+		t.Errorf("/api/v1/me set a cookie: %q", c)
+	}
+
+	// No token is a JSON 401, not the redirect the same anonymous GET gets on a
+	// page - a script has no login form to follow.
+	resp, body = apiGet(t, e, "", "/api/v1/tasks")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous GET /api/v1/tasks: status %d, want 401", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "" {
+		t.Errorf("anonymous GET /api/v1/tasks: Location %q, want none", loc)
+	}
+	if !strings.Contains(body, `"code":"unauthorized"`) {
+		t.Errorf("anonymous GET /api/v1/tasks: body has no error code:\n%s", body)
+	}
+
+	// The submission boundary: 404 for the classmate, 200 for the teacher, so
+	// the refusal cannot be read as "this id exists".
+	target := fmt.Sprintf("/api/v1/submissions/%d", e.bobGreetSubID)
+	if resp, body = apiGet(t, e, e.aliceToken, target); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("alice GET %s: status %d, want 404, body:\n%s", target, resp.StatusCode, body)
+	}
+	if resp, body = apiGet(t, e, e.profToken, target); resp.StatusCode != http.StatusOK {
+		t.Fatalf("teacher GET %s: status %d, want 200, body:\n%s", target, resp.StatusCode, body)
+	}
+
+	// Teacher-only endpoints are absent for a student, exactly like their pages.
+	if resp, _ = apiGet(t, e, e.aliceToken, "/api/v1/matrix"); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("alice GET /api/v1/matrix: status %d, want 404", resp.StatusCode)
+	}
+	resp, body = apiGet(t, e, e.profToken, "/api/v1/matrix")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("teacher GET /api/v1/matrix: status %d, body:\n%s", resp.StatusCode, body)
+	}
+	var matrix struct {
+		Rows []struct {
+			Login string `json:"login"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal([]byte(body), &matrix); err != nil {
+		t.Fatalf("decode /api/v1/matrix: %v\n%s", err, body)
+	}
+	seen := map[string]bool{}
+	for _, row := range matrix.Rows {
+		seen[row.Login] = true
+	}
+	for _, want := range []string{"alice", "bob"} {
+		if !seen[want] {
+			t.Errorf("/api/v1/matrix has no row for %s:\n%s", want, body)
+		}
 	}
 }
 

@@ -53,20 +53,29 @@ type logPane struct {
 	Name  string
 }
 
-// loadSubmission is the shared fetch + ownership gate. A miss renders 404,
-// never 403: object existence is not leaked (SPEC §14).
-func (h *Handler) loadSubmission(w http.ResponseWriter, r *http.Request) (store.Submission, []store.CheckRow, bool) {
+// findSubmission is the shared fetch + ownership gate. It reports a miss rather
+// than writing one, because the two encoders say it differently - the pages
+// render a 404 page, the API a JSON error - and neither ever says 403: object
+// existence is not leaked (SPEC §14).
+func (h *Handler) findSubmission(r *http.Request) (store.Submission, []store.CheckRow, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		http.NotFound(w, r)
 		return store.Submission{}, nil, false
 	}
 	sub, checks, err := h.DB.GetSubmission(r.Context(), id)
 	if err != nil || !canSee(user(r), sub.UserID) {
-		http.NotFound(w, r)
 		return store.Submission{}, nil, false
 	}
 	return sub, checks, true
+}
+
+// loadSubmission is findSubmission with the pages' way of saying no.
+func (h *Handler) loadSubmission(w http.ResponseWriter, r *http.Request) (store.Submission, []store.CheckRow, bool) {
+	sub, checks, ok := h.findSubmission(r)
+	if !ok {
+		http.NotFound(w, r)
+	}
+	return sub, checks, ok
 }
 
 func (h *Handler) submissionData(sub store.Submission, checks []store.CheckRow, viewer store.User) submissionData {
