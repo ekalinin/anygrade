@@ -399,6 +399,17 @@ The active locale is chosen per request: a valid `ag_lang` cookie wins, then the
 
 Scope is the web UI only: pages, flash/error messages, and status badge labels. Git push output, CLI output, and server logs stay English. Strings written into the database at submission time - worker tamper notes, deadline/attempt reject reasons, the scrubbed hidden-tests message - are stored in English and rendered as-is regardless of locale.
 
+### 10.2 JSON API
+
+A read-only JSON API under `/api/v1/`, for scripts and bots. It is a second encoder over the read models the pages already assemble, not a second query layer.
+
+- Authentication is the personal access token as a bearer (`Authorization: Bearer ag_...`) - the same credential as git basic auth and the web login (§8), so no second kind of secret exists. An API request neither reads nor writes the session cookie and is never redirected to the login form: a missing or bad token is a JSON `401`. A failed bearer charges the same failure budget the login form and git basic auth share (§14), or the API would be the unthrottled way to guess a token.
+- Endpoints: `GET /api/v1/me` (the caller's identity), `GET /api/v1/tasks` (the caller's tasks with statuses and scores), `GET /api/v1/submissions/{id}` (their own, or any with the review right), `GET /api/v1/matrix` and `GET /api/v1/queue` (the review right).
+- The rights are the pages' own, asked through the same predicates (§8) rather than by comparing the role, so the two surfaces cannot drift into one being the way around the other: the reviewing half is what a TA already reads in the UI, and what is administrative stays off the API entirely because v1 is read-only. A student asking for a staff route or for another student's submission gets `404`, never `403` (§14). No endpoint serves a full check log or a build-phase log at all; a check carries the stored excerpt its owner already reads on the submission page, and a submission's note is the same viewer-scoped one.
+- Errors are `{"error": {"code": ..., "message": ...}}` with a stable code (`unauthorized`, `not_found`, `rate_limited`, `internal`). The message is for a human reading a log and is deliberately not localized (§10.1): a script parses the code.
+- Versioning: inside `/api/v1/` fields may be added, and an existing field never changes type or disappears; clients must ignore unknown fields. A change that cannot honour that becomes `/api/v2/`.
+- v1 is read-only, and says nothing about liveness. Writes (recheck, override, cancel) would need a CSRF story different from the same-origin check the forms rely on, which is a separate decision; polling covers watching results, and SSE stays the UI's own path.
+
 ## 11. CLI
 
 ```
@@ -502,7 +513,7 @@ On the server's own filesystem:
 - The data dir is created 0700 and the database with its WAL siblings 0600. An existing wider data dir is tightened at startup, but only at the top level: the trees underneath - repos, hidden-test cache, logs, workspaces - are owner-only because each package creates them that way, which is also what covers git's own modes inside a repo.
 - The intake hook socket is owner-only and refuses peers of any other uid, so a local account cannot feed the server submissions through it. The uid check is implemented on linux and darwin, the only released platforms; anywhere else it reports itself unsupported and the socket mode is the whole guard.
 
-The web UI enforces a rights check on every route that is not open to any authenticated account; students can only read their own submissions. A refusal is a 404, never a 403, for every role alike - a TA turned away from an account-management route learns no more about it than a student does.
+The web UI enforces a rights check on every route that is not open to any authenticated account; students can only read their own submissions. A refusal is a 404, never a 403, for every role alike - a TA turned away from an account-management route learns no more about it than a student does. The JSON API (§10.2) is the same checks over the same read models, and exposes no full check log and no build-phase log at all - it is not a way around what is staff-only here.
 
 ## 15. Key decisions and tradeoffs
 
@@ -517,7 +528,7 @@ The web UI enforces a rights check on every route that is not open to any authen
 | Feedback | Async: push output + UI with SSE | Immediate acknowledgement without hanging pushes on long test runs |
 | Scoring | Weighted check groups | Partial credit without per-test output parsing; one group degrades to all-or-nothing |
 | Storage | SQLite + files for logs | Single-binary ops, transactions, easy backup; enough for course-sized load |
-| UI | SSR + htmx + SSE, embedded | No frontend toolchain; SPA/JSON API deferred |
+| UI | SSR + htmx + SSE, embedded | No frontend toolchain; SPA deferred, and the read-only JSON API (§10.2) covers scripts without one |
 | Scope | 1 instance = 1 course, student/ta/teacher roles | Simplest possible model; multi-course via multiple instances |
 | Rights | Two predicates (review, administer) rather than role comparisons | A role is a row in one table instead of a literal in every handler; the cost is that a right cannot be granted to one account alone |
 
@@ -525,7 +536,7 @@ The web UI enforces a rights check on every route that is not open to any authen
 
 - Plagiarism detection itself. The export hook for MOSS/JPlag is done (`export submissions`, §11); comparing is a research area with real tools in it, and a second-rate in-tree implementation would be worse than none.
 - Per-test-case parsers (`go test -json`, JUnit XML, TAP) for finer UI detail and proportional scoring.
-- JSON API as a stable contract for scripts and bots.
+- Write endpoints for the JSON API (recheck, override, cancel), which need a CSRF story of their own (§10.2).
 - OAuth login.
 - Webhooks/notifications (Telegram, email) on check completion.
 

@@ -42,21 +42,16 @@ func (h *Handler) userViewOf(u store.User) userView {
 
 func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) {
 	u := user(r)
-	subs, err := h.DB.ListByUser(r.Context(), u.ID)
-	if err != nil {
-		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
-		return
-	}
-	overrides, err := h.userOverrides(r.Context(), u.ID)
-	if err != nil {
-		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
-		return
-	}
 	course := h.Course.Get()
+	tasks, err := h.loadDashboard(r.Context(), course, u.ID)
+	if err != nil {
+		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
+		return
+	}
 	h.renderPage(w, r, "dashboard", dashboardData{
 		CourseName: course.Resolved.Course.Name,
 		User:       h.userViewOf(u),
-		Tasks:      buildDashboard(course, subs, overrides),
+		Tasks:      tasks,
 		Now:        time.Now(),
 	})
 }

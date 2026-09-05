@@ -117,6 +117,16 @@ func New(h *Handler) http.Handler {
 	mux.Handle("POST /students/{login}/state", h.requireTeacher(h.adminSetState))
 	mux.Handle("POST /students/{login}/keys/{id}/delete", h.requireTeacher(h.adminDeleteKey))
 	mux.Handle("GET /audit", h.requireTeacher(h.auditPage))
+
+	// JSON API (SPEC §10.2): read-only, authenticated by the personal token as
+	// a bearer, no session cookie either way. The version prefix is the
+	// contract - fields may be added inside it, never removed or retyped - so a
+	// route added here is a promise, and the role checks are the page's own.
+	mux.Handle("GET /api/v1/me", h.requireAPI(h.apiMe))
+	mux.Handle("GET /api/v1/tasks", h.requireAPI(h.apiTasks))
+	mux.Handle("GET /api/v1/submissions/{id}", h.requireAPI(h.apiSubmission))
+	mux.Handle("GET /api/v1/matrix", h.requireAPIReview(h.apiMatrix))
+	mux.Handle("GET /api/v1/queue", h.requireAPIReview(h.apiQueue))
 	return h.secureContext(mux)
 }
 

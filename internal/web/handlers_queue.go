@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -85,17 +86,18 @@ func (r queueRow) CanRecheck() bool {
 	return r.Status == gradebook.StatusError
 }
 
-func (h *Handler) queuePage(w http.ResponseWriter, r *http.Request) {
-	u := user(r)
-	subs, err := h.DB.ListActive(r.Context())
+// loadQueueRows assembles the unfinished submissions with their owners'
+// logins: the value the queue page renders and the API encodes. One ListUsers
+// instead of a lookup per row - the table is course-sized, the queue is not
+// necessarily.
+func (h *Handler) loadQueueRows(ctx context.Context) ([]queueRow, error) {
+	subs, err := h.DB.ListActive(ctx)
 	if err != nil {
-		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
-		return
+		return nil, err
 	}
-	users, err := h.DB.ListUsers(r.Context())
+	users, err := h.DB.ListUsers(ctx)
 	if err != nil {
-		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 	logins := map[int64]string{}
 	for _, x := range users {
@@ -104,6 +106,16 @@ func (h *Handler) queuePage(w http.ResponseWriter, r *http.Request) {
 	rows := make([]queueRow, len(subs))
 	for i, s := range subs {
 		rows[i] = queueRow{Sub: s, Login: logins[s.UserID], Status: subDisplayStatus(s)}
+	}
+	return rows, nil
+}
+
+func (h *Handler) queuePage(w http.ResponseWriter, r *http.Request) {
+	u := user(r)
+	rows, err := h.loadQueueRows(r.Context())
+	if err != nil {
+		h.httpError(w, r, "error.load_failed", http.StatusInternalServerError)
+		return
 	}
 	h.renderPage(w, r, "queue", queueData{
 		CourseName: h.Course.Get().Resolved.Course.Name,
