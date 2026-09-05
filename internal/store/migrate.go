@@ -52,6 +52,9 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		names = append(names, e.Name())
 	}
 	sort.Strings(names)
+	if err := checkMigrationNumbers(names); err != nil {
+		return err
+	}
 
 	for _, name := range names {
 		n, err := strconv.Atoi(strings.SplitN(name, "_", 2)[0])
@@ -85,5 +88,31 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		}
 	}
 
+	return nil
+}
+
+// checkMigrationNumbers refuses two migrations that claim the same number.
+// user_version is a high-water mark, so a duplicate is not something the loop
+// above would notice: whichever of the pair sorts first sets the version to
+// their shared number, and the second is then skipped by `n <= cur` without a
+// word. The database ends up missing one schema change and reporting itself up
+// to date.
+//
+// Two branches numbering their migration in parallel is the ordinary way to
+// arrive here, and by the time they meet both are already merged - so the
+// check has to be the thing that notices. names must be sorted.
+func checkMigrationNumbers(names []string) error {
+	prev, prevName := -1, ""
+	for _, name := range names {
+		n, err := strconv.Atoi(strings.SplitN(name, "_", 2)[0])
+		if err != nil {
+			return fmt.Errorf("migration %s: bad numeric prefix: %w", name, err)
+		}
+		if n == prev {
+			return fmt.Errorf("migrations %s and %s share the number %d: "+
+				"renumber the later one, or it is skipped silently", prevName, name, n)
+		}
+		prev, prevName = n, name
+	}
 	return nil
 }

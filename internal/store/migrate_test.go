@@ -39,6 +39,52 @@ func TestMigrationsLedgerAtHead(t *testing.T) {
 	}
 }
 
+// TestShippedMigrationsAreNumberedOnce is the check that has to run against the
+// files actually embedded, not against a fixture: two branches numbering their
+// migration in parallel both pass on their own and collide only once merged.
+func TestShippedMigrationsAreNumberedOnce(t *testing.T) {
+	entries, err := migrationsFS.ReadDir("migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	if err := checkMigrationNumbers(names); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestCheckMigrationNumbers: a duplicate number is refused by name, because the
+// runner cannot notice one. user_version is a high-water mark, so the second
+// file of a pair is skipped by `n <= cur` and the database reports itself up to
+// date while missing a schema change.
+func TestCheckMigrationNumbers(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		names []string
+		want  string
+	}{
+		{"ascending", []string{"0001_a.sql", "0002_b.sql", "0010_c.sql"}, ""},
+		{"duplicate", []string{"0010_check_cases.sql", "0010_role_ta.sql"}, "share the number 10"},
+		{"not a number", []string{"0001_a.sql", "later_b.sql"}, "bad numeric prefix"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkMigrationNumbers(tc.names)
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("unexpected error: %v", err)
+			case tc.want != "" && err == nil:
+				t.Fatalf("no error, want one mentioning %q", tc.want)
+			case tc.want != "" && !strings.Contains(err.Error(), tc.want):
+				t.Fatalf("error %q does not mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // TestMigrateSessionsAndTokens upgrades a database left by the previous
 // version: the shape 0006 has to repair (two tokens for one account, what two
 // interleaved rotations used to leave behind) and the one it has to drop
