@@ -146,6 +146,7 @@ func TestE2E(t *testing.T) {
 	t.Run("score override", func(t *testing.T) { testScoreOverride(t, e) })
 	t.Run("tamper notes", func(t *testing.T) { testTamperNotes(t, e) })
 	t.Run("per-test-case parser", func(t *testing.T) { testCaseParser(t, e) })
+	t.Run("oidc login", func(t *testing.T) { testOIDCLogin(t, e) })
 	// Last: it deletes a task from the course repo, so nothing after it may
 	// still need that task.
 	t.Run("task removed from the course", func(t *testing.T) { testTaskRemoved(t, e) })

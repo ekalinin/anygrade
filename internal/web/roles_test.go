@@ -15,6 +15,7 @@ import (
 
 	"github.com/ekalinin/anygrade/internal/config"
 	"github.com/ekalinin/anygrade/internal/intake"
+	"github.com/ekalinin/anygrade/internal/oidc"
 	"github.com/ekalinin/anygrade/internal/runner"
 	"github.com/ekalinin/anygrade/internal/store"
 )
@@ -87,6 +88,10 @@ var apiRoutes = []staffRoute{
 // impossible to add without deciding which of the four lists it joins.
 var ungatedRoutes = []string{
 	"GET /login", "POST /login",
+	// The whole OIDC flow is unauthenticated by definition: it is how a caller
+	// with no session gets one. What it may do once the ID token verifies is
+	// the handler's business (SPEC §8), not the mux's.
+	"GET /oidc/start", "GET /oidc/callback",
 	"GET /invite/{token}", "POST /invite/{token}",
 	"GET /register", "POST /register",
 	"POST /lang", "GET /static/",
@@ -446,4 +451,18 @@ func (p *rolesProbe) status() int {
 		return http.StatusOK
 	}
 	return p.code
+}
+
+// TestOIDCCallbackPath: the mux registers the callback as a literal so the
+// route scan above can see it, and internal/oidc builds the redirect URI from
+// its own constant. The two spellings must not drift - an IdP would then
+// redirect to a path the site does not serve.
+func TestOIDCCallbackPath(t *testing.T) {
+	const registered = "GET /oidc/callback"
+	if want := "GET " + oidc.CallbackPath; registered != want {
+		t.Fatalf("the mux registers %q, oidc.CallbackPath makes it %q", registered, want)
+	}
+	if !slices.Contains(ungatedRoutes, registered) {
+		t.Fatalf("%q is not accounted for in ungatedRoutes", registered)
+	}
 }

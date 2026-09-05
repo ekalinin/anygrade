@@ -2,6 +2,15 @@
 <section class="login">
   <h1>{{t "login.title"}}</h1>
   {{if .Error}}<p class="flash error">{{tFlash .Error}}</p>{{end}}
+  {{if .OIDCName}}
+  {{/* A GET form rather than a link, so the provider button is the same
+       primary button as the one below it without a style of its own. */}}
+  <form method="get" action="/oidc/start">
+    <input type="hidden" name="next" value="{{.Next}}">
+    <button type="submit">{{t "login.oidc_button" .OIDCName}}</button>
+  </form>
+  <p class="hint">{{t "login.oidc_hint"}}</p>
+  {{end}}
   <form method="post" action="/login">
     <input type="hidden" name="next" value="{{.Next}}">
     <label>{{t "common.login"}} <input name="login" autocomplete="username" required autofocus></label>

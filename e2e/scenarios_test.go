@@ -29,6 +29,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/ekalinin/anygrade/internal/oidc/oidctest"
 )
 
 // 1. validate: `anygrade validate` accepts the fixture course.
@@ -1809,4 +1811,181 @@ func testHiddenTestsBoundary(t *testing.T, e *env) {
 	if strings.Contains(body, hiddenSecret) || strings.Contains(body, "phase=build") {
 		t.Fatalf("the student page leaks the build phase:\n%s", body)
 	}
+}
+
+// 36. oidc login (SPEC §8): a course behind an identity provider. The whole
+// flow runs against a fake issuer in this process - its own signing key, its
+// own JWKS - and the server under test is a real `anygrade serve` configured
+// from the environment, which is the only place the client id and secret ever
+// live.
+//
+// What this proves that the unit tests cannot: the four credential paths keep
+// agreeing about `users.state`. A provider login is the fourth, and it is
+// checked here against the same `anygrade user remove` a teacher would run.
+func testOIDCLogin(t *testing.T, e *env) {
+	is, err := oidctest.New()
+	if err != nil {
+		t.Fatalf("fake issuer: %v", err)
+	}
+	t.Cleanup(is.Close)
+
+	dataDir := filepath.Join(e.root, "data-oidc")
+	// Invite, not add: the account exists and has never been activated, so it
+	// carries no personal token at all. That is exactly the account a provider
+	// login has to work for, and the reason settings has to be able to issue a
+	// first token afterwards.
+	runBin(t, "", "user", "invite", "--login", "sso", "--name", "Sso Student", "--data-dir", dataDir)
+	baseURL := startOIDCServer(t, e, dataDir, is.URL())
+
+	// The login page offers the provider, and still offers the token form: the
+	// token is the git password and nothing replaces it.
+	status, body := get(t, http.DefaultClient, baseURL+"/login")
+	if status != http.StatusOK {
+		t.Fatalf("GET /login: status %d", status)
+	}
+	if !strings.Contains(body, "/oidc/start") || !strings.Contains(body, `name="token"`) {
+		t.Fatalf("login page does not offer both ways in:\n%s", body)
+	}
+
+	// The server the rest of the suite runs against has no provider configured,
+	// so it must be untouched: no button, and no callback to reach.
+	if _, plain := get(t, http.DefaultClient, e.baseURL+"/login"); strings.Contains(plain, "/oidc/start") {
+		t.Fatalf("an unconfigured server offers a provider button:\n%s", plain)
+	}
+	if status, _ := get(t, http.DefaultClient, e.baseURL+"/oidc/callback?code=x&state=y"); status != http.StatusNotFound {
+		t.Fatalf("unconfigured /oidc/callback: status %d, want 404", status)
+	}
+
+	// The happy path, driven the way a browser would: start, authenticate at
+	// the provider, come back with the code.
+	client := newClient(t)
+	if code := oidcSignIn(t, client, baseURL, is, oidctest.Token{Subject: "sub-e2e", Login: "sso"}); code != http.StatusFound {
+		t.Fatalf("callback: status %d, want 302", code)
+	}
+	status, body = get(t, client, baseURL+"/")
+	if status != http.StatusOK {
+		t.Fatalf("GET / after a provider login: status %d", status)
+	}
+	if !strings.Contains(body, "Sso Student") {
+		t.Fatalf("the dashboard does not name the signed-in student:\n%s", body)
+	}
+
+	// No activation page ever ran, so there is no token yet - and settings says
+	// so instead of offering to regenerate one that does not exist.
+	status, body = get(t, client, baseURL+"/settings")
+	if status != http.StatusOK {
+		t.Fatalf("GET /settings: status %d", status)
+	}
+	if !strings.Contains(body, "You have no personal access token yet") {
+		t.Fatalf("settings does not offer a first token:\n%s", body)
+	}
+	resp, body := postForm(t, client, baseURL+"/settings/token", url.Values{})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /settings/token: status %d, body:\n%s", resp.StatusCode, body)
+	}
+	token := reToken.FindString(body)
+	if token == "" {
+		t.Fatalf("no token on the one-time page:\n%s", body)
+	}
+	// It is a real credential: the token login accepts it.
+	resp, body = postForm(t, newClient(t), baseURL+"/login", url.Values{
+		"login": {"sso"}, "token": {token}, "next": {"/"},
+	})
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("token login with the freshly issued token: status %d, body:\n%s", resp.StatusCode, body)
+	}
+
+	// A deactivated account gets no session, whichever credential it presents.
+	runBin(t, "", "user", "remove", "--login", "sso", "--data-dir", dataDir)
+	if code := oidcSignIn(t, newClient(t), baseURL, is, oidctest.Token{Subject: "sub-e2e", Login: "sso"}); code == http.StatusFound {
+		t.Fatal("a deactivated account got a session through the identity provider")
+	}
+	if status, _ := get(t, newClient(t), baseURL+"/login"); status != http.StatusOK {
+		t.Fatalf("the site broke after the refusal: /login status %d", status)
+	}
+}
+
+// oidcSignIn drives one whole provider login over client and returns the
+// callback's status code. The client's cookie jar carries the flow cookie, the
+// way a browser would.
+func oidcSignIn(t *testing.T, client *http.Client, baseURL string, is *oidctest.Issuer, tok oidctest.Token) int {
+	t.Helper()
+	resp, err := client.Get(baseURL + "/oidc/start")
+	if err != nil {
+		t.Fatalf("GET /oidc/start: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("GET /oidc/start: status %d, want 302", resp.StatusCode)
+	}
+	authURL := resp.Header.Get("Location")
+	if !strings.HasPrefix(authURL, is.URL()) {
+		t.Fatalf("start redirected to %q, not to the issuer", authURL)
+	}
+	code, state, err := is.AuthCode(authURL, tok)
+	if err != nil {
+		t.Fatalf("issue an authorization code: %v", err)
+	}
+	back, err := client.Get(baseURL + "/oidc/callback?code=" +
+		url.QueryEscape(code) + "&state=" + url.QueryEscape(state))
+	if err != nil {
+		t.Fatalf("GET /oidc/callback: %v", err)
+	}
+	defer back.Body.Close()
+	_, _ = io.ReadAll(back.Body)
+	return back.StatusCode
+}
+
+// startOIDCServer runs a second `anygrade serve` over the same course fixture
+// with its own data dir and ports, configured to trust the fake issuer. The
+// client id and secret arrive in the environment and nowhere else: course.yaml
+// is cloned by every student (SPEC §11).
+func startOIDCServer(t *testing.T, e *env, dataDir, issuer string) string {
+	t.Helper()
+	httpPort := freePort(t)
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", httpPort)
+
+	logPath := filepath.Join(e.root, "serve-oidc.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		t.Fatalf("create serve-oidc.log: %v", err)
+	}
+	cmd := exec.Command(bin, "serve",
+		"--repo", e.courseDir,
+		"--data-dir", dataDir,
+		"--http-addr", fmt.Sprintf("127.0.0.1:%d", httpPort),
+		"--ssh-addr", fmt.Sprintf("127.0.0.1:%d", freePort(t)),
+		"--base-url", baseURL,
+		"--workers", "1",
+	)
+	cmd.Env = append(os.Environ(),
+		"ANYGRADE_OIDC_ISSUER="+issuer,
+		"ANYGRADE_OIDC_CLIENT_ID="+oidctest.ClientID,
+		"ANYGRADE_OIDC_CLIENT_SECRET="+oidctest.ClientSecret,
+		"ANYGRADE_OIDC_NAME=Test IdP",
+	)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start serve with oidc: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+		}
+		logFile.Close()
+		if t.Failed() {
+			if b, err := os.ReadFile(logPath); err == nil {
+				t.Logf("serve-oidc.log:\n%s", b)
+			}
+		}
+	})
+	waitReady(t, baseURL)
+	return baseURL
 }

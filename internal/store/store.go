@@ -98,10 +98,30 @@ type UserStore interface {
 	// DeleteSSHKey removes one key, scoped to its owner and pinned to the
 	// fingerprint the caller saw; ok=false when nothing matched.
 	DeleteSSHKey(ctx context.Context, userID, keyID int64, fingerprint string) (bool, error)
+	// UserByOIDC resolves an identity provider subject (`iss` + `sub`, never
+	// the login or the email - those change on the provider's side) to its
+	// ACTIVE user; ok=false for unknown subjects and disabled accounts.
+	UserByOIDC(ctx context.Context, issuer, subject string) (User, bool, error)
+	// BindOIDC records the subject on an account that has none yet. ok=false
+	// when the account already carries a different subject, is not active, or
+	// the subject already belongs to another account - all of which are
+	// refusals, not errors.
+	BindOIDC(ctx context.Context, userID int64, issuer, subject string) (bool, error)
+	// UnbindOIDC clears an account's binding so it can be linked again;
+	// ok=false when the account has none or does not exist.
+	UnbindOIDC(ctx context.Context, login string) (bool, error)
+	// HasToken reports whether the account has a personal token at all. An
+	// account that only ever signed in through the identity provider has none,
+	// and cannot push over HTTP until it asks for one (SPEC §8).
+	HasToken(ctx context.Context, userID int64) (bool, error)
 }
 
 // SessionStore persists browser sessions (SPEC §8: token login → cookie).
 type SessionStore interface {
+	// CreateSession opens a browser session. tokenPlaintext binds it to that
+	// token, so resetting the token revokes every session opened from it; ""
+	// binds it to no token, which is what an identity provider login opens -
+	// it was not obtained from a token, and the account may not have one yet.
 	CreateSession(ctx context.Context, userID int64, tokenPlaintext string, ttl time.Duration) (string, error)
 	LookupSession(ctx context.Context, id string) (User, bool, error)
 	DeleteSession(ctx context.Context, id string) error

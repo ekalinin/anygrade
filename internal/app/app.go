@@ -20,6 +20,7 @@ import (
 	"github.com/ekalinin/anygrade/internal/gradebook"
 	"github.com/ekalinin/anygrade/internal/hidden"
 	"github.com/ekalinin/anygrade/internal/intake"
+	"github.com/ekalinin/anygrade/internal/oidc"
 	"github.com/ekalinin/anygrade/internal/queue"
 	"github.com/ekalinin/anygrade/internal/ratelimit"
 	"github.com/ekalinin/anygrade/internal/store"
@@ -187,6 +188,14 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
+	// The identity provider is optional and configured from the environment
+	// only (SPEC §8, §11): the client id and secret are credentials, and
+	// course.yaml is cloned by every student. Unset means nil, which is what
+	// keeps the login page and the routes exactly as they were.
+	provider, err := oidcProvider(ctx, baseURL(opts), logw)
+	if err != nil {
+		return err
+	}
 	site := web.New(&web.Handler{
 		DB:     db,
 		Course: holder,
@@ -219,6 +228,7 @@ func Run(ctx context.Context, opts Options) error {
 		SSHAddr:     opts.SSHAddr,
 		Limit:       limit,
 		Local:       localUser,
+		OIDC:        provider,
 		BehindProxy: opts.BehindProxy,
 		Alias:       gradebook.NewAliaser(aliasSecret),
 	})
@@ -288,6 +298,27 @@ func Run(ctx context.Context, opts Options) error {
 	default:
 		return nil
 	}
+}
+
+// oidcProvider builds the relying party from the environment, or returns nil
+// when no issuer is configured. A configuration error is fatal - the operator
+// asked for a provider and got a half-configured one - while an unreachable
+// issuer is only a warning: an identity provider that is down must not stop a
+// course server from starting, and the token login keeps working either way.
+func oidcProvider(ctx context.Context, baseURL string, logw io.Writer) (*oidc.Provider, error) {
+	cfg, enabled, err := oidc.FromEnv(baseURL)
+	if err != nil || !enabled {
+		return nil, err
+	}
+	p, err := oidc.New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(logw, "anygrade: oidc login enabled (issuer %s, redirect %s)\n", cfg.Issuer, cfg.RedirectURL)
+	if err := p.Probe(ctx); err != nil {
+		fmt.Fprintf(logw, "anygrade: warning: %v; the login button will retry on use\n", err)
+	}
+	return p, nil
 }
 
 // storeAuth adapts the store to gitserver.Authenticator, keeping gitserver

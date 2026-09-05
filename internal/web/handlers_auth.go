@@ -12,19 +12,42 @@ type loginData struct {
 	User       userView // always zero: base template needs the field
 	Next       string
 	Error      string
+	// OIDCName is the identity provider's label. It is empty when no provider
+	// is configured, which is what keeps the button off the page - the same
+	// condition that leaves the /oidc/ routes unregistered (SPEC §8).
+	OIDCName string
 }
 
 func (h *Handler) loginData(r *http.Request, errMsg string) loginData {
-	next := r.FormValue("next")
-	// Only same-site relative targets: never an open redirect.
-	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") {
-		next = "/"
-	}
-	return loginData{
+	d := loginData{
 		CourseName: h.Course.Get().Resolved.Course.Name,
-		Next:       next,
+		Next:       safeNext(r.FormValue("next")),
 		Error:      errMsg,
 	}
+	if h.OIDC != nil {
+		d.OIDCName = h.OIDC.Name()
+	}
+	return d
+}
+
+// safeNext keeps a post-login redirect on this site. Everything that comes back
+// from a login carries one - the form's hidden field, the provider callback's
+// saved state - and all of it is attacker-supplied, so the rule is one place.
+//
+// Only an absolute path is honoured. "//host" and "/\host" are read as
+// scheme-relative URLs by browsers, which would make the redirect an open one;
+// a CR or LF is refused because a redirect target belongs in a header.
+func safeNext(next string) string {
+	if next == "" || next[0] != '/' {
+		return "/"
+	}
+	if len(next) > 1 && (next[1] == '/' || next[1] == '\\') {
+		return "/"
+	}
+	if strings.ContainsAny(next, "\r\n") {
+		return "/"
+	}
+	return next
 }
 
 func (h *Handler) loginForm(w http.ResponseWriter, r *http.Request) {
