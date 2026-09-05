@@ -50,6 +50,19 @@ type Check struct {
 	// teacher-only, because it is the phase that reads them (SPEC §14).
 	Build string `yaml:"build"`
 	Run   string `yaml:"run"`
+	// Parser names the format the run phase's report is written in, so the
+	// check reports per-test-case results and earns the passed proportion of
+	// its weight instead of all of it or none (SPEC §4.3). Unset - and "none",
+	// which says the same thing out loud - is the default: the check is scored
+	// by its exit code, as every check was before parsers existed. Valid
+	// values live with the parsers (testreport.Formats).
+	Parser string `yaml:"parser"`
+	// ParserFile names the file the check writes its report to, relative to
+	// the task directory. Unset means the report is the run phase's own output,
+	// which is where `go test -json` and TAP put it; JUnit XML is a file by
+	// convention, and so is any command whose stdout carries something else
+	// besides the report.
+	ParserFile string `yaml:"parser_file"`
 }
 
 // HasBuildPhase reports whether any check of the list declares a build phase,

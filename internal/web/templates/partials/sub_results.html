@@ -17,6 +17,9 @@
       {{else if .TimedOut}}<span class="badge st-failed">{{t "status.timeout"}}</span>
       {{else if .Passed}}<span class="badge st-passed">{{t "status.pass"}}</span>
       {{else}}<span class="badge st-failed">{{t "status.fail"}}</span>{{end}}
+      {{/* The tally the check's weight was split by, when it declared a
+           `parser:` and its report was read (SPEC §4.3). */}}
+      {{if .Cases.Scored}}<span class="num">{{.Cases.Passed}}/{{.Cases.Scored}}</span>{{end}}
     </td>
     <td>{{.Duration}}</td>
     {{/* Each phase is one file offered two ways, so the phase is the label and
@@ -39,6 +42,27 @@
   &rarr; <strong>{{score .Sub.FinalScore}} / {{.TaskScore}}</strong>
 </p>
 {{end}}
+{{/* Per-test-case detail, and its absence: a check either lists the cases its
+     parser read or says why there are none. The two cannot both apply. */}}
+{{range .Checks}}{{if .Cases}}
+<details class="pane">
+  <summary>{{.Name}} {{t "sub.cases"}} <span class="num">{{.Cases.Passed}}/{{.Cases.Scored}}</span></summary>
+  <ul class="cases">
+    {{range .Cases}}
+    <li>
+      {{if eq .Status "passed"}}<span class="badge st-passed">{{t "status.pass"}}</span>
+      {{else if eq .Status "skipped"}}<span class="badge st-skipped">{{t "status.skipped"}}</span>
+      {{else}}<span class="badge st-failed">{{t "status.fail"}}</span>{{end}}
+      <span class="cname">{{.Name}}</span>
+      {{if .Duration}}<span class="num">{{.Duration}}</span>{{end}}
+      {{if .Message}}<pre>{{.Message}}</pre>{{end}}
+    </li>
+    {{end}}
+  </ul>
+</details>
+{{else if .ParseFailed}}
+<p class="hint">{{.Name}}: {{t "sub.parse_failed"}}</p>
+{{end}}{{end}}
 {{range .Checks}}{{if .BuildFailed}}
 <p class="hint">{{.Name}}: {{t "sub.build_failed"}}</p>
 {{else if and .LogExcerpt (not .Passed) (not .Skipped)}}

@@ -1626,6 +1626,32 @@ func testTamperNotes(t *testing.T, e *env) {
 	}
 }
 
+// 39. per-test-case parser: a check that declares `parser: tap` earns the
+// proportion of its cases that passed instead of the all-or-nothing its exit
+// code alone would give it, the page lists the cases behind that number, and
+// the CSV carries the proportional score (SPEC §4.3).
+func testCaseParser(t *testing.T, e *env) {
+	writeFile(t, filepath.Join(e.aliceDir, "tasks", "cases", "notes.txt"), "run the parser\n")
+	git(t, e.aliceDir, nil, "add", "-A")
+	git(t, e.aliceDir, nil, "commit", "-q", "-m", "trigger the cases task")
+	out := git(t, e.aliceDir, nil, "push", "origin", "main")
+
+	body := pollSubmission(t, e.aliceClient, e, taskSubmissionID(t, out, "cases"))
+	for _, want := range []string{"multiplies", "bignum", "3/4"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("submission page missing %q from the case list:\n%s", want, body)
+		}
+	}
+	// The check itself failed - one of its tests did - and it is still worth
+	// three of its four scored cases.
+	if !strings.Contains(body, "st-failed") {
+		t.Errorf("the check exited non-zero and must read as failed:\n%s", body)
+	}
+	if got := fetchScores(t, e)["alice"]["cases"]; got != "75" {
+		t.Fatalf("alice/cases: got %q, want 75 (3 of 4 scored cases passed)", got)
+	}
+}
+
 // 38. task removed from the course repo: a teacher push deletes a task while a
 // submission for it is still queued. That submission fails terminally with the
 // reason recorded, the graded history stays readable, and everything the course

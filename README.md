@@ -113,9 +113,9 @@ checks:
     run: go test -run 'TestAdvanced' ./...
 ```
 
-Raw score = `score × (passed weight / total weight)`. Weights must be non-negative - a negative one would push the score past the maximum, so `anygrade validate` rejects it; weight 0 is what gates carry. Late submissions between the soft and hard deadline get a percentage penalty per started interval; past the hard deadline they are recorded but not graded.
+Raw score = `score × (earned weight / total weight)`, and a check earns all of its weight or none of it by exit code. Weights must be non-negative - a negative one would push the score past the maximum, so `anygrade validate` rejects it; weight 0 is what gates carry. Late submissions between the soft and hard deadline get a percentage penalty per started interval; past the hard deadline they are recorded but not graded.
 
-A check may also carry an optional `build:` phase before its `run:`; it passes iff both exit 0. That is what keeps a compiled language's hidden tests off the disk while the student's code runs - see [hidden tests](#hidden-tests).
+A check may also carry an optional `build:` phase before its `run:`; it passes iff both exit 0. That is what keeps a compiled language's hidden tests off the disk while the student's code runs - see [hidden tests](#hidden-tests). And it may name the format its output reports in, which splits its weight over the individual test cases - see [per-test-case results](#per-test-case-results).
 
 Check output is kept twice: the last `log_excerpt` bytes go to the database and the UI, the whole stream to a file capped at `log_max` and closed with a truncation marker. Students see the excerpt and the live stream; the full log is staff-only (teachers and TAs), to read in the browser or to download.
 
@@ -260,6 +260,28 @@ Read the three limits before you rely on this:
 The build phase's output is **staff-only**: it is the phase that compiles against the hidden tests, so a compiler error quoting a hidden source line would land in it. A student whose check fails there is told the build failed and nothing else, which is why the example above keeps a plain `go build ./...` gate: that one does not compile `_test.go` files, so its output is safe to show and it is where a student sees their own compile errors. Teachers and TAs get the build log next to the ordinary one on the submission page.
 
 One check with a `build:` turns the boundary on for the whole task, so any check left run-only will not find the hidden tests any more. `anygrade validate` warns about each one; make sure it is what you meant.
+
+## Per-test-case results
+
+By default a check is worth all of its weight or none of it: 19 of 20 tests passing is a failed check. A check that declares what format it reports in earns the proportion instead, and the submission page lists the cases behind that number.
+
+```yaml
+checks:
+  - name: unit
+    weight: 100
+    parser: go-test-json     # none (default) | go-test-json | junit-xml | tap
+    run: go test -json ./...
+  - name: suite
+    weight: 50
+    parser: junit-xml
+    parser_file: report.xml  # relative to the task dir; without it the report is stdout
+    run: pytest --junitxml=report.xml
+```
+
+- A parsed check scores `weight × passed / scored`, so 19 of 20 is 95% of its weight. Skipped tests (`t.Skip`, `<skipped/>`, a TAP `# SKIP` or `# TODO`) count on neither side.
+- **The gate is still the exit code.** A `required: true` check blocks on whether the command succeeded, whatever its cases say: a parser changes what a check is worth, never whether it blocks. That is also what keeps the numbers from carrying more than they can - the report is written by a test run of the student's own code, so a solution that prints lines looking like test events adds cases nobody wrote. Keep a gate over the same tests when the proportion has to be trustworthy.
+- **A parser can never fail a check.** A report anygrade cannot read - the wrong format, no such file, output that is not a report at all - leaves the check exactly as its exit code decided it, and the page says the report could not be read. The build phase is never parsed, since its output is teacher-only, and neither is a check that timed out: it was killed mid-report.
+- The format is yours to declare, because a check is an arbitrary command: anygrade never guesses it, and `anygrade validate` rejects a name it does not know. Sizes are bounded - a report over 4 MB or over 1000 cases is refused, case names are stored up to 200 bytes and messages up to 512 - so a test that prints a megabyte per case costs the proportional scoring and nothing else.
 
 ## CLI
 

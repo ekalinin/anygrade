@@ -356,6 +356,23 @@ tbody tr:hover { background: var(--sheet); }
   color: var(--ink-3); user-select: none;
 }
 
+/* Per-test-case results inside a pane (SPEC §4.3): ruled rows, like every
+   other record on the page. A list and not a table - a failure message is a
+   block of text, and a table of paragraphs is not a table. */
+.cases { margin: 0; padding: 0.3rem 0.7rem; list-style: none; }
+.cases li { padding: 0.3rem 0; border-top: 1px solid var(--rule); }
+.cases li:first-child { border-top: none; }
+.cases .cname {
+  font-family: var(--mono); font-size: 0.82rem; margin-left: 0.35rem;
+  word-break: break-word;
+}
+.cases pre {
+  margin: 0.3rem 0 0; padding: 0.4rem 0.55rem; max-height: 12rem; overflow: auto;
+  background: var(--code-bg); border-radius: var(--radius-sm);
+  font-family: var(--mono); font-size: 0.75rem; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word; color: var(--ink-2);
+}
+
 /* Forms */
 input[type="text"], input[type="password"], input[type="search"],
 input[type="email"], input[type="number"], select, textarea {

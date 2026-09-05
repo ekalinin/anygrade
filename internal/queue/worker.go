@@ -12,6 +12,7 @@ import (
 	"github.com/ekalinin/anygrade/internal/runner"
 	"github.com/ekalinin/anygrade/internal/scoring"
 	"github.com/ekalinin/anygrade/internal/store"
+	"github.com/ekalinin/anygrade/internal/testreport"
 )
 
 // ErrTaskGone marks a submission whose task id no longer exists in the course
@@ -310,11 +311,18 @@ func (q *Queue) process(ctx context.Context, sub store.Submission) {
 	results := make([]scoring.CheckResult, len(outcomes))
 	checks := make([]store.CheckRow, len(outcomes))
 	for i, o := range outcomes {
+		// A check that declared a `parser:` and produced a readable report
+		// earns the passed proportion of its weight instead of all of it or
+		// none; every other check leaves the tally at 0/0 and is scored by its
+		// exit code exactly as before (SPEC §4.3).
+		passedCases, scoredCases := testreport.Tally(o.Cases)
 		results[i] = scoring.CheckResult{
-			Name:     o.Name,
-			Required: p.Task.Checks[i].Required,
-			Weight:   p.Task.Checks[i].Weight,
-			Passed:   o.Passed,
+			Name:        o.Name,
+			Required:    p.Task.Checks[i].Required,
+			Weight:      p.Task.Checks[i].Weight,
+			Passed:      o.Passed,
+			PassedCases: passedCases,
+			ScoredCases: scoredCases,
 		}
 		checks[i] = store.CheckRow{
 			Name:       o.Name,
@@ -327,6 +335,10 @@ func (q *Queue) process(ctx context.Context, sub store.Submission) {
 			LogExcerpt: o.LogExcerpt,
 			// Empty excerpt with a reason: the build phase is teacher-only.
 			BuildFailed: o.BuildFailed,
+			// No cases with a reason: the parser found no report to read, so
+			// the excerpt above is all there is (SPEC §4.3).
+			ParseFailed: o.ParseFailed,
+			Cases:       caseRows(o.Cases),
 		}
 	}
 	raw := scoring.RawScore(p.Task.Score, results)
@@ -494,6 +506,25 @@ func (q *Queue) requeue(sub store.Submission) {
 // nothing, leaving the row stuck in running until the next restart.
 func writeCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 5*time.Second)
+}
+
+// caseRows turns a parsed report into storage rows. No status translation is
+// needed: testreport.Status carries exactly the strings the check_cases CHECK
+// constraint allows, so the two cannot drift apart silently.
+func caseRows(cases []testreport.Case) store.CaseRows {
+	if len(cases) == 0 {
+		return nil
+	}
+	rows := make(store.CaseRows, len(cases))
+	for i, c := range cases {
+		rows[i] = store.CaseRow{
+			Name:     c.Name,
+			Status:   string(c.Status),
+			Duration: c.Duration,
+			Message:  c.Message,
+		}
+	}
+	return rows
 }
 
 func deadlineOf(t config.ResolvedTask) scoring.Deadline {

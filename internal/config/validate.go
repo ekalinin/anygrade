@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ekalinin/anygrade/internal/i18n"
+	"github.com/ekalinin/anygrade/internal/testreport"
 )
 
 // Severity classifies a Diagnostic. Only SevError makes validation (and server
@@ -381,6 +382,7 @@ func validateChecks(t *ResolvedTask, add func(Severity, string, string, string, 
 		if ch.Build != "" && ch.Build == ch.Run {
 			add(SevWarning, f, field+".build", "build and run are the same command, so the run phase's work happens before the hidden tests are removed")
 		}
+		validateParser(ch, f, field, add)
 		if ch.Required {
 			if ch.Weight != 0 {
 				add(SevWarning, f, field+".weight", "weight is ignored for required (gate) checks")
@@ -409,6 +411,34 @@ func validateChecks(t *ResolvedTask, add func(Severity, string, string, string, 
 		if !ch.Required && ch.Weight == 0 {
 			add(SevWarning, f, fmt.Sprintf("checks[%d].weight", i), "non-gate check %q has weight 0 and never contributes to the score", ch.Name)
 		}
+	}
+}
+
+// validateParser checks the per-test-case parser of one check (SPEC §4.3).
+// An unknown format is an error rather than a fallback to "none": a typo would
+// otherwise mean a course silently keeps scoring by exit code, and the whole
+// point of naming the format is that anygrade never guesses it.
+func validateParser(ch Check, f, field string, add func(Severity, string, string, string, ...any)) {
+	if !testreport.Valid(ch.Parser) {
+		add(SevError, f, field+".parser", "must be one of %s, got %q",
+			strings.Join(testreport.Formats(), "|"), ch.Parser)
+	}
+	if ch.ParserFile == "" {
+		return
+	}
+	if !testreport.Enabled(ch.Parser) {
+		add(SevWarning, f, field+".parser_file", "has no effect without parser:, so nothing reads %q", ch.ParserFile)
+	}
+	// The file is read out of the assembled workspace, so it obeys the rule
+	// every other metadata path does: relative to the task directory and
+	// inside it.
+	if filepath.IsAbs(ch.ParserFile) {
+		add(SevError, f, field+".parser_file", "%q must be a relative path", ch.ParserFile)
+		return
+	}
+	clean := filepath.Clean(ch.ParserFile)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		add(SevError, f, field+".parser_file", "%q must not escape the task directory", ch.ParserFile)
 	}
 }
 

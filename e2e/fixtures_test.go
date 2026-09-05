@@ -206,6 +206,28 @@ checks:
 const limitedReadme = "# Limited\n\nTwo attempts.\n"
 const limitedNotes = "todo\n"
 
+// casesTaskYAML has one check that emits TAP and fails: three of its four
+// scored cases pass, so the check earns three quarters of its weight instead
+// of nothing at all (SPEC §4.3). The skip counts for neither side.
+const casesTaskYAML = `name: "Cases"
+score: 100
+
+solution_files:
+  - notes.txt
+
+checks:
+  - name: unit
+    weight: 100
+    parser: tap
+    run: |
+      printf '1..5\nok 1 - adds\nok 2 - subtracts\nok 3 - divides\n'
+      printf 'not ok 4 - multiplies\nok 5 - bignum # SKIP not supported\n'
+      exit 1
+`
+
+const casesReadme = "# Cases\n\nOne check, five test cases.\n"
+const casesNotes = "todo\n"
+
 // retiredTaskYAML is the fixture's disposable task: nothing else touches it, so
 // the task-removed scenario can delete it from the course repo without taking
 // another scenario down with it. The check sleeps for whatever the solution
@@ -285,6 +307,10 @@ func writeCourseFixture(t *testing.T, root, hiddenDir string) string {
 	writeFile(t, filepath.Join(dir, "tasks", "limited", "task.yaml"), limitedTaskYAML)
 	writeFile(t, filepath.Join(dir, "tasks", "limited", "README.md"), limitedReadme)
 	writeFile(t, filepath.Join(dir, "tasks", "limited", "notes.txt"), limitedNotes)
+
+	writeFile(t, filepath.Join(dir, "tasks", "cases", "task.yaml"), casesTaskYAML)
+	writeFile(t, filepath.Join(dir, "tasks", "cases", "README.md"), casesReadme)
+	writeFile(t, filepath.Join(dir, "tasks", "cases", "notes.txt"), casesNotes)
 
 	writeFile(t, filepath.Join(dir, "tasks", "retired", "task.yaml"), retiredTaskYAML)
 	writeFile(t, filepath.Join(dir, "tasks", "retired", "README.md"), retiredReadme)

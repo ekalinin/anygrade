@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ekalinin/anygrade/internal/config"
+	"github.com/ekalinin/anygrade/internal/testreport"
 )
 
 // DockerRunner executes a submission's checks in one ephemeral container
@@ -301,6 +302,32 @@ func (s *dockerSession) dropHiddenTests(ctx context.Context, job Job) error {
 		s.close(false)
 	}
 	return dropHiddenTests(job)
+}
+
+// readReport implements checkExecutor. The workspace is a tmpfs inside the
+// container, so the file a check wrote is read back through the container
+// itself rather than off the host - `docker cp` would work too, but it stages
+// a tar for one file the parser is about to bound anyway. `cat` is no more of
+// an image requirement than the `sh` every check already runs through.
+//
+// The read gets a deadline of its own: the file's size is the check's to
+// choose, and the bounded buffer only guarantees that the bytes are dropped,
+// not that they stop arriving.
+func (s *dockerSession) readReport(ctx context.Context, job Job, rel string) ([]byte, error) {
+	if s.name == "" {
+		return nil, errors.New("the container is gone, so its workspace is too")
+	}
+	rctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+
+	out := &boundedBuffer{max: testreport.MaxInput + 1}
+	cmd := exec.CommandContext(rctx, "docker", "exec",
+		s.name, "cat", path.Join(containerWorkdir, rel))
+	cmd.Stdout = out
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("read %s from the container: %w", rel, err)
+	}
+	return out.buf, nil
 }
 
 // alive reports whether the container is still running. Used to tell a failed
