@@ -42,8 +42,25 @@ type Options struct {
 	// BehindProxy trusts X-Forwarded-Proto from a TLS-terminating reverse
 	// proxy (session cookie Secure flag).
 	BehindProxy bool
-	Log         io.Writer // startup/diagnostic lines; nil = os.Stderr
+	// RetryBackoff/RetryBackoffCap/MaxRetries are the infra-error retry
+	// schedule the worker pool runs on (SPEC §13). They belong to the
+	// deployment, not to the course: what makes 10s/5m/8 wrong is a slow
+	// registry or a hidden-tests remote behind a flaky link, and the operator
+	// is the one who knows that - a teacher pushing course.yaml is not.
+	RetryBackoff    time.Duration
+	RetryBackoffCap time.Duration
+	MaxRetries      int
+	Log             io.Writer // startup/diagnostic lines; nil = os.Stderr
 }
+
+// The shipped retry schedule (SPEC §13), re-exported so `serve` can advertise
+// in its own help exactly what it passes on, without the CLI reaching past the
+// composition root into the queue.
+const (
+	DefaultRetryBackoff    = queue.DefaultBackoffBase
+	DefaultRetryBackoffCap = queue.DefaultBackoffCap
+	DefaultMaxRetries      = queue.DefaultMaxRetries
+)
 
 // Run starts the whole server (git transports, intake socket, worker pool)
 // and blocks until ctx is canceled or a component fails.
@@ -53,6 +70,9 @@ func Run(ctx context.Context, opts Options) error {
 		logw = os.Stderr
 	}
 	if err := checkTLSOptions(opts.TLSCert, opts.TLSKey); err != nil {
+		return err
+	}
+	if err := checkRetryOptions(opts.RetryBackoff, opts.RetryBackoffCap, opts.MaxRetries); err != nil {
 		return err
 	}
 	hookBin, err := os.Executable()
@@ -137,6 +157,15 @@ func Run(ctx context.Context, opts Options) error {
 		Prep:    &intake.Prep{Repos: repos, Users: db, Course: holder, DataDir: opts.DataDir, Hidden: hcache, Log: log},
 		Workers: opts.Workers,
 		Events:  hub,
+		// The retry schedule is fixed for the life of the process, like the
+		// worker count next to it. A teacher push swaps the course snapshot,
+		// never this: a submission already waiting on a backoff was scheduled
+		// against the schedule in force when it failed, and re-deriving its
+		// deadline from a newer one would either strand it or stampede the
+		// whole backlog at once.
+		BackoffBase: opts.RetryBackoff,
+		BackoffCap:  opts.RetryBackoffCap,
+		MaxRetries:  opts.MaxRetries,
 	}
 	ic := &intake.Server{
 		DB: db, Queue: q, Repos: repos, Course: holder,

@@ -70,6 +70,11 @@ type env struct {
 	serverCmd *exec.Cmd
 	serverLog *os.File
 
+	// Extra `serve` arguments, for a scenario that stands up a server of its
+	// own. Empty for the shared one, which must keep running on the shipped
+	// defaults - that is what the other scenarios are asserting about.
+	serveArgs []string
+
 	// Set only by the TLS scenario's own env: serve the HTTP listener over
 	// TLS and poll readiness with a client that trusts the generated
 	// certificate.
@@ -205,6 +210,7 @@ func startServer(t *testing.T, e *env) {
 		args = append(args, "--tls-cert", e.tlsCert, "--tls-key", e.tlsKey)
 		ready = e.tlsClient
 	}
+	args = append(args, e.serveArgs...)
 	cmd := exec.Command(bin, args...)
 	cmd.Stdout = e.serverLog
 	cmd.Stderr = e.serverLog
@@ -265,6 +271,49 @@ func waitReadyWith(t *testing.T, client *http.Client, baseURL string) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("server at %s never became ready", baseURL)
+}
+
+// shortTempDir is t.TempDir() with a name that does not carry the test's own.
+// The data dir holds the hook's unix socket and macOS caps a socket path at
+// ~104 bytes, which a path built from a name like TestDockerDaemonUnreachable
+// exceeds; the server then refuses to start at all.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "ag-e2e-*")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
+}
+
+// registerAndClone registers a student through the open-registration form of
+// the course code given and clones their personal repo over HTTP basic auth,
+// returning the clone dir. The session and token are kept on env's alice fields
+// so the shared helpers (pollSubmission, fetchScores) work unchanged. Used by
+// the scenarios that stand up a server of their own; the ordered TestE2E
+// subtests register alice themselves, because that registration is what one of
+// them is asserting.
+func registerAndClone(t *testing.T, e *env, student, courseCode string) string {
+	t.Helper()
+	e.aliceClient = newClient(t)
+	resp, body := postForm(t, e.aliceClient, e.baseURL+"/register", url.Values{
+		"login": {student}, "name": {student}, "course_code": {courseCode},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("register %s: status %d, body:\n%s", student, resp.StatusCode, body)
+	}
+	e.aliceToken = reToken.FindString(body)
+	if e.aliceToken == "" {
+		t.Fatalf("register %s: no token in body:\n%s", student, body)
+	}
+
+	e.aliceDir = filepath.Join(e.root, student)
+	cloneURL := fmt.Sprintf("http://%s:%s@127.0.0.1:%d/git/%s/course.git",
+		student, e.aliceToken, e.httpPort, student)
+	git(t, e.root, nil, "clone", cloneURL, e.aliceDir)
+	setIdentity(t, e.aliceDir)
+	return e.aliceDir
 }
 
 // freePort picks an ephemeral loopback TCP port.

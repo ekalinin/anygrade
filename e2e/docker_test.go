@@ -9,7 +9,6 @@ package e2e
 import (
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -130,7 +129,7 @@ func TestDockerGrading(t *testing.T) {
 	requireDockerImage(t)
 
 	e := startDockerEnv(t)
-	dir := registerAndClone(t, e, "alice")
+	dir := registerAndClone(t, e, "alice", "e2e-docker-code")
 
 	writeFile(t, filepath.Join(dir, "tasks", "sum", "sum.sh"), sumSolution)
 	git(t, dir, nil, "add", "-A")
@@ -170,7 +169,7 @@ func TestDockerDaemonUnreachable(t *testing.T) {
 
 	dead := filepath.Join(shortTempDir(t), "dead.sock")
 	e := startDockerEnv(t, "DOCKER_HOST=unix://"+dead)
-	dir := registerAndClone(t, e, "alice")
+	dir := registerAndClone(t, e, "alice", "e2e-docker-code")
 
 	writeFile(t, filepath.Join(dir, "tasks", "sum", "sum.sh"), sumSolution)
 	git(t, dir, nil, "add", "-A")
@@ -213,7 +212,7 @@ func TestDockerCheckTimeout(t *testing.T) {
 	requireDockerImage(t)
 
 	e := startDockerEnv(t)
-	dir := registerAndClone(t, e, "alice")
+	dir := registerAndClone(t, e, "alice", "e2e-docker-code")
 
 	writeFile(t, filepath.Join(dir, "tasks", "timeout", "notes.txt"), "go\n")
 	git(t, dir, nil, "add", "-A")
@@ -247,7 +246,7 @@ func TestDockerBuildPhase(t *testing.T) {
 	requireDockerImage(t)
 
 	e := startDockerEnv(t)
-	dir := registerAndClone(t, e, "alice")
+	dir := registerAndClone(t, e, "alice", "e2e-docker-code")
 
 	writeFile(t, filepath.Join(dir, "tasks", "greet", "greet.sh"), greetSolution)
 	git(t, dir, nil, "add", "-A")
@@ -311,20 +310,6 @@ func requireDockerImage(t *testing.T) {
 	if out, err := exec.Command("docker", "pull", dockerImage).CombinedOutput(); err != nil {
 		t.Fatalf("docker pull %s: %v\n%s", dockerImage, err, out)
 	}
-}
-
-// shortTempDir is t.TempDir() with a name that does not carry the test's own.
-// The data dir holds the hook's unix socket and macOS caps a socket path at
-// ~104 bytes, which a path built from a name like TestDockerDaemonUnreachable
-// exceeds; the server then refuses to start at all.
-func shortTempDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "ag-e2e-*")
-	if err != nil {
-		t.Fatalf("mkdtemp: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	return dir
 }
 
 // startDockerEnv is startEnv for this suite: its own course (docker runner, one
@@ -422,30 +407,4 @@ func writeDockerCourseFixture(t *testing.T, root string) string {
 	git(t, dir, nil, "add", ".")
 	git(t, dir, nil, "-c", "user.name=e2e", "-c", "user.email=e2e@test", "commit", "-q", "-m", "init")
 	return dir
-}
-
-// registerAndClone registers a student through the open-registration form and
-// clones their personal repo over HTTP basic auth, returning the clone dir. The
-// session and token are kept on env's alice fields so the shared helpers
-// (pollSubmission, fetchScores) work unchanged.
-func registerAndClone(t *testing.T, e *env, student string) string {
-	t.Helper()
-	e.aliceClient = newClient(t)
-	resp, body := postForm(t, e.aliceClient, e.baseURL+"/register", url.Values{
-		"login": {student}, "name": {student}, "course_code": {"e2e-docker-code"},
-	})
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("register %s: status %d, body:\n%s", student, resp.StatusCode, body)
-	}
-	e.aliceToken = reToken.FindString(body)
-	if e.aliceToken == "" {
-		t.Fatalf("register %s: no token in body:\n%s", student, body)
-	}
-
-	e.aliceDir = filepath.Join(e.root, student)
-	cloneURL := fmt.Sprintf("http://%s:%s@127.0.0.1:%d/git/%s/course.git",
-		student, e.aliceToken, e.httpPort, student)
-	git(t, e.root, nil, "clone", cloneURL, e.aliceDir)
-	setIdentity(t, e.aliceDir)
-	return e.aliceDir
 }
