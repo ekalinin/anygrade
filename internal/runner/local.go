@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -50,6 +51,28 @@ func (r *LocalRunner) readReport(_ context.Context, job Job, rel string) ([]byte
 	return io.ReadAll(io.LimitReader(f, testreport.MaxInput+1))
 }
 
+// childEnv builds the check command's environment from the host's own
+// (base, normally os.Environ()) minus every ANYGRADE_* entry, then appends
+// the artifacts export. Unlike the docker runner, the local runner shares
+// the server's environment on purpose (SPEC §14: a student's or a course
+// author's own toolchain, not an allowlist) - but that environment still
+// holds the server's own secrets (hidden-tests token, webhook secret, OIDC
+// client secret) at the time a check runs, and those have no business in a
+// check log or a live stream. The exact-prefix match is on the part before
+// "=", so a stale ANYGRADE_ARTIFACTS inherited from the server process is
+// dropped along with the rest before the current one is appended.
+func childEnv(base []string, artifacts string) []string {
+	env := make([]string, 0, len(base)+1)
+	for _, kv := range base {
+		key, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(key, "ANYGRADE_") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env, artifactsEnv+"="+artifacts)
+}
+
 func (r *LocalRunner) execCheck(ctx context.Context, job Job, c config.Check, command, logPath string) (Outcome, error) {
 	log, err := openCheckLog(logPath, c.Name, r.Mirror, job.Spec.LogExcerpt, job.Spec.LogMax)
 	if err != nil {
@@ -63,7 +86,7 @@ func (r *LocalRunner) execCheck(ctx context.Context, job Job, c config.Check, co
 	cmd := exec.Command("sh", "-c", command)
 	cmd.Dir = filepath.Join(job.WorkspaceDir, filepath.FromSlash(job.TaskRelDir))
 	// Both phases agree on where a build may leave what a run executes.
-	cmd.Env = append(os.Environ(), artifactsEnv+"="+filepath.Join(job.WorkspaceDir, artifactsDir))
+	cmd.Env = childEnv(os.Environ(), filepath.Join(job.WorkspaceDir, artifactsDir))
 	cmd.Stdout = log
 	cmd.Stderr = log
 	// Own process group so a timeout kills the whole tree, not just sh.
