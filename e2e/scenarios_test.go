@@ -1123,9 +1123,13 @@ func testTokenReset(t *testing.T, e *env) {
 // agreeing: a disabled student who can still reach one transport is not
 // disabled (SPEC §8, §12).
 //
-// It drives the web surface in both directions because it is the only one that
-// has both: `anygrade user remove` deactivates without recording an event and
-// has no reactivate counterpart, so the CLI cannot close this loop.
+// Both surfaces are driven in both directions, one after the other: the teacher
+// UI, then `anygrade user deactivate` / `reactivate` against the same live
+// server. What the CLI half adds is that a state change from a shell reaches the
+// running process at all - it writes the same SQLite file, and every credential
+// filter reads it per request - and that it lands on /audit like the web one,
+// differing only in an actor column that names nobody, because a shell has no
+// session to attribute (SPEC §11).
 //
 // Bob rather than alice: he is the only student holding all three credentials.
 // Reactivating is one of the scenario's own assertions rather than a courtesy
@@ -1162,6 +1166,20 @@ func testDeactivateStudent(t *testing.T, e *env) {
 
 	setState("active")
 	assertBobAccess(t, e, true)
+
+	// The same round trip from the CLI. It runs after the web one and restores
+	// bob itself, so neither half depends on the other's ordering and the
+	// fixture is handed on active either way.
+	runBin(t, "", "user", "deactivate", "--login", "bob", "--data-dir", e.dataDir)
+	assertBobAccess(t, e, false)
+
+	_, page = get(t, e.profClient, e.baseURL+"/audit?kind=user.state&target=bob")
+	if !reCLIStateEvent.MatchString(page) {
+		t.Fatalf("/audit has no actorless user.state row for the CLI deactivation:\n%s", page)
+	}
+
+	runBin(t, "", "user", "reactivate", "--login", "bob", "--data-dir", e.dataDir)
+	assertBobAccess(t, e, true)
 }
 
 // reStateEvent matches the audit row a deactivation writes. It spans actor,
@@ -1171,6 +1189,14 @@ func testDeactivateStudent(t *testing.T, e *env) {
 // deactivation from a TA's, so it is pinned rather than skipped over.
 var reStateEvent = regexp.MustCompile(
 	`<td>prof</td><td>teacher</td><td>user\.state</td><td>bob</td><td>disabled</td>`)
+
+// reCLIStateEvent is the same row for the CLI half: the two cells that differ
+// are the ones that carry the whole point of writing the event without an
+// actor - "system" rather than a login, and the unknown-role dash rather than a
+// role the CLI never had.
+var reCLIStateEvent = regexp.MustCompile(
+	`<td>system</td><td><span class="den">&mdash;</span></td>` +
+		`<td>user\.state</td><td>bob</td><td>disabled</td>`)
 
 // assertBobAccess exercises the four credential paths a deactivation has to
 // close and requires them to answer the same way. want=true means every path
@@ -1869,7 +1895,7 @@ func testHiddenTestsBoundary(t *testing.T, e *env) {
 //
 // What this proves that the unit tests cannot: the four credential paths keep
 // agreeing about `users.state`. A provider login is the fourth, and it is
-// checked here against the same `anygrade user remove` a teacher would run.
+// checked here against the same `anygrade user deactivate` a teacher would run.
 func testOIDCLogin(t *testing.T, e *env) {
 	is, err := oidctest.New()
 	if err != nil {
@@ -1944,7 +1970,7 @@ func testOIDCLogin(t *testing.T, e *env) {
 	}
 
 	// A deactivated account gets no session, whichever credential it presents.
-	runBin(t, "", "user", "remove", "--login", "sso", "--data-dir", dataDir)
+	runBin(t, "", "user", "deactivate", "--login", "sso", "--data-dir", dataDir)
 	if code := oidcSignIn(t, newClient(t), baseURL, is, oidctest.Token{Subject: "sub-e2e", Login: "sso"}); code == http.StatusFound {
 		t.Fatal("a deactivated account got a session through the identity provider")
 	}

@@ -350,6 +350,27 @@ func TestAuditRecordsActorRole(t *testing.T) {
 	}
 }
 
+// TestAuditRendersActorlessEvent: an event with no actor is what a state change
+// taken from the CLI looks like - `anygrade user deactivate` has no session, so
+// it names nobody rather than the account it targets (SPEC §11). The page has to
+// render that row whole: "system" for the actor, and the dash the actor-role
+// partial uses for a role it does not know.
+func TestAuditRendersActorlessEvent(t *testing.T) {
+	h, session := newRoleSite(t, store.RoleTeacher)
+	if err := h.DB.Log(t.Context(), store.Event{
+		Kind: "user.state", Target: "alice", Detail: "disabled",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := do(h, http.MethodGet, "/audit?kind=user.state", session).Body.String()
+	const want = `<td>system</td><td><span class="den">&mdash;</span></td>` +
+		`<td>user.state</td><td>alice</td><td>disabled</td>`
+	if !strings.Contains(body, want) {
+		t.Fatalf("the audit page has no actorless row %s:\n%s", want, body)
+	}
+}
+
 // newRoleSite builds a site whose gated routes all have something to address:
 // one student with a submission and a task table, plus the seams the handlers
 // reach through. The returned cookie is a session for an account of the given

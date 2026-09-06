@@ -32,8 +32,18 @@ func cmdUser(args []string) int {
 		err = userAdd(rest)
 	case "list":
 		err = userList(rest)
-	case "remove":
-		err = userRemove(rest)
+	case "deactivate", "remove":
+		// `remove` is what deactivate was called before, kept as an alias so
+		// scripts keep working and left out of the usage line: it never removed
+		// anything - the account, its submissions, its scores and its repo all
+		// stay - so the name promised the opposite of what it did. The note
+		// goes to stderr, which leaves the output a script parses unchanged.
+		if sub == "remove" {
+			fmt.Fprintln(os.Stderr, "anygrade user: `remove` is deprecated, use `deactivate`")
+		}
+		err = userSetState(rest, sub, "disabled")
+	case "reactivate":
+		err = userSetState(rest, sub, "active")
 	case "reset-token":
 		err = userResetToken(rest)
 	case "add-key":
@@ -54,7 +64,7 @@ func cmdUser(args []string) int {
 }
 
 func printUserUsage() {
-	fmt.Fprintln(os.Stderr, "usage: anygrade user <add|list|remove|reset-token|add-key|invite|unbind-oidc> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: anygrade user <add|list|deactivate|reactivate|reset-token|add-key|invite|unbind-oidc> [flags]")
 }
 
 func userAdd(args []string) error {
@@ -125,8 +135,24 @@ func userList(args []string) error {
 	return w.Flush()
 }
 
-func userRemove(args []string) error {
-	fs := flag.NewFlagSet("user remove", flag.ContinueOnError)
+// userSetState is `user deactivate` and `user reactivate`, the CLI half of the
+// state switch the teacher UI offers (SPEC §8). Deactivating closes every
+// credential path at once - token, session, SSH key, provider login - and
+// deletes nothing, and the pair is symmetrical so an operator who disabled the
+// wrong login from a script can undo it from the same script.
+//
+// The audit event is written with no actor on purpose. The CLI has no session
+// and therefore nobody to name; attributing the action to the account it
+// targets would be worse than leaving it empty, and the audit page already has
+// a shape for this - an actorless row reads as "system" with an unknown role
+// (SPEC §12). Without the event, half of the ways to decide whether a student
+// may push, submit or log in at all would be invisible on /audit, which is the
+// page that exists to answer who closed an account.
+//
+// cmd is the subcommand as it was typed, so a flag error names the spelling the
+// operator used rather than the one this function was renamed to.
+func userSetState(args []string, cmd, state string) error {
+	fs := flag.NewFlagSet("user "+cmd, flag.ContinueOnError)
 	login := fs.String("login", "", "user login")
 	dataDir := fs.String("data-dir", ".anygrade", "anygrade data directory")
 	if err := fs.Parse(args); err != nil {
@@ -143,10 +169,27 @@ func userRemove(args []string) error {
 	}
 	defer db.Close()
 
-	if err := db.SetUserState(ctx, *login, "disabled"); err != nil {
+	// SetUserState reports an unknown login, so the event below is only ever
+	// written for a change that actually happened.
+	if err := db.SetUserState(ctx, *login, state); err != nil {
 		return err
 	}
-	fmt.Printf("user %s deactivated\n", *login)
+	// The same kind and the same detail the web path writes, so both surfaces
+	// read as one history and one filter finds every state change; the empty
+	// actor column is what tells them apart.
+	if err := db.Log(ctx, store.Event{Kind: "user.state", Target: *login, Detail: state}); err != nil {
+		// The account did change state, and saying only "audit failed" would
+		// leave the operator guessing whether it did.
+		return fmt.Errorf("user %s is %s, but the audit event was not written: %w", *login, state, err)
+	}
+
+	// "deactivated" is what this command has always printed, so the alias's
+	// output is byte for byte what it was.
+	verb := "deactivated"
+	if state == "active" {
+		verb = "reactivated"
+	}
+	fmt.Printf("user %s %s\n", *login, verb)
 	return nil
 }
 
