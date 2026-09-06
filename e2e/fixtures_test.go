@@ -323,8 +323,15 @@ func writeCourseFixture(t *testing.T, root, hiddenDir string) string {
 }
 
 // writeFile creates path (and its parent directories) with the given content.
+// path must be absolute: a relative one lands in the checkout `go test` was
+// started from, which is what a scenario reading a dir an earlier subtest never
+// filled in would produce.
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
+	if !filepath.IsAbs(path) {
+		t.Fatalf("write %q: a relative path lands in the checkout under test; %s",
+			path, orderedSuiteHint)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
 	}
