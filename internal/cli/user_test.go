@@ -2,6 +2,8 @@ package cli
 
 import (
 	"crypto/ed25519"
+	"io"
+	"os"
 	"strings"
 	"testing"
 
@@ -172,5 +174,155 @@ func TestUserAddKeyNamesTheHolder(t *testing.T) {
 	err = userAddKey([]string{"--login", "bob", "--key", key, "--data-dir", dir})
 	if err == nil || !strings.Contains(err.Error(), "alice") {
 		t.Fatalf("err = %v, want it to name the holder alice", err)
+	}
+}
+
+// seedUser creates one student in a fresh data dir and returns the dir.
+func seedUser(t *testing.T, login string) string {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := store.Open(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.CreateUser(t.Context(), login, "", store.RoleStudent); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// readState returns a user's state and every user.state event in the data dir,
+// newest first - all of them, so a row written against some other login is
+// visible too. It opens the data dir the way a second process would, which is
+// the only way to see what the command actually committed.
+func readState(t *testing.T, dir, login string) (string, []store.EventRow) {
+	t.Helper()
+	db, err := store.Open(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	u, err := db.GetUserByLogin(t.Context(), login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := db.ListEvents(t.Context(), "user.state", "", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return u.State, events
+}
+
+// captureStderr runs f with os.Stderr replaced by a pipe and returns what was
+// written there. The usage line and the deprecation note go to the real
+// os.Stderr, so this is the only way to read them back.
+func captureStderr(t *testing.T, f func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stderr
+	os.Stderr = w
+	f()
+	os.Stderr = saved
+	w.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Close()
+	return string(out)
+}
+
+// TestUserDeactivateReactivate: both directions change the state and both leave
+// the audit trail the teacher UI leaves for the same action (SPEC §8, §11). The
+// actor is empty on purpose - the CLI has no session, so the row names nobody
+// rather than the account it targets - and the detail is the new state, so one
+// filter finds every state change whichever surface took it.
+func TestUserDeactivateReactivate(t *testing.T) {
+	dir := seedUser(t, "alice")
+
+	for _, tc := range []struct{ cmd, want string }{
+		{"deactivate", "disabled"},
+		{"reactivate", "active"},
+	} {
+		if code := cmdUser([]string{tc.cmd, "--login", "alice", "--data-dir", dir}); code != 0 {
+			t.Fatalf("user %s: exit code %d, want 0", tc.cmd, code)
+		}
+		state, events := readState(t, dir, "alice")
+		if state != tc.want {
+			t.Fatalf("after %s the state is %q, want %q", tc.cmd, state, tc.want)
+		}
+		if len(events) == 0 || events[0].Detail != tc.want {
+			t.Fatalf("after %s the newest user.state event is %+v, want detail %q",
+				tc.cmd, events, tc.want)
+		}
+		if events[0].ActorLogin != "" || events[0].ActorRole != "" {
+			t.Errorf("after %s the event names actor %q (role %q), want nobody",
+				tc.cmd, events[0].ActorLogin, events[0].ActorRole)
+		}
+	}
+
+	// Both halves are on record, not just the last one.
+	if _, events := readState(t, dir, "alice"); len(events) != 2 {
+		t.Fatalf("%d user.state events, want one per direction", len(events))
+	}
+}
+
+// TestUserRemoveIsAHiddenAlias: `remove` never removed anything, but scripts
+// call it, so it keeps deactivating - audit event included - while the usage
+// line offers only the name that says what happens. The note that it is
+// deprecated goes to stderr, which leaves parsed output alone.
+func TestUserRemoveIsAHiddenAlias(t *testing.T) {
+	dir := seedUser(t, "alice")
+
+	var code int
+	note := captureStderr(t, func() {
+		code = cmdUser([]string{"remove", "--login", "alice", "--data-dir", dir})
+	})
+	if code != 0 {
+		t.Fatalf("user remove: exit code %d, want 0", code)
+	}
+	if !strings.Contains(note, "deprecated") || !strings.Contains(note, "deactivate") {
+		t.Errorf("stderr = %q, want a deprecation note pointing at deactivate", note)
+	}
+
+	state, events := readState(t, dir, "alice")
+	if state != "disabled" {
+		t.Fatalf("state after the alias = %q, want disabled", state)
+	}
+	if len(events) != 1 || events[0].Detail != "disabled" || events[0].ActorLogin != "" {
+		t.Fatalf("events after the alias = %+v, want one actorless disabled row", events)
+	}
+
+	usage := captureStderr(t, func() { cmdUser([]string{"bogus"}) })
+	if strings.Contains(usage, "remove") {
+		t.Errorf("the usage line still advertises remove: %q", usage)
+	}
+	if !strings.Contains(usage, "deactivate") || !strings.Contains(usage, "reactivate") {
+		t.Errorf("the usage line names neither half of the pair: %q", usage)
+	}
+}
+
+// TestUserSetStateUnknownLogin: a login that matches nothing is a message, not
+// a panic and not a silent success - and it leaves no audit row claiming a
+// state change that never happened.
+func TestUserSetStateUnknownLogin(t *testing.T) {
+	dir := seedUser(t, "alice")
+
+	for _, tc := range []struct{ cmd, state string }{
+		{"deactivate", "disabled"},
+		{"reactivate", "active"},
+	} {
+		err := userSetState([]string{"--login", "ghost", "--data-dir", dir}, tc.cmd, tc.state)
+		if err == nil || !strings.Contains(err.Error(), "ghost") {
+			t.Fatalf("user %s --login ghost: err = %v, want it to name the login", tc.cmd, err)
+		}
+	}
+
+	if _, events := readState(t, dir, "alice"); len(events) != 0 {
+		t.Errorf("a missing account still logged %+v", events)
 	}
 }

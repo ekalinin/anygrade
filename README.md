@@ -196,7 +196,7 @@ Three things are worth knowing before turning it on:
 
 - **It replaces the login form, not the token.** The personal token is also the git-over-HTTP password, and git cannot open a browser. A student who signs in this way still needs a token to push and gets it from settings: the same button, which issues the first one when there is none and rotates it when there is. Rotating invalidates the old token straight away, so a git remote that saved it stops working until the stored password is updated - the page says so.
 - **It binds, it does not enrol.** A successful sign-in attaches the provider identity to an account that already exists; it never creates one, so `registration.mode: invite` keeps meaning what it says. An identity with no account is told to ask its teacher for an invite. The binding is the provider's subject (`iss` + `sub`), so a rename or a new email on the provider's side costs nothing; an account already linked to one identity refuses a second, and `anygrade user unbind-oidc --login alice` is how a teacher undoes a link.
-- **Deactivating still works.** `anygrade user remove` (or the teacher UI) stops the provider login exactly as it stops the token and the SSH key.
+- **Deactivating still works.** `anygrade user deactivate` (or the teacher UI) stops the provider login exactly as it stops the token and the SSH key.
 
 Without any of the variables set, the login page is unchanged and `/oidc/callback` does not exist.
 
@@ -381,12 +381,15 @@ anygrade serve   [--repo DIR] [--data-dir DIR] [--http-addr :8080]
                  [--retry-backoff-cap 5m] [--max-retries 8]
 anygrade check   [--runner local|docker] [--timeout D] [--keep] [-v] [TASK ...]
 anygrade validate
-anygrade user    add|list|remove|invite|reset-token|add-key|unbind-oidc ...
+anygrade user    add|list|invite|deactivate|reactivate
+                 reset-token|add-key|unbind-oidc ...
 anygrade export  scores --format csv
                  submissions --task ID [--format dir|zip] [--out PATH]
                              [--all-attempts]
 anygrade version
 ```
+
+`anygrade user deactivate --login alice` closes every credential path of an account at once - the token, the live session, the SSH key and the provider login - and `anygrade user reactivate --login alice` reopens all four. Nothing is deleted: the account, its submissions, its scores and its repo stay, which is why the pair is named after what it does. Both write the same `user.state` event to `/audit` that the teacher UI writes, with no actor - the CLI has no session, so the row is attributed to nobody rather than to the student it targets. `anygrade user remove` still works as a deprecated alias of `deactivate`.
 
 `serve --local` runs with a single implicit user and no auth for offline use; it refuses to bind to non-loopback addresses, so the listen addresses default to `127.0.0.1:8080` and `127.0.0.1:2222` in that mode.
 
