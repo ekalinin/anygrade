@@ -40,7 +40,7 @@ Submission flow (the path that touches most packages):
 
 Package boundaries to preserve:
 
-- `internal/app` is the composition root - the only place where store, queue, gitserver, and intake concrete types are wired together. `web` never imports `gitserver` (git reads are injected as closures); `gitserver` is store-free (auth behind a small interface).
+- `internal/app` is the composition root - the only place where store, queue, gitserver, and intake concrete types are wired together. `web` never imports `gitserver` (git reads are injected as closures); `gitserver` is store-free (auth behind a small interface) and implements `runner.Source`, so it imports `runner` for that contract - the reverse is forbidden.
 - `internal/store`: SQLite with `MaxOpenConns(1)` + WAL - CLI and server safely share one DB from separate processes. Never hold a transaction across `runner.Run`.
 - `internal/config` merges course.yaml defaults into per-task `Resolved*` types; `intake.Holder` swaps the active course atomically when the teacher pushes a metadata update (invalid metadata rejects the teacher's push with the error list).
 - `internal/hidden`: cache of hidden-test repos (one bare mirror per URL, TTL coalescing, offline fallback to a pinned ref). Credentials come only from the environment (`ANYGRADE_HIDDEN_GIT_TOKEN`), never from the course repo, and never appear in argv. Every student-visible error is scrubbed to "hidden tests temporarily unavailable"; full detail goes to the server log only. `anygrade check` never fetches hidden tests.
