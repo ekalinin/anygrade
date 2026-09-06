@@ -341,7 +341,7 @@ X-Anygrade-Signature: v1=<hex hmac-sha256>
 
 ## 7. Git server
 
-- Per-student bare repos are clones of the course repo, created at account activation. The first git access creates one too, as a fallback: accounts made with `anygrade user add` never go through an activation page, and the activation itself must not fail on a slow clone once the invite is already spent.
+- Per-student bare repos are clones of the course repo, created at account activation. The first git access creates one too, as a fallback: accounts made with `anygrade user add` never go through an activation page, and the activation itself must not fail on a slow clone once the invite is already spent. That first access may be a teacher's rather than the owner's (§8), and the account's state does not enter into it: a deactivated account's repo is created the same way, because reading it is exactly what the teacher is there for. The account has to exist, though - an unknown login is not a repo.
 - Students have read/write access to their own repo only, and read-only access to the upstream course repo.
 - Suggested student setup (printed on the invite/activation page):
 
@@ -404,7 +404,7 @@ A TA is a course assistant with the reviewing half of a teacher's rights and non
 | score overrides | no | no | yes |
 | token reset, SSH key deletion, deactivation, invites | no | no | yes |
 | audit log | no | no | yes |
-| git transport: push to another account's repo, push the course repo | no | no | yes |
+| git transport: push to another account's repo (creating it if the owner never has), push the course repo | no | no | yes |
 
 Two of those lines are decisions rather than consequences:
 
@@ -413,7 +413,7 @@ Two of those lines are decisions rather than consequences:
 
 A TA is *not* a teacher on the git transport (§7): it grants read and write together, and the reviewing rights are read-only. The code a TA needs is served by the submission page, from the graded commit.
 
-Rights are asked as two questions - may this account review other people's work, and may it change the record - rather than compared against role names, so the routes are gated by the right they need and a fourth role would be a line in the table rather than an edit in every handler.
+Rights are asked as two questions - may this account review other people's work, and may it change the record - rather than compared against role names, so the routes are gated by the right they need and a fourth role would be a line in the table rather than an edit in every handler. The git transport is gated the same way from further away: the server that answers it never sees the role table, so the administer right reaches it as a flag on the authenticated identity - the role string it carries as well is passed on to the hooks and decides nothing.
 
 ## 9. Scoring and deadlines
 
@@ -543,7 +543,7 @@ Task definitions are not mirrored into the DB; metadata is always read from the 
 - Task deleted or renamed in the course repo: pending submissions for unknown task ids fail with a clear error; historical results remain visible.
 - Student pushes a branch other than the default: accepted and stored, but only default-branch pushes create submissions (stated in the push output).
 - Clock and timezones: all comparisons in UTC on the server clock; deadlines carry explicit offsets; UI renders in the course timezone.
-- `max_push_size` (course-wide, default 50 MB) guards against giant blobs. The server stops reading the pack itself, on top of git's own `receive.maxInputSize`, and the rejection is anygrade's own message: it names the limit and says how to recover (drop the large files from the commit and push again). A teacher pushing a new value gets it applied without a restart.
+- `max_push_size` (course-wide, default 50 MB) guards against giant blobs. The server stops reading the pack itself, on top of git's own `receive.maxInputSize`, and the rejection is anygrade's own message: it names the limit and says how to recover (drop the large files from the commit and push again). A teacher pushing a new value gets it applied without a restart. A client still uploading when the refusal is decided is read for a few seconds more, so that it gets to see the message: one that finishes within them keeps its connection, one that does not is cut off and its connection closed, so the push it already lost cannot hold one open for as long as it likes (§14).
 - Very long logs: the on-disk log is capped at `runner.log_max` (default 10 MB per check) and ends with an explicit truncation marker; the excerpt in the DB/UI (default 64 KB per check) carries the same marker. A log the server could not write does not fail the check - the excerpt says the full log is missing. The full log is staff-only (§14), offered both as a download and as an inline read in the browser - the same bytes behind the same check, served as plain text with `X-Content-Type-Options: nosniff` rather than inlined into a page, because a 10 MB log is what the browser's own text viewer is for; so is the build phase's, which is a separate file of the same check.
 - A check that failed in its build phase: no excerpt is stored - the phase's output is staff-only - and no run-phase log file exists at all, so there is nothing for the live stream to tail either. The submission page says the check failed while being built and why the output is not there; the teacher gets the build log next to the ordinary one.
 - A check whose `parser:` found no report - the wrong format, no such file, output that parses to no case at all, a report over the bounds of §4.3: the check keeps the verdict of its exit code, the row is marked, and the page says the per-test-case report could not be read. A course that loses its parser this way scores exactly as it did before it had one.
