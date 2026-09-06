@@ -482,12 +482,21 @@ func (s *Server) gradePush(ctx context.Context, user store.User, dir string,
 	// a range walked twice would charge two attempts for one marker. The cost
 	// is that a marker in a push whose hook never reached the server is lost;
 	// its content changes are not.
-	if p.OldSHA != zeroSHA {
-		if msgs, err := gitserver.Git(ctx, dir, "log", "--format=%B", p.OldSHA+".."+p.NewSHA); err == nil {
-			for _, m := range recheckRe.FindAllStringSubmatch(msgs, -1) {
-				if _, _, ok := c.Task(m[1]); ok && !slices.Contains(taskIDs, m[1]) {
-					taskIDs = append(taskIDs, m[1])
-				}
+	//
+	// A ref creation (p.OldSHA is the zero SHA) has no honest range to walk:
+	// the zero SHA names no commit, so "zeroSHA..new" is not a revision git
+	// accepts. Only the tip commit is scanned then - the same bound the
+	// content diff above already takes to the empty tree - so a marker earlier
+	// in a freshly created branch's history is missed, but the one in the tip
+	// still queues its task.
+	logArgs := []string{"log", "--format=%B", p.OldSHA + ".." + p.NewSHA}
+	if p.OldSHA == zeroSHA {
+		logArgs = []string{"log", "-1", "--format=%B", p.NewSHA}
+	}
+	if msgs, err := gitserver.Git(ctx, dir, logArgs...); err == nil {
+		for _, m := range recheckRe.FindAllStringSubmatch(msgs, -1) {
+			if _, _, ok := c.Task(m[1]); ok && !slices.Contains(taskIDs, m[1]) {
+				taskIDs = append(taskIDs, m[1])
 			}
 		}
 	}
