@@ -15,6 +15,14 @@ import (
 	"github.com/ekalinin/anygrade/internal/testreport"
 )
 
+// pipeWaitDelay bounds how long execCheck waits, once a check's own exit is
+// observed - whether it exited on its own or was killed after a timeout -
+// for its stdout/stderr pipes to close (cmd.WaitDelay, SPEC §13). A
+// descendant outside the process group is not reached by a group kill and
+// can hold a pipe open indefinitely; ten seconds is generous for a well
+// behaved tree to finish flushing and exit on its own.
+const pipeWaitDelay = 10 * time.Second
+
 // LocalRunner executes check commands as host processes. It enforces only the
 // wall-clock timeout (process-group kill); memory/cpu limits are docker-only
 // (SPEC §14). Suitable for `anygrade check` and trusted setups only.
@@ -68,6 +76,14 @@ func (r *LocalRunner) execCheck(ctx context.Context, job Job, c config.Check, co
 	cmd.Stderr = log
 	// Own process group so a timeout kills the whole tree, not just sh.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// A descendant that escapes the process group (e.g. by calling setsid)
+	// can keep the pipes backing cmd.Stdout/Stderr open long after the
+	// command itself exits - normally or via the group kill below - which
+	// would otherwise wedge cmd.Wait forever (issue #123). Give up on the
+	// pipes after this grace period instead of blocking the worker; the
+	// ordinary-exit branch below turns the resulting exec.ErrWaitDelay back
+	// into a verdict rather than an infra failure.
+	cmd.WaitDelay = pipeWaitDelay
 
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
@@ -89,7 +105,13 @@ func (r *LocalRunner) execCheck(ctx context.Context, job Job, c config.Check, co
 		timedOut = true
 		fmt.Fprintf(log, "\nanygrade: timed out after %s\n", job.Spec.Timeout)
 	case err := <-done:
-		if _, ok := errors.AsType[*exec.ExitError](err); err != nil && !ok {
+		if errors.Is(err, exec.ErrWaitDelay) {
+			// The command exited on its own; pipeWaitDelay fired only
+			// because something it left running kept the pipes open.
+			// cmd.ProcessState already has the real exit status, so judge
+			// the check by that instead of an infra failure.
+			fmt.Fprintf(log, "\nanygrade: output still held open %s after the command exited\n", pipeWaitDelay)
+		} else if _, ok := errors.AsType[*exec.ExitError](err); err != nil && !ok {
 			return Outcome{}, infraErr("runner_exec", err)
 		}
 	}
