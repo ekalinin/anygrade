@@ -181,6 +181,12 @@ func providerName(issuer string) string {
 // Name is the label the login button carries.
 func (p *Provider) Name() string { return p.cfg.ProviderName }
 
+// LoginClaim is the claim Identity.Login was filled from. The caller decides
+// what a value from it means for an account; this package only reports which
+// claim the operator picked, because `email` is the one whose value is an
+// address rather than a name.
+func (p *Provider) LoginClaim() string { return p.cfg.LoginClaim }
+
 // Probe fetches the discovery document once, so a misspelled issuer shows up
 // at startup instead of at the first student's login. A failure is
 // deliberately not fatal to the caller: the provider being unreachable must
