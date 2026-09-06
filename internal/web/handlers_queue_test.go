@@ -179,6 +179,9 @@ func TestQueueRecheckUnknownSubmission(t *testing.T) {
 // TestQueueRowActions pins which display statuses offer which button. Recheck
 // belongs to the terminal `error` rows only: `retrying` re-runs by itself and
 // `canceled` no longer counts, so a recheck there would grade another commit.
+// Cancel belongs to every row still in motion, `retrying` among them - a row
+// waiting on a backoff is the same submission on its way back to the queue,
+// and cancel is final wherever it arrives (SPEC §13).
 func TestQueueRowActions(t *testing.T) {
 	now := time.Now()
 	for _, tc := range []struct {
@@ -195,7 +198,7 @@ func TestQueueRowActions(t *testing.T) {
 		{name: "error", sub: store.Submission{ID: 3, Status: store.StatusInfraError},
 			wantStatus: gradebook.StatusError, wantRecheck: true},
 		{name: "retrying", sub: store.Submission{ID: 4, Status: store.StatusInfraError, RetryAt: &now},
-			wantStatus: gradebook.StatusRetrying},
+			wantStatus: gradebook.StatusRetrying, wantCancel: true},
 		{name: "canceled", sub: store.Submission{ID: 5, Status: store.StatusInfraError, CanceledAt: &now},
 			wantStatus: gradebook.StatusCanceled},
 	} {

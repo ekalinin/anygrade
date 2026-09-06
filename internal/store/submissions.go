@@ -405,13 +405,20 @@ func (s *DB) NextRetryAt(ctx context.Context) (*time.Time, error) {
 	return parseTimePtr(v)
 }
 
-// CancelSubmission implements SubmissionStore.
+// CancelSubmission implements SubmissionStore. The guard is every state a
+// submission can still leave by itself: queued, running, and an infra_error
+// with a retry still armed - that last one is the same submission on its way
+// back to the queue, holding its attempt slot and blocking the pair until the
+// schedule runs out, so cancel has to reach it too (SPEC §13). Clearing
+// retry_at is what makes the cancel final: ClaimNext never looks at a row
+// without one.
 func (s *DB) CancelSubmission(ctx context.Context, id int64, now time.Time) (Submission, bool, error) {
 	row := s.db.QueryRowContext(ctx, `
 		UPDATE submissions SET status = 'infra_error', retry_at = NULL, counts = 0,
 		  canceled_at = ?, worker_note = 'canceled by teacher',
 		  student_note = 'canceled by teacher'
-		WHERE id = ? AND status IN ('queued','running')
+		WHERE id = ? AND (status IN ('queued','running')
+		  OR (status = 'infra_error' AND retry_at IS NOT NULL))
 		RETURNING `+submissionCols,
 		fmtTime(now), id)
 	sub, err := scanSubmission(row)
