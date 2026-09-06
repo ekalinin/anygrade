@@ -15,3 +15,7 @@
 # local scratch, not part of the repo
 /example/
 TODO.md
+# Agent tooling keeps scratch worktrees here, each one a full checkout of this
+# repository. The tracked CLAUDE.md symlink at the root is a different path and
+# stays tracked; only the directory is ignored.
+/.claude/
