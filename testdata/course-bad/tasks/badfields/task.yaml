@@ -4,15 +4,7 @@ score: 100
 foo: bar
 
 solution_files:
-  - missing.go
-
-deadline:
-  soft: 2026-10-01T23:59:59+03:00
-  hard: 2026-09-24T23:59:59+03:00
-  penalty:
-    percent: 10
-    per: 24h
-    max_percent: 50
+  - main.go
 
 checks:
   - name: build

@@ -11,6 +11,11 @@ type Resolved struct {
 	// rawCourse retains the raw course for validation checks that need to know
 	// whether a field was explicitly set. Unexported; not part of the API.
 	rawCourse *Course
+	// root is the course repo root, exactly as passed to LoadAll - the same
+	// value every ResolvedTask.root carries, kept here too so a course-level
+	// check (e.g. defaults.workspace.include) can resolve repo-relative paths
+	// even when the course has no tasks.
+	root string
 }
 
 // ResolvedCourse is the course-level configuration with built-in defaults

@@ -130,10 +130,12 @@ func Validate(r *Resolved) []Diagnostic {
 		}
 	}
 
+	validateCourseWorkspaceInclude(r, add)
+
 	seenIDs := map[string]string{} // id -> first file that used it
 	for i := range r.Tasks {
 		t := &r.Tasks[i]
-		validateTask(t, add)
+		validateTask(t, r.rawCourse, add)
 
 		if prev, dup := seenIDs[t.ID]; dup {
 			add(SevError, t.file, "id", "duplicate task id %q (also in %s)", t.ID, prev)
@@ -208,7 +210,7 @@ func validateWebhook(w Webhook, add func(Severity, string, string, string, ...an
 	}
 }
 
-func validateTask(t *ResolvedTask, add func(Severity, string, string, string, ...any)) {
+func validateTask(t *ResolvedTask, rawCourse *Course, add func(Severity, string, string, string, ...any)) {
 	f := t.file
 
 	// Runner (8-11).
@@ -245,18 +247,25 @@ func validateTask(t *ResolvedTask, add func(Severity, string, string, string, ..
 		add(SevWarning, f, "runner.log_max", "the on-disk log is capped below runner.log_excerpt (%d < %d)", t.Runner.LogMax, t.Runner.LogExcerpt)
 	}
 	// Memory/cpu limits are docker-only (SPEC §14); warn when a local-runner
-	// task sets them explicitly so they don't look enforced.
-	if t.Runner.Type == "local" && t.raw != nil {
-		if t.raw.Runner.Memory != nil {
+	// task sets them explicitly, at either merge layer - the task's own runner
+	// block or the course defaults.runner block - so they don't look enforced.
+	if t.Runner.Type == "local" {
+		memSet := t.raw != nil && t.raw.Runner.Memory != nil
+		cpuSet := t.raw != nil && t.raw.Runner.CPUs != nil
+		if rawCourse != nil {
+			memSet = memSet || rawCourse.Defaults.Runner.Memory != nil
+			cpuSet = cpuSet || rawCourse.Defaults.Runner.CPUs != nil
+		}
+		if memSet {
 			add(SevWarning, f, "runner.memory", "memory limit is not enforced by the local runner")
 		}
-		if t.raw.Runner.CPUs != nil {
+		if cpuSet {
 			add(SevWarning, f, "runner.cpus", "cpu limit is not enforced by the local runner")
 		}
 	}
 
 	// Identity (13-14).
-	if strings.ContainsAny(t.ID, "/ \t\n") || strings.Contains(t.ID, "..") {
+	if strings.ContainsAny(t.ID, "/ \t\n\r") || strings.Contains(t.ID, "..") {
 		add(SevError, f, "id", "task id %q must not contain '/', '..', or whitespace", t.ID)
 	}
 	if t.Score <= 0 {
@@ -334,32 +343,68 @@ func (t *ResolvedTask) repoRoot() string {
 	return t.Dir
 }
 
+// validateWorkspaceIncludePath applies the shared workspace.include rules
+// (SPEC §4.3) to one entry: relative, must not escape root, must exist, must
+// not be a symlink. Shared by the once-only course-level pass and the
+// per-task pass, so a bad entry is described identically wherever it is
+// reported. Reports at most one diagnostic and returns whether the entry
+// passed every check.
+func validateWorkspaceIncludePath(root, file, field, inc string, add func(Severity, string, string, string, ...any)) bool {
+	if filepath.IsAbs(inc) {
+		add(SevError, file, field, "%q must be a relative path", inc)
+		return false
+	}
+	clean := filepath.Clean(inc)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		add(SevError, file, field, "%q must not escape the course repo", inc)
+		return false
+	}
+	st, err := os.Lstat(filepath.Join(root, clean))
+	if err != nil {
+		add(SevError, file, field, "listed path %q does not exist in the course repo", inc)
+		return false
+	}
+	// See solution_files: a symlink is not exported into the workspace.
+	if st.Mode()&fs.ModeSymlink != 0 {
+		add(SevError, file, field, "%q is a symlink; the workspace is a plain tree, so it would be missing when the checks run", inc)
+		return false
+	}
+	return true
+}
+
+// validateCourseWorkspaceInclude checks defaults.workspace.include once,
+// against course.yaml, with the course-level index. Without this, the same
+// typo in a course-wide entry was reported once per task (it is unioned into
+// every task's merged Workspace.Include), turning one bad entry into as many
+// diagnostics as the course has tasks; validateWorkspace below now only
+// re-checks the entries a task adds itself.
+func validateCourseWorkspaceInclude(r *Resolved, add func(Severity, string, string, string, ...any)) {
+	if r.rawCourse == nil {
+		return
+	}
+	for i, inc := range r.rawCourse.Defaults.Workspace.Include {
+		field := fmt.Sprintf("defaults.workspace.include[%d]", i)
+		validateWorkspaceIncludePath(r.root, courseFile, field, inc, add)
+	}
+}
+
 func validateWorkspace(t *ResolvedTask, add func(Severity, string, string, string, ...any)) {
 	f := t.file
 	root := t.repoRoot()
 	taskDirRel := filepath.Dir(t.file)
 
-	for i, inc := range t.Workspace.Include {
+	// Only the task's own entries are validated here; the course-level list is
+	// checked once by validateCourseWorkspaceInclude.
+	var taskInclude []string
+	if t.raw != nil {
+		taskInclude = t.raw.Workspace.Include
+	}
+	for i, inc := range taskInclude {
 		field := fmt.Sprintf("workspace.include[%d]", i)
-		if filepath.IsAbs(inc) {
-			add(SevError, f, field, "%q must be a relative path", inc)
+		if !validateWorkspaceIncludePath(root, f, field, inc, add) {
 			continue
 		}
 		clean := filepath.Clean(inc)
-		if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-			add(SevError, f, field, "%q must not escape the course repo", inc)
-			continue
-		}
-		st, err := os.Lstat(filepath.Join(root, clean))
-		if err != nil {
-			add(SevError, f, field, "listed path %q does not exist in the course repo", inc)
-			continue
-		}
-		// See solution_files: a symlink is not exported into the workspace.
-		if st.Mode()&fs.ModeSymlink != 0 {
-			add(SevError, f, field, "%q is a symlink; the workspace is a plain tree, so it would be missing when the checks run", inc)
-			continue
-		}
 		if t.file != "" && taskDirRel != "." {
 			if clean == taskDirRel || strings.HasPrefix(taskDirRel, clean+string(filepath.Separator)) {
 				add(SevWarning, f, field, "%q is already exported automatically", inc)
@@ -516,6 +561,12 @@ func validateHidden(t *ResolvedTask, add func(Severity, string, string, string, 
 			// token would leak (SPEC §11, §14). The diagnostic must not echo
 			// the URL: it is reported back in the teacher's push output.
 			add(SevError, f, "hidden_tests.url", "must not embed credentials; hidden-tests credentials come from the environment (ANYGRADE_HIDDEN_GIT_TOKEN)")
+		}
+		// path is a subdir inside the hidden repo's own tree (internal/hidden
+		// reads it as a git tree path), unlike the local source's absolute
+		// filesystem path below, so it must stay relative and non-escaping.
+		if h.Path != "" && !filepath.IsLocal(h.Path) {
+			add(SevError, f, "hidden_tests.path", "%q must be a relative path that does not escape the hidden repo", h.Path)
 		}
 	}
 	if h.Source == "local" {

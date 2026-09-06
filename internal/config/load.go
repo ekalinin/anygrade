@@ -119,6 +119,13 @@ func LoadAll(repoDir string) (*Resolved, []Diagnostic, error) {
 		}
 		rawTask, tDiags := decodeTask(mustRead(path), display, dir)
 		diags = append(diags, tDiags...)
+		if HasErrors(tDiags) {
+			// A decode failure leaves rawTask a zero-value placeholder;
+			// resolving and validating it further would only add phantom
+			// diagnostics ("at least one check is required") on top of the
+			// real decode error.
+			return nil
+		}
 
 		rt := Resolve(rawCourse, rawTask)
 		rt.root = repoDir
@@ -135,6 +142,7 @@ func LoadAll(repoDir string) (*Resolved, []Diagnostic, error) {
 		Course:    resolveCourse(rawCourse),
 		Tasks:     tasks,
 		rawCourse: rawCourse,
+		root:      repoDir,
 	}
 	return resolved, diags, nil
 }

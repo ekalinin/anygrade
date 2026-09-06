@@ -1,0 +1,26 @@
+# Decodes cleanly (unlike badfields), so it exercises the missing-solution-file
+# and reversed-deadline rules on their own: a decode failure now short-circuits
+# validation of the file it happens in, so badfields can no longer cover them.
+id: badmisc
+name: "Bad misc"
+score: 100
+
+solution_files:
+  - missing.go
+
+deadline:
+  soft: 2026-10-01T23:59:59+03:00
+  hard: 2026-09-24T23:59:59+03:00
+  penalty:
+    percent: 10
+    per: 24h
+    max_percent: 50
+
+checks:
+  - name: build
+    required: true
+    weight: 0
+    run: go build ./...
+  - name: test
+    weight: 100
+    run: go test ./...
