@@ -132,9 +132,12 @@ func (c *Cache) resolve(ctx context.Context, dir string, spec config.HiddenTests
 	}
 
 	// Fetch the one ref into FETCH_HEAD; branch, tag, and (where the server
-	// allows it) raw SHA all resolve through the same path.
+	// allows it) raw SHA all resolve through the same path. --end-of-options
+	// stops spec.URL and ref, both teacher-controlled (task.yaml), from being
+	// read as options - a value like "--upload-pack=<cmd>" would otherwise run
+	// an arbitrary command for a local or file:// remote.
 	_, stderr, fetchErr := c.git(ctx, dir, c.credArgs(spec.URL),
-		"fetch", "--no-tags", "--quiet", spec.URL, ref)
+		"fetch", "--no-tags", "--quiet", "--end-of-options", spec.URL, ref)
 	if fetchErr == nil {
 		out, stderr, err := c.git(ctx, dir, nil, "rev-parse", "FETCH_HEAD")
 		if err != nil {

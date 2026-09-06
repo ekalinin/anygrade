@@ -248,7 +248,7 @@ hidden_tests:
   path: 01-intro/
 ```
 
-The server caches hidden repos in the data dir and falls back to the last successful fetch when the remote is unreachable. Credentials come from the environment (`ANYGRADE_HIDDEN_GIT_TOKEN`, optional `ANYGRADE_HIDDEN_GIT_USER`) or the host's ssh agent, never from the course repo - `anygrade validate` rejects a `url` that embeds them. Hidden test contents and fetch errors never reach student-visible output.
+The server caches hidden repos in the data dir and falls back to the last successful fetch when the remote is unreachable. Credentials come from the environment (`ANYGRADE_HIDDEN_GIT_TOKEN`, optional `ANYGRADE_HIDDEN_GIT_USER`) or the host's ssh agent, never from the course repo - `anygrade validate` rejects a `url` that embeds them. `validate` also requires the `url` to be a form git reads as a remote - `https://`, `http://`, `ssh://`, `git://`, `file://`, an absolute local path, or `user@host:path` - and refuses a `url` or `ref` that git would read as an option, such as one starting with `-`. Hidden test contents and fetch errors never reach student-visible output.
 
 With `source: local` the `path` is an absolute path on the grading server; `validate` warns when it is relative or missing locally, since a course repo is usually validated elsewhere. `ANYGRADE_HIDDEN_LOCAL_ROOTS` (colon-separated absolute roots) limits which directories such a path may reach; unset means unrestricted. Set it whenever the teachers who push `course.yaml` are not the administrators of the machine. `anygrade check` reads the working copy and is not subject to it.
 
