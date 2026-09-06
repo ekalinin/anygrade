@@ -3,6 +3,7 @@ package gradebook
 import (
 	"bytes"
 	"encoding/csv"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -150,6 +151,36 @@ func TestLeaderboardRanking(t *testing.T) {
 	}
 	if a.Alias("alice") == a.Alias("bob") {
 		t.Error("distinct logins should not collide on this input")
+	}
+}
+
+// TestLeaderboardTiesOrderedByAlias: a tie inherited from the matrix's login
+// order would let the alias mapping be read straight off the board - everyone
+// is tied at 0 the moment a course starts. Ties must sort on the alias
+// instead, for every viewer, so the row order carries no information about
+// logins even before totals diverge.
+func TestLeaderboardTiesOrderedByAlias(t *testing.T) {
+	m := Matrix{Rows: []Row{
+		{User: store.User{Login: "alice"}, Total: 0},
+		{User: store.User{Login: "bob"}, Total: 0},
+		{User: store.User{Login: "carol"}, Total: 0},
+		{User: store.User{Login: "dave"}, Total: 0},
+		{User: store.User{Login: "zoe"}, Total: 0},
+	}}
+	a := NewAliaser([]byte("instance secret"))
+	rows := Leaderboard(m, a)
+
+	wantLogins := []string{"zoe", "alice", "dave", "carol", "bob"} // alias order
+	for i := range rows {
+		if rows[i].Rank != 1 {
+			t.Errorf("row %d (%s): rank %d, want 1 (all tied)", i, rows[i].Login, rows[i].Rank)
+		}
+		if rows[i].Login != wantLogins[i] {
+			t.Errorf("row %d: login %s, want %s (alias order)", i, rows[i].Login, wantLogins[i])
+		}
+	}
+	if !slices.IsSortedFunc(rows, func(a, b LeaderRow) int { return strings.Compare(a.Alias, b.Alias) }) {
+		t.Errorf("tied rows are not in alias order: %+v", rows)
 	}
 }
 

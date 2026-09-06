@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"slices"
+	"strings"
 )
 
 // LeaderRow is one leaderboard entry (SPEC §10). Alias replaces Login for
@@ -24,6 +25,11 @@ func Leaderboard(m Matrix, a Aliaser) []LeaderRow {
 	for _, r := range m.Rows {
 		rows = append(rows, LeaderRow{Login: r.User.Login, Alias: a.Alias(r.User.Login), Total: r.Total})
 	}
+	// Ties break on the alias, not the login order inherited from the matrix:
+	// at the start of a course everyone is tied at 0, and login order would
+	// hand every viewer - students included - the whole login-to-alias
+	// mapping in one page load. The same rule for every viewer keeps a
+	// teacher's and a student's view of one board in the same order.
 	slices.SortStableFunc(rows, func(a, b LeaderRow) int {
 		switch {
 		case a.Total > b.Total:
@@ -31,7 +37,7 @@ func Leaderboard(m Matrix, a Aliaser) []LeaderRow {
 		case a.Total < b.Total:
 			return 1
 		default:
-			return 0
+			return strings.Compare(a.Alias, b.Alias)
 		}
 	})
 	for i := range rows {
