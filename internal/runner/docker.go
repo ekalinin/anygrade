@@ -392,13 +392,14 @@ func (s *dockerSession) execCheck(ctx context.Context, job Job, c config.Check, 
 	}
 
 	return Outcome{
-		Name:       c.Name,
-		Passed:     !timedOut && exit == 0,
-		ExitCode:   exit,
-		Duration:   dur,
-		TimedOut:   timedOut,
-		LogPath:    logPath,
-		LogExcerpt: log.Excerpt(),
+		Name:         c.Name,
+		Passed:       !timedOut && exit == 0,
+		ExitCode:     exit,
+		Duration:     dur,
+		TimedOut:     timedOut,
+		LogPath:      logPath,
+		LogExcerpt:   log.Excerpt(),
+		logTruncated: log.Truncated(),
 	}, nil
 }
 

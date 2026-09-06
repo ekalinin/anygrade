@@ -96,12 +96,13 @@ func (r *LocalRunner) execCheck(ctx context.Context, job Job, c config.Check, co
 
 	exit := cmd.ProcessState.ExitCode()
 	return Outcome{
-		Name:       c.Name,
-		Passed:     !timedOut && exit == 0,
-		ExitCode:   exit,
-		Duration:   time.Since(start),
-		TimedOut:   timedOut,
-		LogPath:    logPath,
-		LogExcerpt: log.Excerpt(),
+		Name:         c.Name,
+		Passed:       !timedOut && exit == 0,
+		ExitCode:     exit,
+		Duration:     time.Since(start),
+		TimedOut:     timedOut,
+		LogPath:      logPath,
+		LogExcerpt:   log.Excerpt(),
+		logTruncated: log.Truncated(),
 	}, nil
 }

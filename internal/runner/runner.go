@@ -58,6 +58,12 @@ type Outcome struct {
 	Skipped    bool // an earlier gate failed; this check did not run
 	LogPath    string
 	LogExcerpt string // tail of the log, at most Job.Spec.LogExcerpt bytes
+	// logTruncated says the on-disk log is not the whole of what the check
+	// wrote to it - capWriter capped it at runner.log_max or its write failed
+	// partway through (logtee.go). attachCases refuses to parse a log this
+	// says is truncated, the same way it refuses one over testreport's own
+	// size bound; a parser_file: report is a different file and is unaffected.
+	logTruncated bool
 	// BuildFailed says the check never reached its run phase because its build
 	// phase failed. LogPath and LogExcerpt are then empty on purpose: the only
 	// output this check produced came from the phase that read the hidden
