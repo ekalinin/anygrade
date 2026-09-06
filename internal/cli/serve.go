@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -101,22 +100,10 @@ func cmdServe(args []string) int {
 	if err := f.parse(args); err != nil {
 		return 2
 	}
-	repo := *f.repo
-	if repo == "" {
-		if top, err := gitOut(".", "rev-parse", "--show-toplevel"); err == nil {
-			repo = top
-		} else {
-			repo = "."
-		}
-	}
-	repo, err := filepath.Abs(repo)
+	repo, dataDir, err := courseDirs(*f.repo, *f.data, false)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
 		return 2
-	}
-	dataDir := *f.data
-	if dataDir == "" {
-		dataDir = filepath.Join(repo, ".anygrade")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

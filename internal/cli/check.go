@@ -41,15 +41,7 @@ func cmdCheck(args []string) int {
 		return 2
 	}
 
-	repo := *repoFlag
-	if repo == "" {
-		if top, err := gitOut(".", "rev-parse", "--show-toplevel"); err == nil {
-			repo = top
-		} else {
-			repo = "."
-		}
-	}
-	repo, err := filepath.Abs(repo)
+	repo, dataDir, err := courseDirs(*repoFlag, *dataFlag, false)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "check: %v\n", err)
 		return 2
@@ -78,11 +70,6 @@ func cmdCheck(args []string) int {
 	if len(tasks) == 0 {
 		fmt.Println("anygrade: no tasks changed")
 		return 0
-	}
-
-	dataDir := *dataFlag
-	if dataDir == "" {
-		dataDir = filepath.Join(repo, ".anygrade")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
