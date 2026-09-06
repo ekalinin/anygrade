@@ -1754,14 +1754,21 @@ func testTaskRemoved(t *testing.T, e *env) {
 		t.Fatalf("submission #%d lost its result when the task was removed:\n%s", graded, page)
 	}
 
-	// The terminal row offers the teacher a recheck button, and there is no
-	// task behind it any more: intake refuses (recheck.go, "unknown task") and
-	// queues nothing in its place. Only the refusal is pinned - today's generic
-	// 500 is not the message this deserves.
+	// The terminal row is not offered a recheck any more: there is no task
+	// behind it, so the button could only invite a click that fails.
+	if form := fmt.Sprintf("/queue/%d/recheck", victim); strings.Contains(queue, form) {
+		t.Errorf("the queue still offers a recheck for the removed task:\n%s", queue)
+	}
+	// Reaching the route anyway - a page held open across the removal push - is
+	// refused with the reason, not with a generic 500: the course no longer
+	// having the task is a state the server understands (SPEC §13).
 	resp, body = postForm(t, e.profClient, fmt.Sprintf("%s/queue/%d/recheck", e.baseURL, victim), nil)
-	if resp.StatusCode < 400 {
-		t.Fatalf("recheck of the removed task: status %d, Location %q, want a refusal:\n%s",
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("recheck of the removed task: status %d, Location %q, want 404:\n%s",
 			resp.StatusCode, resp.Header.Get("Location"), body)
+	}
+	if !strings.Contains(body, "no longer in the course") {
+		t.Errorf("the refusal does not say why:\n%s", body)
 	}
 }
 

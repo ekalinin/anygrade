@@ -1,11 +1,13 @@
 package intake
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ekalinin/anygrade/internal/queue"
 	"github.com/ekalinin/anygrade/internal/store"
 )
 
@@ -77,6 +79,39 @@ func TestRecheckWarnsOnUnpinnedCommit(t *testing.T) {
 	}
 	if got.Status != store.StatusQueued {
 		t.Errorf("status = %q, want %q", got.Status, store.StatusQueued)
+	}
+}
+
+// TestRecheckUnknownTaskIsTaskGone: a task the current snapshot no longer has
+// is the fault prep already reports for a queued submission that outlived its
+// task (SPEC §13), so it carries the same sentinel from both entry points. The
+// web layer maps it to a 404, and it has to reach that decision without
+// matching on a message - the other refusals of the same call are ordinary
+// errors it must keep answering with a 500.
+func TestRecheckUnknownTaskIsTaskGone(t *testing.T) {
+	s, work, _, user := newIntakeFixture(t)
+	solveT1(t, s, work)
+	teacher, err := s.DB.CreateUser(t.Context(), "tina", "Tina", "teacher")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, _, err = s.Recheck(t.Context(), user.ID, "retired")
+	if !errors.Is(err, queue.ErrTaskGone) {
+		t.Fatalf("Recheck of a removed task: err = %v, want queue.ErrTaskGone", err)
+	}
+	// The id is the whole value of the log line the handler writes.
+	if !strings.Contains(err.Error(), "retired") {
+		t.Errorf("err = %q, want the task id named in it", err)
+	}
+	if _, _, err := s.TeacherRecheck(t.Context(), teacher, user.ID, "retired"); !errors.Is(err, queue.ErrTaskGone) {
+		t.Errorf("TeacherRecheck of a removed task: err = %v, want queue.ErrTaskGone", err)
+	}
+	// t2 exists and alice never submitted it: the other refusal, and it must
+	// not answer to the same sentinel.
+	_, _, _, err = s.Recheck(t.Context(), user.ID, "t2")
+	if !errors.Is(err, ErrNothingToRecheck) || errors.Is(err, queue.ErrTaskGone) {
+		t.Errorf("Recheck of a task with no counting commit: err = %v, want ErrNothingToRecheck alone", err)
 	}
 }
 

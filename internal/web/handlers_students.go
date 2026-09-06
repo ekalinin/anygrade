@@ -130,7 +130,7 @@ func (h *Handler) teacherRecheck(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, intake.ErrNothingToRecheck):
 		http.Redirect(w, r, "/students/"+target.Login+"?flash=nothing_to_recheck", http.StatusSeeOther)
 	case err != nil:
-		h.httpError(w, r, "error.recheck_failed", http.StatusInternalServerError)
+		h.recheckError(w, r, err)
 	default:
 		http.Redirect(w, r, submissionURL(sub.ID, warn), http.StatusSeeOther)
 	}
