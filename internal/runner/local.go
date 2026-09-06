@@ -51,10 +51,7 @@ func (r *LocalRunner) readReport(_ context.Context, job Job, rel string) ([]byte
 }
 
 func (r *LocalRunner) execCheck(ctx context.Context, job Job, c config.Check, command, logPath string) (Outcome, error) {
-	log, err := openCheckLog(logPath, c.Name, r.Mirror, job.Spec.LogExcerpt, job.Spec.LogMax)
-	if err != nil {
-		return Outcome{}, infraErr("workspace", err)
-	}
+	log := openCheckLog(logPath, c.Name, r.Mirror, job.Spec.LogExcerpt, job.Spec.LogMax)
 	defer log.Close()
 
 	cctx, cancel := context.WithTimeout(ctx, job.Spec.Timeout)

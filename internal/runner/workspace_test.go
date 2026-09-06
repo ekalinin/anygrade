@@ -473,3 +473,34 @@ func TestAssembleArtifactsDirIsNotOverwritable(t *testing.T) {
 		t.Fatalf("want a TamperError, got %v", err)
 	}
 }
+
+// TestAssembleRepoRootTaskDataDirInsideRepo: a task at the repo root (empty
+// TaskRelDir) exports the whole authoritative tree, which is exactly where
+// `anygrade check` puts the workspace it is assembling when run without
+// --data-dir (SPEC §6.1, "a task that is the repo root itself"). Descending
+// into the destination while it is still being written would recurse without
+// bound; copyTree has to refuse it instead, like it refuses a symlink.
+func TestAssembleRepoRootTaskDataDirInsideRepo(t *testing.T) {
+	repo := t.TempDir()
+	writeFiles(t, repo, map[string]string{
+		"task.yaml": "id: root\n",
+		"main.go":   "package main\n",
+	})
+	dest := filepath.Join(repo, ".anygrade", "workspaces", "run1")
+	ws, err := Assemble(t.Context(), Assembly{
+		Dest:          dest,
+		Task:          config.ResolvedTask{SolutionFiles: []string{"main.go"}},
+		TaskRelDir:    "",
+		Authoritative: WorkingCopySource{Root: repo},
+		RunAsUID:      -1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ws.Close()
+	readFile(t, filepath.Join(ws.TaskDir, "main.go"))
+	readFile(t, filepath.Join(ws.TaskDir, "task.yaml"))
+	if _, err := os.Stat(filepath.Join(ws.TaskDir, ".anygrade", "workspaces", "run1")); !os.IsNotExist(err) {
+		t.Errorf("the destination was copied into itself (err=%v)", err)
+	}
+}

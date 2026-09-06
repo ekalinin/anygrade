@@ -341,10 +341,7 @@ func (s *dockerSession) alive() bool {
 }
 
 func (s *dockerSession) execCheck(ctx context.Context, job Job, c config.Check, command, logPath string) (Outcome, error) {
-	log, err := openCheckLog(logPath, c.Name, s.r.Mirror, job.Spec.LogExcerpt, job.Spec.LogMax)
-	if err != nil {
-		return Outcome{}, infraErr("workspace", err)
-	}
+	log := openCheckLog(logPath, c.Name, s.r.Mirror, job.Spec.LogExcerpt, job.Spec.LogMax)
 	defer log.Close()
 
 	if err := s.ensure(ctx); err != nil {
@@ -363,7 +360,7 @@ func (s *dockerSession) execCheck(ctx context.Context, job Job, c config.Check, 
 	cmd.Stderr = log
 
 	start := time.Now()
-	err = cmd.Run()
+	err := cmd.Run()
 	dur := time.Since(start)
 
 	timedOut := errors.Is(cctx.Err(), context.DeadlineExceeded)
