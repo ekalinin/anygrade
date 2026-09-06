@@ -76,6 +76,9 @@ func Run(ctx context.Context, opts Options) error {
 	if err := checkRetryOptions(opts.RetryBackoff, opts.RetryBackoffCap, opts.MaxRetries); err != nil {
 		return err
 	}
+	if err := checkWorkerOptions(opts.Workers); err != nil {
+		return err
+	}
 	hookBin, err := os.Executable()
 	if err != nil {
 		return err
@@ -198,7 +201,7 @@ func Run(ctx context.Context, opts Options) error {
 	// only (SPEC §8, §11): the client id and secret are credentials, and
 	// course.yaml is cloned by every student. Unset means nil, which is what
 	// keeps the login page and the routes exactly as they were.
-	provider, err := oidcProvider(ctx, baseURL(opts), logw)
+	provider, err := oidcProvider(ctx, opts, logw)
 	if err != nil {
 		return err
 	}
@@ -316,8 +319,14 @@ func Run(ctx context.Context, opts Options) error {
 // asked for a provider and got a half-configured one - while an unreachable
 // issuer is only a warning: an identity provider that is down must not stop a
 // course server from starting, and the token login keeps working either way.
-func oidcProvider(ctx context.Context, baseURL string, logw io.Writer) (*oidc.Provider, error) {
-	cfg, enabled, err := oidc.FromEnv(baseURL)
+//
+// It reads opts.BaseURL directly rather than the baseURL(opts) helper: that
+// helper derives "http://localhost:<port>" from --http-addr when --base-url is
+// unset, which is never the URI registered at the provider, and its always-set
+// return value would make FromEnv's "public base URL is unknown" guard
+// unreachable.
+func oidcProvider(ctx context.Context, opts Options, logw io.Writer) (*oidc.Provider, error) {
+	cfg, enabled, err := oidc.FromEnv(opts.BaseURL)
 	if err != nil || !enabled {
 		return nil, err
 	}

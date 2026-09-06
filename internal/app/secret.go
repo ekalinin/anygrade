@@ -4,7 +4,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,9 +29,20 @@ func loadLeaderboardSecret(dataDir string) ([]byte, error) {
 	switch raw, err := os.ReadFile(path); {
 	case err == nil:
 		secret, derr := hex.DecodeString(strings.TrimSpace(string(raw)))
-		if derr != nil || len(secret) == 0 {
+		if derr != nil || len(secret) != leaderboardSecretLen {
 			return nil, errors.New(path + ": not a hex-encoded secret; remove it to regenerate " +
 				"(leaderboard aliases will change)")
+		}
+		// A key restored from a backup, or written under a looser umask, may
+		// be wider than 0600; tighten it in place, like the data dir itself.
+		if fi, serr := os.Stat(path); serr == nil {
+			if perm := fi.Mode().Perm(); perm&^0o600 != 0 {
+				if cerr := os.Chmod(path, 0o600); cerr != nil {
+					return nil, fmt.Errorf("tighten %s: %w", leaderboardKeyFile, cerr)
+				}
+				slog.Warn(leaderboardKeyFile+" was readable beyond its owner; tightened to 0600",
+					"path", path, "was", fmt.Sprintf("%#o", perm))
+			}
 		}
 		return secret, nil
 	case !errors.Is(err, fs.ErrNotExist):

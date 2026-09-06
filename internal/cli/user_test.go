@@ -103,6 +103,37 @@ func TestUserAddAcceptsEveryRole(t *testing.T) {
 	}
 }
 
+// TestUserAddRefusesExistingLogin: the raw SQLite UNIQUE constraint text names
+// no login and no remedy; a teacher scripting enrollment needs a message that
+// does both.
+func TestUserAddRefusesExistingLogin(t *testing.T) {
+	dir := seedUser(t, "alice")
+	err := userAdd([]string{"--login", "alice", "--data-dir", dir})
+	if err == nil || !strings.Contains(err.Error(), "alice") || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("err = %v, want it to say login alice already exists", err)
+	}
+}
+
+// TestUserResetTokenRefusesDisabled: VerifyToken already filters on
+// users.state = 'active' (internal/store/tokens.go), so a token issued for a
+// disabled account can never authenticate - reset-token must refuse before
+// handing one out, not print a token that silently does not work.
+func TestUserResetTokenRefusesDisabled(t *testing.T) {
+	dir := seedUser(t, "alice")
+	if code := cmdUser([]string{"deactivate", "--login", "alice", "--data-dir", dir}); code != 0 {
+		t.Fatalf("user deactivate: exit code %d, want 0", code)
+	}
+
+	err := userResetToken([]string{"--login", "alice", "--data-dir", dir})
+	if err == nil {
+		t.Fatal("expected an error for a disabled account")
+	}
+	if !strings.Contains(err.Error(), "alice") || !strings.Contains(err.Error(), "disabled") ||
+		!strings.Contains(err.Error(), "reactivate") {
+		t.Fatalf("err = %q, want it to name the login, its state and `user reactivate`", err)
+	}
+}
+
 // testAuthorizedKey returns one throwaway authorized_keys line.
 func testAuthorizedKey(t *testing.T) string {
 	t.Helper()

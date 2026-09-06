@@ -456,7 +456,7 @@ func TestExportSubmissionsFlagErrors(t *testing.T) {
 	}{
 		{"no task", []string{"--data-dir", t.TempDir()}},
 		{"unknown format", []string{"--task", "t1", "--format", "tar", "--data-dir", t.TempDir()}},
-		{"a directory cannot go to stdout", []string{"--task", "t1", "--format", "dir", "--data-dir", t.TempDir()}},
+		{"a directory cannot go to stdout", []string{"--task", "t1", "--format", "dir", "--out", "-", "--data-dir", t.TempDir()}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if code := exportSubmissions(tc.args); code != 2 {
@@ -514,5 +514,169 @@ func TestExportSubmissionsEndToEnd(t *testing.T) {
 	}
 	if got := readCorpusFile(t, out, baseCodeDir+"/main.go"); got != "package main // template\n" {
 		t.Errorf("%s/main.go = %q", baseCodeDir, got)
+	}
+}
+
+// TestExportSubmissionsDefaultOut: SPEC §11 marks --out optional, so a teacher
+// who leaves it out must get a corpus in the current directory rather than the
+// "only a zip can go to stdout" refusal the old "-" default produced for every
+// unnamed --out.
+func TestExportSubmissionsDefaultOut(t *testing.T) {
+	f := newCorpusFixture(t)
+	f.submit(t, "alice", 1, map[string]string{"tasks/t1/main.go": "package main // alice\n"})
+
+	ctx := context.Background()
+	db, err := store.Open(ctx, f.dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := db.CreateUser(ctx, "alice", "Alice", "student")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, err := db.Enqueue(ctx, store.NewSubmission{
+		UserID: user.ID, TaskID: "t1", CommitSHA: "deadbeef", Counts: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.ClaimNext(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.FinishSubmission(ctx, sub.ID, store.SubmissionResult{
+		Status: store.StatusDone, Raw: 80, Final: 80,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	t.Run("dir", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		if code := exportSubmissions([]string{"--task", "t1", "--data-dir", f.dataDir}); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if got := readCorpusFile(t, "submissions-t1", "alice/main.go"); got != "package main // alice\n" {
+			t.Errorf("alice/main.go = %q", got)
+		}
+	})
+
+	t.Run("zip", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		if code := exportSubmissions([]string{
+			"--task", "t1", "--format", "zip", "--data-dir", f.dataDir,
+		}); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if _, err := os.Stat("submissions-t1.zip"); err != nil {
+			t.Errorf("submissions-t1.zip was not created: %v", err)
+		}
+	})
+}
+
+// TestNewDirCorpusRefusesNonEmptyOut: an existing --out directory that already
+// holds something is refused rather than merged into - a stale corpus mixed
+// with a fresh one would silently corrupt whatever a similarity checker made
+// of it. An existing *empty* directory (a teacher who mkdir'd --out by hand)
+// still works.
+func TestNewDirCorpusRefusesNonEmptyOut(t *testing.T) {
+	dir := t.TempDir()
+
+	nonEmpty := filepath.Join(dir, "corpus")
+	if err := os.MkdirAll(nonEmpty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nonEmpty, "stray.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newDirCorpus(nonEmpty); err == nil || !strings.Contains(err.Error(), "not empty") {
+		t.Fatalf("newDirCorpus(%q) = %v, want an error naming it non-empty", nonEmpty, err)
+	}
+
+	empty := filepath.Join(dir, "empty")
+	if err := os.MkdirAll(empty, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newDirCorpus(empty); err != nil {
+		t.Fatalf("newDirCorpus(%q) on an existing empty dir: %v", empty, err)
+	}
+}
+
+// TestNewCorpusWriterRefusesExistingZip: the zip branch used to open its
+// target with O_TRUNC, so a predictable default (submissions-<task-id>.zip)
+// would make re-running the export for the same task silently destroy the
+// previous corpus - asymmetric with newDirCorpus, which already refuses a
+// non-empty --out instead of merging into it. The zip branch must refuse an
+// existing target instead of truncating it, and must not touch its contents.
+func TestNewCorpusWriterRefusesExistingZip(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "submissions-t1.zip")
+	original := []byte("a previous run's corpus, not actually a zip")
+	if err := os.WriteFile(out, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := newCorpusWriter("zip", out); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("newCorpusWriter(zip, %q) = %v, want an error naming it already existing", out, err)
+	}
+
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Error("the existing file was modified; a refusal must not touch it")
+	}
+}
+
+// TestExportSubmissionsDefaultOutRefusesExistingZip: end-to-end version of the
+// same refusal, at the default --out a second `export submissions --format
+// zip` for the same task would otherwise land on.
+func TestExportSubmissionsDefaultOutRefusesExistingZip(t *testing.T) {
+	f := newCorpusFixture(t)
+	f.submit(t, "alice", 1, map[string]string{"tasks/t1/main.go": "package main // alice\n"})
+
+	ctx := context.Background()
+	db, err := store.Open(ctx, f.dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, err := db.CreateUser(ctx, "alice", "Alice", "student")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, err := db.Enqueue(ctx, store.NewSubmission{
+		UserID: user.ID, TaskID: "t1", CommitSHA: "deadbeef", Counts: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := db.ClaimNext(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.FinishSubmission(ctx, sub.ID, store.SubmissionResult{
+		Status: store.StatusDone, Raw: 80, Final: 80,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	t.Chdir(t.TempDir())
+	stale := []byte("a previous run's corpus")
+	if err := os.WriteFile("submissions-t1.zip", stale, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := exportSubmissions([]string{
+		"--task", "t1", "--format", "zip", "--data-dir", f.dataDir,
+	}); code == 0 {
+		t.Fatal("exit code = 0, want a refusal: the default --out already existed")
+	}
+
+	got, err := os.ReadFile("submissions-t1.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(stale) {
+		t.Error("the pre-existing file at the default --out was overwritten")
 	}
 }

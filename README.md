@@ -190,7 +190,7 @@ export ANYGRADE_OIDC_NAME="University SSO"    # the login button's label
 anygrade serve --base-url https://grade.uni.example
 ```
 
-Register `<base-url>/oidc/callback` as the redirect URI at the provider; it is derived from `--base-url` and is not separately configurable. Two optional knobs: `ANYGRADE_OIDC_SCOPES` (default `openid profile email`) and `ANYGRADE_OIDC_LOGIN_CLAIM` (default `preferred_username`) - the ID token claim matched against an anygrade login. With `email` the provider must also mark the address verified.
+Register `<base-url>/oidc/callback` as the redirect URI at the provider; it is derived from `--base-url` and is not separately configurable. `--base-url` must be given explicitly once `ANYGRADE_OIDC_ISSUER` is set - anygrade will not guess it from `--http-addr`, since that would only ever be `localhost`, never the URI registered at the provider. Two optional knobs: `ANYGRADE_OIDC_SCOPES` (default `openid profile email`) and `ANYGRADE_OIDC_LOGIN_CLAIM` (default `preferred_username`) - the ID token claim matched against an anygrade login. With `email` the provider must also mark the address verified.
 
 Three things are worth knowing before turning it on:
 
@@ -393,7 +393,7 @@ anygrade version
 
 `serve --local` runs with a single implicit user and no auth for offline use; it refuses to bind to non-loopback addresses, so the listen addresses default to `127.0.0.1:8080` and `127.0.0.1:2222` in that mode.
 
-A submission that fails on infrastructure - docker down, an image that will not pull, a hidden-tests remote that is unreachable with nothing cached - is not graded and not charged an attempt: it is retried with an exponential backoff, and becomes a terminal `infra_error` once the budget is spent. The schedule is `--retry-backoff` (first delay, doubling per retry), `--retry-backoff-cap` (upper bound on it) and `--max-retries` (how many retries before the row goes terminal); the defaults above are `10s`, `5m` and `8`, which is roughly twenty minutes of trying. Widen them for a course whose registry or hidden-tests remote is slow; a cap below the base, a non-positive delay or a zero budget is refused at startup. The schedule belongs to the deployment, so it is fixed for the life of the process - a teacher pushing `course.yaml` changes the course, never this.
+A submission that fails on infrastructure - docker down, an image that will not pull, a hidden-tests remote that is unreachable with nothing cached - is not graded and not charged an attempt: it is retried with an exponential backoff, and becomes a terminal `infra_error` once the budget is spent. The schedule is `--retry-backoff` (first delay, doubling per retry), `--retry-backoff-cap` (upper bound on it) and `--max-retries` (how many retries before the row goes terminal); the defaults above are `10s`, `5m` and `8`, which is roughly twenty minutes of trying. Widen them for a course whose registry or hidden-tests remote is slow; a cap below the base, a non-positive delay or a zero budget is refused at startup. `--workers` follows the same rule: zero or negative is refused rather than silently replaced by the queue's default of 4. The schedule belongs to the deployment, so it is fixed for the life of the process - a teacher pushing `course.yaml` changes the course, never this.
 
 Anything else should be served over TLS: either give `serve` a certificate (`--tls-cert` and `--tls-key`, both or neither), or put it behind a reverse proxy that terminates TLS and add `--behind-proxy`. Without one of the two the personal token - which is both the web login credential and the git password - crosses the network in the clear on every push and every login, and `serve` says so at startup. `--behind-proxy` is also what makes anygrade trust `X-Forwarded-Proto` and mark the session cookie `Secure`, and what makes the failed-login limiter read `X-Forwarded-For`. Set it whenever there really is a proxy: without it every request arrives from the proxy's address, so the whole course shares one budget and a few failed logins lock everyone out. Leave it off when there is not - both headers are forgeable by anyone who reaches the port.
 
@@ -429,7 +429,7 @@ java -jar jplag.jar -l go --bc=_template /tmp/01-intro
 moss -l cc -b /tmp/01-intro/_template/main.go /tmp/01-intro/*/main.go
 ```
 
-A login can never start with `_`, so `_template` cannot be shadowed by a student directory. `--format zip --out corpus.zip` packs the identical tree into an archive (`--out -` streams it to stdout) for the upload forms that want one file.
+A login can never start with `_`, so `_template` cannot be shadowed by a student directory. `--format zip --out corpus.zip` packs the identical tree into an archive (`--out -` streams it to stdout) for the upload forms that want one file. `--out` is optional: left unset it defaults to `submissions-<task-id>` (`.zip` appended under `--format zip`) in the current directory, and an existing `--out` is refused rather than overwritten - a non-empty directory under `--format dir`, any existing file under `--format zip`. `--out -` is unaffected: stdout has nothing to overwrite.
 
 The export reads the server's repos, so run it against the data dir (`--data-dir`, or from the course repo where `.anygrade/` lives). A student whose pinned commit has gone missing is named on stderr and the command exits non-zero; a solution file the student never committed is a warning, since grading used the template in its place and copying that into their tree would make every such student look identical.
 
@@ -508,7 +508,7 @@ Everything lives in one directory, `./.anygrade` by default (`--data-dir` to ove
   workspaces/            # ephemeral check workspaces
 ```
 
-Backup = copy the data dir, `leaderboard.key` included: it is what makes the anonymized leaderboard aliases stable. A missing key is regenerated and reshuffles every alias; a corrupt one stops the server with `not a hex-encoded secret; remove it to regenerate`. On restart, submissions that were running are re-queued and re-run from scratch.
+Backup = copy the data dir, `leaderboard.key` included: it is what makes the anonymized leaderboard aliases stable. A missing key is regenerated and reshuffles every alias; a corrupt one, or one that does not decode to the generator's length, stops the server with `not a hex-encoded secret; remove it to regenerate`. A key file wider than 0600 - restored from a backup, say - is tightened on load, like the data dir itself. On restart, submissions that were running are re-queued and re-run from scratch.
 
 Upgrading migrates the database in place, and one migration is not invisible: session rows cannot be converted to the hashed form they are now stored in, so they are dropped and everyone is signed out once. Accounts that carried more than one personal token keep the newest.
 

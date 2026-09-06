@@ -3,9 +3,11 @@ package cli
 import (
 	"archive/zip"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -47,7 +49,10 @@ func exportSubmissions(args []string) int {
 	fs := flag.NewFlagSet("export submissions", flag.ContinueOnError)
 	taskID := fs.String("task", "", "task id to export (required)")
 	format := fs.String("format", "dir", "output format: dir|zip")
-	out := fs.String("out", "-", "output directory (dir) or archive file (zip); \"-\" writes the zip to stdout")
+	out := fs.String("out", "",
+		"output directory (dir) or archive file (zip); default: submissions-<task-id> "+
+			"(dir) or submissions-<task-id>.zip (zip) in the current directory; "+
+			"\"-\" writes the zip to stdout")
 	allAttempts := fs.Bool("all-attempts", false,
 		"export every recorded submission, not only the one the scoring policy counts")
 	repoFlag := fs.String("repo", "", "course repo root (default: git toplevel, else \".\")")
@@ -62,6 +67,15 @@ func exportSubmissions(args []string) int {
 	if *format != "dir" && *format != "zip" {
 		fmt.Fprintf(os.Stderr, "export: --format must be dir or zip, got %q\n", *format)
 		return 2
+	}
+	// An unset --out is a name, not stdout: only an explicit "-" asks for a
+	// zip on stdout, so a teacher who leaves the flag off gets a corpus in the
+	// current directory instead of the "only a zip can go to stdout" refusal.
+	if *out == "" {
+		*out = "submissions-" + *taskID
+		if *format == "zip" {
+			*out += ".zip"
+		}
 	}
 	if *format == "dir" && *out == "-" {
 		fmt.Fprintln(os.Stderr, "export: --format dir needs --out DIR; only a zip can go to stdout")
@@ -353,8 +367,16 @@ func newCorpusWriter(format, out string) (corpusWriter, error) {
 	if out == "-" {
 		return &zipCorpus{zw: zip.NewWriter(os.Stdout)}, nil
 	}
-	f, err := os.OpenFile(out, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, corpusFileMode)
+	// An existing zip target is refused rather than truncated, for the same
+	// reason newDirCorpus refuses a non-empty --out: the default is now the
+	// predictable submissions-<task-id>.zip, so re-running the export would
+	// otherwise silently destroy the previous corpus. O_EXCL makes the check
+	// atomic instead of a stat-then-open race.
+	f, err := os.OpenFile(out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, corpusFileMode)
 	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return nil, fmt.Errorf("output file %q already exists; remove it or choose a different --out", out)
+		}
 		return nil, err
 	}
 	return &zipCorpus{zw: zip.NewWriter(f), file: f}, nil
@@ -366,6 +388,18 @@ func newCorpusWriter(format, out string) (corpusWriter, error) {
 type dirCorpus struct{ root *os.Root }
 
 func newDirCorpus(dir string) (*dirCorpus, error) {
+	// A non-empty --out is refused rather than merged into: a stale corpus
+	// left over from an earlier export would otherwise mix into the fresh
+	// one, and a similarity checker cannot tell the two apart.
+	switch entries, err := os.ReadDir(dir); {
+	case err == nil:
+		if len(entries) > 0 {
+			return nil, fmt.Errorf("output directory %q already exists and is not empty; "+
+				"remove it or choose a different --out", dir)
+		}
+	case !errors.Is(err, fs.ErrNotExist):
+		return nil, err
+	}
 	if err := os.MkdirAll(dir, corpusDirMode); err != nil {
 		return nil, err
 	}
