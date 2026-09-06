@@ -38,7 +38,7 @@
 </table>
 {{if .Sub.FinalScore}}
 <p class="scoreline">
-  {{t "sub.raw"}} {{score .Sub.RawScore}}{{if .Sub.PenaltyPercent}}, {{t "sub.late_penalty"}} {{score .Sub.PenaltyPercent}}%{{end}}
+  {{t "sub.raw"}} {{score .Sub.RawScore}}{{if .Late}}, {{t "sub.late_penalty"}} {{score .Sub.PenaltyPercent}}%{{end}}
   &rarr; <strong>{{score .Sub.FinalScore}} / {{.TaskScore}}</strong>
 </p>
 {{end}}
@@ -65,7 +65,7 @@
 {{end}}{{end}}
 {{range .Checks}}{{if .BuildFailed}}
 <p class="hint">{{.Name}}: {{t "sub.build_failed"}}</p>
-{{else if and .LogExcerpt (not .Passed) (not .Skipped)}}
+{{else if and .LogExcerpt (not .Skipped)}}
 <details class="pane">
   <summary>{{.Name}} {{t "sub.output"}}</summary>
   <pre>{{.LogExcerpt}}</pre>

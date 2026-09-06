@@ -180,3 +180,32 @@ func TestNoParserLeavesTheOutcomeAlone(t *testing.T) {
 		}
 	}
 }
+
+// reportPath's own guard has to match its comment: it refuses `parser_file`
+// again, not just the rare value that walks all the way past the workspace
+// root. An absolute value or one that escapes the task dir is refused before
+// it ever reaches path.Join, where a leading ".." or "/" would otherwise be
+// silently folded into a path inside the workspace instead of rejected.
+func TestReportPathRefusesEscapeOrAbsolute(t *testing.T) {
+	tests := []struct {
+		name    string
+		file    string
+		wantErr bool
+	}{
+		{"parent traversal", "../report.xml", true},
+		{"absolute path", "/etc/passwd", true},
+		{"plain file", "report.xml", false},
+		{"subdirectory", "out/report.xml", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := reportPath("tasks/01-intro", tc.file)
+			if tc.wantErr && err == nil {
+				t.Fatalf("reportPath(%q): want an error, got nil", tc.file)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("reportPath(%q): unexpected error: %v", tc.file, err)
+			}
+		})
+	}
+}

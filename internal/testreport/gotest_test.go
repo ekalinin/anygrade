@@ -1,6 +1,8 @@
 package testreport
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -160,5 +162,91 @@ func TestGoTestMalformedFallsBack(t *testing.T) {
 				t.Fatalf("want a parse error, got %+v", cases)
 			}
 		})
+	}
+}
+
+// The MaxCases bound is a bound on scorable cases, not on every distinct name
+// go test -json ever mentions: it reports a table test's parent alongside each
+// of its subtests, and dropParents removes the parent before scoring. A
+// 1000-subtest table is exactly the shape case-level scoring exists for, so it
+// must not be refused for a case count it never actually has (SPEC §4.3).
+func TestGoTestSubtestsCountAgainstBoundAfterParentsDrop(t *testing.T) {
+	var b strings.Builder
+	for i := range MaxCases {
+		fmt.Fprintf(&b, "{\"Action\":\"pass\",\"Test\":%q,\"Elapsed\":0}\n", fmt.Sprintf("TestTable/case%d", i+1))
+	}
+	fmt.Fprintf(&b, "{\"Action\":\"pass\",\"Test\":\"TestTable\",\"Elapsed\":0}\n")
+	cases := mustParse(t, GoTestJSON, b.String())
+	if len(cases) != MaxCases {
+		t.Fatalf("want %d cases (parent dropped, subtests only), got %d", MaxCases, len(cases))
+	}
+}
+
+// The true bound is still enforced once parent names are gone: a report with
+// more leaf cases than MaxCases is refused exactly like the other formats.
+func TestGoTestLeafCasesOverBoundRefused(t *testing.T) {
+	var b strings.Builder
+	for i := range MaxCases + 1 {
+		fmt.Fprintf(&b, "{\"Action\":\"pass\",\"Test\":%q,\"Elapsed\":0}\n", fmt.Sprintf("Test%d", i+1))
+	}
+	if _, err := Parse(GoTestJSON, strings.NewReader(b.String())); !errors.Is(err, ErrTooManyCases) {
+		t.Fatalf("want ErrTooManyCases, got %v", err)
+	}
+}
+
+// Many small tables add up the same way: 500 parents of 2 subtests each name
+// 1500 distinct tests but score only 1000 cases, which must stay under the
+// bound.
+func TestGoTestManyParentsWithinCaseBound(t *testing.T) {
+	var b strings.Builder
+	for p := range 500 {
+		parent := fmt.Sprintf("TestGroup%d", p)
+		for s := range 2 {
+			fmt.Fprintf(&b, "{\"Action\":\"pass\",\"Test\":%q,\"Elapsed\":0}\n", fmt.Sprintf("%s/case%d", parent, s+1))
+		}
+		fmt.Fprintf(&b, "{\"Action\":\"pass\",\"Test\":%q,\"Elapsed\":0}\n", parent)
+	}
+	cases := mustParse(t, GoTestJSON, b.String())
+	if len(cases) != MaxCases {
+		t.Fatalf("want %d cases (parents dropped), got %d", MaxCases, len(cases))
+	}
+}
+
+// TestGoTestInterimIndexBoundRefusesFlood: a stream that never stops naming
+// distinct tests, with no "/" for dropParents to collapse, has to be refused
+// well before the whole thing sits in the index map. Both the interim guard
+// and the final MaxCases check would catch this particular shape on their
+// own, but the count is chosen to land past the interim threshold
+// (2*MaxCases) specifically, so a change to its multiplier is exercised here
+// too, not only in the collapsing case below.
+func TestGoTestInterimIndexBoundRefusesFlood(t *testing.T) {
+	var b strings.Builder
+	for i := range 2*MaxCases + 1 {
+		fmt.Fprintf(&b, "{\"Action\":\"pass\",\"Test\":%q,\"Elapsed\":0}\n", fmt.Sprintf("Test%d", i+1))
+	}
+	if _, err := Parse(GoTestJSON, strings.NewReader(b.String())); !errors.Is(err, ErrTooManyCases) {
+		t.Fatalf("want ErrTooManyCases from the interim index guard, got %v", err)
+	}
+}
+
+// TestGoTestInterimIndexBoundFiresBeforeParentsCollapseIt is the
+// discriminating case: 600 groups nested three levels deep name 2400 distinct
+// tests - three "parent" prefixes plus one leaf per group - but dropParents
+// would reduce that to only 600 scorable cases, well under MaxCases. Only the
+// interim guard can refuse this while it is still being parsed: the final
+// MaxCases check, reached after dropParents, would wave it through. Raising
+// the interim multiplier (or dropping the guard) turns this test green with
+// no error, which is exactly the regression it exists to catch.
+func TestGoTestInterimIndexBoundFiresBeforeParentsCollapseIt(t *testing.T) {
+	const groups = 600 // 4 distinct names each: 2400 > 2*MaxCases, 600 leaves < MaxCases
+	var b strings.Builder
+	for g := range groups {
+		base := fmt.Sprintf("TestG%d", g)
+		for _, name := range []string{base, base + "/L2", base + "/L2/L3", base + "/L2/L3/leaf"} {
+			fmt.Fprintf(&b, "{\"Action\":\"pass\",\"Test\":%q,\"Elapsed\":0}\n", name)
+		}
+	}
+	if _, err := Parse(GoTestJSON, strings.NewReader(b.String())); !errors.Is(err, ErrTooManyCases) {
+		t.Fatalf("want ErrTooManyCases from the interim index guard, got %v", err)
 	}
 }

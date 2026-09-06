@@ -38,7 +38,12 @@ func parseGoTest(data []byte) ([]Case, error) {
 		}
 		i, seen := index[ev.Test]
 		if !seen {
-			if len(cases) >= MaxCases {
+			// The real MaxCases bound is checked below, once parents are
+			// dropped: go test -json names a table test's parent alongside
+			// each of its subtests, so counting distinct names here would
+			// refuse a 1000-subtest table before dropParents ever runs. This
+			// looser bound only keeps the index map from growing without end.
+			if len(cases) >= 2*MaxCases {
 				return nil, ErrTooManyCases
 			}
 			i = len(cases)
@@ -62,7 +67,11 @@ func parseGoTest(data []byte) ([]Case, error) {
 			c.Status, c.Duration = Skip, seconds(ev.Elapsed)
 		}
 	}
-	return dropParents(finished(cases)), nil
+	cases = dropParents(finished(cases))
+	if len(cases) > MaxCases {
+		return nil, ErrTooManyCases
+	}
+	return cases, nil
 }
 
 // testOutput drops test2json's own framing lines ("=== RUN", "--- FAIL: ...")
