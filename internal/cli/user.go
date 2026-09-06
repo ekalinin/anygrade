@@ -72,7 +72,8 @@ func userAdd(args []string) error {
 	login := fs.String("login", "", "user login")
 	name := fs.String("name", "", "display name")
 	role := fs.String("role", "student", "role: student|ta|teacher")
-	dataDir := fs.String("data-dir", ".anygrade", "anygrade data directory")
+	repoFlag := fs.String("repo", "", "course repo root (default: git toplevel of the cwd)")
+	dataFlag := fs.String("data-dir", "", "anygrade data directory (default: <repo>/.anygrade)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -86,8 +87,13 @@ func userAdd(args []string) error {
 		return fmt.Errorf("--role must be student, ta or teacher, got %q", *role)
 	}
 
+	_, dataDir, err := courseDirs(*repoFlag, *dataFlag, true)
+	if err != nil {
+		return err
+	}
+
 	ctx := context.Background()
-	db, err := store.Open(ctx, *dataDir)
+	db, err := store.Open(ctx, dataDir)
 	if err != nil {
 		return err
 	}
@@ -110,13 +116,19 @@ func userAdd(args []string) error {
 
 func userList(args []string) error {
 	fs := flag.NewFlagSet("user list", flag.ContinueOnError)
-	dataDir := fs.String("data-dir", ".anygrade", "anygrade data directory")
+	repoFlag := fs.String("repo", "", "course repo root (default: git toplevel of the cwd)")
+	dataFlag := fs.String("data-dir", "", "anygrade data directory (default: <repo>/.anygrade)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
+	_, dataDir, err := courseDirs(*repoFlag, *dataFlag, true)
+	if err != nil {
+		return err
+	}
+
 	ctx := context.Background()
-	db, err := store.Open(ctx, *dataDir)
+	db, err := store.Open(ctx, dataDir)
 	if err != nil {
 		return err
 	}
@@ -154,7 +166,8 @@ func userList(args []string) error {
 func userSetState(args []string, cmd, state string) error {
 	fs := flag.NewFlagSet("user "+cmd, flag.ContinueOnError)
 	login := fs.String("login", "", "user login")
-	dataDir := fs.String("data-dir", ".anygrade", "anygrade data directory")
+	repoFlag := fs.String("repo", "", "course repo root (default: git toplevel of the cwd)")
+	dataFlag := fs.String("data-dir", "", "anygrade data directory (default: <repo>/.anygrade)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -162,8 +175,13 @@ func userSetState(args []string, cmd, state string) error {
 		return fmt.Errorf("--login is required")
 	}
 
+	_, dataDir, err := courseDirs(*repoFlag, *dataFlag, true)
+	if err != nil {
+		return err
+	}
+
 	ctx := context.Background()
-	db, err := store.Open(ctx, *dataDir)
+	db, err := store.Open(ctx, dataDir)
 	if err != nil {
 		return err
 	}
@@ -196,7 +214,8 @@ func userSetState(args []string, cmd, state string) error {
 func userResetToken(args []string) error {
 	fs := flag.NewFlagSet("user reset-token", flag.ContinueOnError)
 	login := fs.String("login", "", "user login")
-	dataDir := fs.String("data-dir", ".anygrade", "anygrade data directory")
+	repoFlag := fs.String("repo", "", "course repo root (default: git toplevel of the cwd)")
+	dataFlag := fs.String("data-dir", "", "anygrade data directory (default: <repo>/.anygrade)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -204,8 +223,13 @@ func userResetToken(args []string) error {
 		return fmt.Errorf("--login is required")
 	}
 
+	_, dataDir, err := courseDirs(*repoFlag, *dataFlag, true)
+	if err != nil {
+		return err
+	}
+
 	ctx := context.Background()
-	db, err := store.Open(ctx, *dataDir)
+	db, err := store.Open(ctx, dataDir)
 	if err != nil {
 		return err
 	}
@@ -239,7 +263,8 @@ func userResetToken(args []string) error {
 func userUnbindOIDC(args []string) error {
 	fs := flag.NewFlagSet("user unbind-oidc", flag.ContinueOnError)
 	login := fs.String("login", "", "user login")
-	dataDir := fs.String("data-dir", ".anygrade", "anygrade data directory")
+	repoFlag := fs.String("repo", "", "course repo root (default: git toplevel of the cwd)")
+	dataFlag := fs.String("data-dir", "", "anygrade data directory (default: <repo>/.anygrade)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -247,8 +272,13 @@ func userUnbindOIDC(args []string) error {
 		return fmt.Errorf("--login is required")
 	}
 
+	_, dataDir, err := courseDirs(*repoFlag, *dataFlag, true)
+	if err != nil {
+		return err
+	}
+
 	ctx := context.Background()
-	db, err := store.Open(ctx, *dataDir)
+	db, err := store.Open(ctx, dataDir)
 	if err != nil {
 		return err
 	}
@@ -282,7 +312,8 @@ func userAddKey(args []string) error {
 	fs := flag.NewFlagSet("user add-key", flag.ContinueOnError)
 	login := fs.String("login", "", "user login")
 	key := fs.String("key", "", "public key, authorized_keys format")
-	dataDir := fs.String("data-dir", ".anygrade", "anygrade data directory")
+	repoFlag := fs.String("repo", "", "course repo root (default: git toplevel of the cwd)")
+	dataFlag := fs.String("data-dir", "", "anygrade data directory (default: <repo>/.anygrade)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -299,8 +330,13 @@ func userAddKey(args []string) error {
 	}
 	fingerprint := ssh.FingerprintSHA256(pk)
 
+	_, dataDir, err := courseDirs(*repoFlag, *dataFlag, true)
+	if err != nil {
+		return err
+	}
+
 	ctx := context.Background()
-	db, err := store.Open(ctx, *dataDir)
+	db, err := store.Open(ctx, dataDir)
 	if err != nil {
 		return err
 	}
@@ -340,7 +376,8 @@ func userInvite(args []string) error {
 	role := fs.String("role", "student", "role: student|ta|teacher")
 	expires := fs.Duration("expires", 336*time.Hour, "invite validity duration")
 	baseURL := fs.String("base-url", "http://localhost:8080", "base URL for the invite link")
-	dataDir := fs.String("data-dir", ".anygrade", "anygrade data directory")
+	repoFlag := fs.String("repo", "", "course repo root (default: git toplevel of the cwd)")
+	dataFlag := fs.String("data-dir", "", "anygrade data directory (default: <repo>/.anygrade)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -371,8 +408,13 @@ func userInvite(args []string) error {
 		roster = []rosterEntry{{Login: *login, Name: *name}}
 	}
 
+	_, dataDir, err := courseDirs(*repoFlag, *dataFlag, true)
+	if err != nil {
+		return err
+	}
+
 	ctx := context.Background()
-	db, err := store.Open(ctx, *dataDir)
+	db, err := store.Open(ctx, dataDir)
 	if err != nil {
 		return err
 	}

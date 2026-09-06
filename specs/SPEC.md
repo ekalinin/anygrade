@@ -482,6 +482,7 @@ anygrade check   [--runner local|docker] [--timeout D] [--keep] [-v] [TASK ...]
 anygrade validate             # validate course.yaml and all task.yaml files
 anygrade user    add|list|invite|deactivate|reactivate
                  reset-token|add-key|unbind-oidc ...
+                 [--repo DIR] [--data-dir DIR]
                               # add: create an account and issue its token now,
                               #      shown once (first teacher, scripted setup)
                               # invite: create an account and print a one-time

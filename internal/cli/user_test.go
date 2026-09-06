@@ -4,6 +4,8 @@ import (
 	"crypto/ed25519"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -236,6 +238,27 @@ func captureStderr(t *testing.T, f func()) string {
 	return string(out)
 }
 
+// captureStdout runs f with os.Stdout replaced by a pipe and returns what was
+// written there - the only way to see what `user list` printed.
+func captureStdout(t *testing.T, f func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stdout
+	os.Stdout = w
+	f()
+	os.Stdout = saved
+	w.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Close()
+	return string(out)
+}
+
 // TestUserDeactivateReactivate: both directions change the state and both leave
 // the audit trail the teacher UI leaves for the same action (SPEC §8, §11). The
 // actor is empty on purpose - the CLI has no session, so the row names nobody
@@ -324,5 +347,69 @@ func TestUserSetStateUnknownLogin(t *testing.T) {
 
 	if _, events := readState(t, dir, "alice"); len(events) != 0 {
 		t.Errorf("a missing account still logged %+v", events)
+	}
+}
+
+// TestUserListFindsRepoDataDirFromSubdir: every user subcommand now resolves
+// --data-dir the way export/serve/check always have (SPEC §5.1) - an explicit
+// --data-dir wins, otherwise <repo>/.anygrade, where repo is the git toplevel
+// of the cwd. Before this, `user` used the literal string ".anygrade", so
+// running it from a subdirectory of the course repo read (and, on write,
+// created) a database next to the cwd instead of the real one.
+func TestUserListFindsRepoDataDirFromSubdir(t *testing.T) {
+	repo := t.TempDir()
+	if out, err := exec.Command("git", "-C", repo, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	db, err := store.Open(t.Context(), filepath.Join(repo, ".anygrade"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.CreateUser(t.Context(), "alice", "Alice", store.RoleStudent); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	sub := filepath.Join(repo, "tasks", "01-hello")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(sub)
+
+	out := captureStdout(t, func() {
+		if err := userList(nil); err != nil {
+			t.Fatalf("user list: %v", err)
+		}
+	})
+	if !strings.Contains(out, "alice") {
+		t.Errorf("user list output = %q, want it to list alice from the repo's data dir", out)
+	}
+	if _, err := os.Stat(filepath.Join(sub, ".anygrade")); err == nil {
+		t.Error("a .anygrade directory was created in the subdirectory")
+	}
+}
+
+// TestUserRequiresRepoOrDataDir: outside a git repository, with neither
+// --repo nor --data-dir, there is nothing to resolve --data-dir against.
+// Falling back to "." here is what let `user list` from the wrong directory
+// print an empty roster and exit 0 instead of failing.
+func TestUserRequiresRepoOrDataDir(t *testing.T) {
+	t.Chdir(t.TempDir())
+	if err := userList(nil); err == nil {
+		t.Fatal("expected an error outside a git repository without --data-dir")
+	}
+	if _, err := os.Stat(".anygrade"); err == nil {
+		t.Error("a .anygrade directory was created in the cwd")
+	}
+}
+
+// TestUserDataDirFlagWinsOutsideRepo: an explicit --data-dir needs neither
+// --repo nor a git repository - the same contract every other subcommand
+// gives the flag.
+func TestUserDataDirFlagWinsOutsideRepo(t *testing.T) {
+	t.Chdir(t.TempDir())
+	dir := t.TempDir()
+	if err := userAdd([]string{"--login", "alice", "--data-dir", dir}); err != nil {
+		t.Fatalf("user add --data-dir %s: %v", dir, err)
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/ekalinin/anygrade/internal/config"
 	"github.com/ekalinin/anygrade/internal/gitserver"
@@ -108,24 +107,11 @@ func exportScores(args []string) int {
 
 // exportDirs resolves the two directories every export subcommand starts
 // from: the course repo root and the data dir holding the mirror, the student
-// repos and the database.
+// repos and the database. It tolerates running outside a repo, falling back
+// to the cwd itself, unlike the stricter courseDirs(..., true) the user
+// subcommands use.
 func exportDirs(repoFlag, dataFlag string) (repo, dataDir string, err error) {
-	repo = repoFlag
-	if repo == "" {
-		if top, gitErr := gitOut(".", "rev-parse", "--show-toplevel"); gitErr == nil {
-			repo = top
-		} else {
-			repo = "."
-		}
-	}
-	if repo, err = filepath.Abs(repo); err != nil {
-		return "", "", err
-	}
-	dataDir = dataFlag
-	if dataDir == "" {
-		dataDir = filepath.Join(repo, ".anygrade")
-	}
-	return repo, dataDir, nil
+	return courseDirs(repoFlag, dataFlag, false)
 }
 
 // loadCourseMirror loads and validates the course from the provisioned mirror
