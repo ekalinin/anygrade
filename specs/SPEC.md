@@ -381,6 +381,7 @@ Four modes, all supported:
 
 Registration (configured in `course.yaml`):
 
+- `course` is reserved and cannot be a login: it names the upstream repo on both transports (§7), and every account-creation path (`user add`, `user invite`, `--csv`, open self-registration) refuses it exactly as it refuses any other invalid login.
 - `invite`: the teacher creates the accounts and the students activate them. Two CLI commands cover the two ways an account can start (§11):
   - `anygrade user invite` creates the account and prints a one-time link, for one login or for a whole roster via `--csv`. The student opens the link, is issued a token, and gets their repo URL (SSH keys come afterwards, from settings). This is the normal path. The link is consumed before the account is activated, so a failed activation never leaves a reusable link behind - the teacher issues a new one;
   - `anygrade user add` creates the account and issues its personal token right away, printed once. There is no link and no activation page - the teacher hands the token over. This is what the first teacher account needs, since nobody exists yet to invite it, and what scripted setups use when no browser is involved.

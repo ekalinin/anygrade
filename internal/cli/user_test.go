@@ -103,6 +103,27 @@ func TestUserAddAcceptsEveryRole(t *testing.T) {
 	}
 }
 
+// TestUserAddRefusesCourseLogin: "course" is the sentinel that routes a
+// post-receive hook to the upstream course repo instead of a student's own
+// (SPEC §8), so every account-creation path must refuse it like any other
+// invalid login rather than silently swallowing that student's pushes.
+func TestUserAddRefusesCourseLogin(t *testing.T) {
+	dir := t.TempDir()
+	err := userAdd([]string{"--login", "course", "--data-dir", dir})
+	if err == nil || !strings.Contains(err.Error(), "invalid login") {
+		t.Fatalf("err = %v, want an invalid login error", err)
+	}
+
+	db, oerr := store.Open(t.Context(), dir)
+	if oerr != nil {
+		t.Fatal(oerr)
+	}
+	defer db.Close()
+	if _, gerr := db.GetUserByLogin(t.Context(), "course"); gerr == nil {
+		t.Error("the refused login still created an account")
+	}
+}
+
 // testAuthorizedKey returns one throwaway authorized_keys line.
 func testAuthorizedKey(t *testing.T) string {
 	t.Helper()

@@ -277,6 +277,9 @@ func splitRepoPath(p string) (owner, rest string, ok bool) {
 func hookEnv(socket, owner string, id Identity) []string {
 	repo := owner
 	if repo == "" {
+		// "course" is the sentinel intake.Server.dispatch routes to the
+		// upstream repo. It can never collide with a student's own repo:
+		// ident.ValidLogin reserves the name so no account can be "course".
 		repo = "course"
 	}
 	return []string{
