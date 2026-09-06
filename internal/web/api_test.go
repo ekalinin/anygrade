@@ -390,6 +390,124 @@ func TestAPISubmissionNoteIsViewerScoped(t *testing.T) {
 	}
 }
 
+// TestAPISubmissionCarriesTestCases is the check-level explanation of a
+// proportional score (SPEC §4.3). Since a check with a `parser:` earns
+// `weight × passed / scored`, `passed: false` says as little as `passed: true`
+// about what the check contributed - and the pages are exactly what the API
+// exists to avoid parsing, so the cases, the tally and a parser's own failure
+// all have to be readable from the payload.
+func TestAPISubmissionCarriesTestCases(t *testing.T) {
+	h, _ := newTestSite(t)
+	setCourse(h)
+	alice, aliceTok := newAPIUser(t, h, "alice", "student")
+	_, bobTok := newAPIUser(t, h, "bob", "student")
+
+	// An operator-side path on the row, to prove no encoder reaches for it: the
+	// full logs it points at are staff-only (SPEC §14) and the API serves none.
+	const logDir = "/var/lib/anygrade/data/logs/42"
+	id := finishSub(t, h, alice.ID, "t1", store.SubmissionResult{
+		Status: store.StatusDone, Raw: 7.5, Final: 7.5, LogDir: logDir,
+		Checks: []store.CheckRow{{
+			// Parsed: three cases in report order, one of them a skip that
+			// counts for neither side of the tally.
+			Name: "unit", Passed: false, ExitCode: 1, Weight: 100,
+			Cases: store.CaseRows{
+				{Name: "adds", Status: "passed", Duration: 200 * time.Millisecond},
+				{Name: "multiplies", Status: "failed", Message: "want 6, got 5"},
+				{Name: "bignum", Status: "skipped", Message: "not supported"},
+			},
+		}, {
+			// No parser: all-or-nothing by exit code, as every check was.
+			Name: "lint", Passed: true, Weight: 20,
+		}, {
+			// A parser that could not read its report. The exit code decided the
+			// check, and saying so is the whole point: without parse_failed this
+			// row and "lint" above are the same payload for opposite reasons.
+			Name: "suite", Passed: false, ExitCode: 2, Weight: 40,
+			ParseFailed: true, LogExcerpt: "not a report",
+		}},
+	})
+
+	target := fmt.Sprintf("/api/v1/submissions/%d", id)
+	rec := apiGet(h, target, aliceTok)
+	// Nothing of the operator's half rides along with the student's cases.
+	if raw := rec.Body.String(); strings.Contains(raw, logDir) {
+		t.Errorf("the payload carries the log dir %q:\n%s", logDir, raw)
+	}
+	checks := arrayAt(t, "checks", apiObject(t, rec)["checks"])
+	if len(checks) != 3 {
+		t.Fatalf("checks: %d rows, want 3", len(checks))
+	}
+
+	unit := objectAt(t, "checks[0]", checks[0])
+	if unit["parse_failed"] != false {
+		t.Errorf("unit: parse_failed %v, want false - its report was read", unit["parse_failed"])
+	}
+	// 1 of 2: the skip is on neither side, which is what makes the check worth
+	// half its weight rather than a third of it.
+	if unit["passed_cases"] != 1.0 || unit["scored_cases"] != 2.0 {
+		t.Errorf("unit: %v/%v cases, want 1/2", unit["passed_cases"], unit["scored_cases"])
+	}
+	cases := arrayAt(t, "unit.cases", unit["cases"])
+	if len(cases) != 3 {
+		t.Fatalf("unit.cases: %d, want 3 (the skip is listed, just not scored)", len(cases))
+	}
+	// Report order, not status order: a client lining the cases up against its
+	// own test list depends on it.
+	var names []string
+	for i, c := range cases {
+		names = append(names, fmt.Sprint(objectAt(t, fmt.Sprintf("unit.cases[%d]", i), c)["name"]))
+	}
+	if want := []string{"adds", "multiplies", "bignum"}; !slices.Equal(names, want) {
+		t.Errorf("unit.cases order %v, want %v", names, want)
+	}
+	first := objectAt(t, "unit.cases[0]", cases[0])
+	wantKeys(t, "unit.cases[0]", first, "name", "status", "duration_ms", "message")
+	if first["status"] != "passed" || first["duration_ms"] != 200.0 {
+		t.Errorf("unit.cases[0]: status %v duration_ms %v, want passed 200",
+			first["status"], first["duration_ms"])
+	}
+	failed := objectAt(t, "unit.cases[1]", cases[1])
+	if failed["status"] != "failed" || failed["message"] != "want 6, got 5" {
+		t.Errorf("unit.cases[1]: status %v message %v", failed["status"], failed["message"])
+	}
+	if got := objectAt(t, "unit.cases[2]", cases[2])["status"]; got != "skipped" {
+		t.Errorf("unit.cases[2]: status %v, want skipped", got)
+	}
+
+	// The two checks with no cases, for opposite reasons the payload has to
+	// keep apart.
+	for _, tc := range []struct {
+		name        string
+		i           int
+		parseFailed bool
+	}{
+		{"lint", 1, false},
+		{"suite", 2, true},
+	} {
+		check := objectAt(t, "checks["+tc.name+"]", checks[tc.i])
+		if check["name"] != tc.name {
+			t.Fatalf("checks[%d]: name %v, want %q", tc.i, check["name"], tc.name)
+		}
+		if check["parse_failed"] != tc.parseFailed {
+			t.Errorf("%s: parse_failed %v, want %v", tc.name, check["parse_failed"], tc.parseFailed)
+		}
+		if n := len(arrayAt(t, tc.name+".cases", check["cases"])); n != 0 {
+			t.Errorf("%s: %d cases, want none", tc.name, n)
+		}
+		if check["passed_cases"] != 0.0 || check["scored_cases"] != 0.0 {
+			t.Errorf("%s: %v/%v cases, want 0/0 - the exit code scored it",
+				tc.name, check["passed_cases"], check["scored_cases"])
+		}
+	}
+
+	// The role table is unchanged by any of it: a classmate reaching a
+	// submission that now carries case detail still gets 404, never 403.
+	if rec := apiGet(h, target, bobTok); rec.Code != http.StatusNotFound {
+		t.Fatalf("bob GET %s: status %d, want 404", target, rec.Code)
+	}
+}
+
 // TestAPIMatrixCellStatusNeverEmpty: gradebook blanks an untouched cell so the
 // page can draw a dash there. A client cannot branch on an empty string, so the
 // encoder restores the name.
@@ -486,9 +604,15 @@ func TestAPIResponseShapes(t *testing.T) {
 		check := objectAt(t, "checks[0]", checks[0])
 		wantKeys(t, "checks[0]", check,
 			"name", "passed", "exit_code", "duration_ms", "weight",
-			"skipped", "timed_out", "build_failed", "log_excerpt")
+			"skipped", "timed_out", "build_failed", "log_excerpt",
+			"parse_failed", "passed_cases", "scored_cases", "cases")
 		if check["duration_ms"] != 1500.0 {
 			t.Errorf("checks[0]: duration_ms %v, want 1500", check["duration_ms"])
+		}
+		// A check with no parser still carries the field, as an empty array: a
+		// client must not have to tell null from [] before ranging over it.
+		if cases := arrayAt(t, "checks[0].cases", check["cases"]); len(cases) != 0 {
+			t.Errorf("checks[0]: cases %v, want empty for a check with no parser", cases)
 		}
 	})
 

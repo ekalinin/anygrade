@@ -1630,15 +1630,17 @@ func testTamperNotes(t *testing.T, e *env) {
 
 // 39. per-test-case parser: a check that declares `parser: tap` earns the
 // proportion of its cases that passed instead of the all-or-nothing its exit
-// code alone would give it, the page lists the cases behind that number, and
-// the CSV carries the proportional score (SPEC §4.3).
+// code alone would give it, the page lists the cases behind that number, the
+// JSON API carries the same list, and the CSV carries the proportional score
+// (SPEC §4.3, §10.2).
 func testCaseParser(t *testing.T, e *env) {
 	writeFile(t, filepath.Join(e.aliceDir, "tasks", "cases", "notes.txt"), "run the parser\n")
 	git(t, e.aliceDir, nil, "add", "-A")
 	git(t, e.aliceDir, nil, "commit", "-q", "-m", "trigger the cases task")
 	out := git(t, e.aliceDir, nil, "push", "origin", "main")
 
-	body := pollSubmission(t, e.aliceClient, e, taskSubmissionID(t, out, "cases"))
+	id := taskSubmissionID(t, out, "cases")
+	body := pollSubmission(t, e.aliceClient, e, id)
 	for _, want := range []string{"multiplies", "bignum", "3/4"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("submission page missing %q from the case list:\n%s", want, body)
@@ -1651,6 +1653,51 @@ func testCaseParser(t *testing.T, e *env) {
 	}
 	if got := fetchScores(t, e)["alice"]["cases"]; got != "75" {
 		t.Fatalf("alice/cases: got %q, want 75 (3 of 4 scored cases passed)", got)
+	}
+
+	// The same explanation over the API, which is where a bot has to read it:
+	// `passed: false` on a check worth three quarters of its weight is not an
+	// answer, and the page is what the API exists to avoid parsing.
+	resp, apiBody := apiGet(t, e, e.aliceToken, fmt.Sprintf("/api/v1/submissions/%d", id))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("alice GET /api/v1/submissions/%d: status %d, body:\n%s", id, resp.StatusCode, apiBody)
+	}
+	var payload struct {
+		Checks []struct {
+			Passed      bool `json:"passed"`
+			ParseFailed bool `json:"parse_failed"`
+			PassedCases int  `json:"passed_cases"`
+			ScoredCases int  `json:"scored_cases"`
+			Cases       []struct {
+				Name   string `json:"name"`
+				Status string `json:"status"`
+			} `json:"cases"`
+		} `json:"checks"`
+	}
+	if err := json.Unmarshal([]byte(apiBody), &payload); err != nil {
+		t.Fatalf("decode submission #%d: %v\n%s", id, err, apiBody)
+	}
+	if len(payload.Checks) != 1 {
+		t.Fatalf("submission #%d: %d checks, want 1:\n%s", id, len(payload.Checks), apiBody)
+	}
+	unit := payload.Checks[0]
+	if unit.Passed || unit.ParseFailed {
+		t.Errorf("unit: passed=%v parse_failed=%v, want a failed check whose report was read",
+			unit.Passed, unit.ParseFailed)
+	}
+	if unit.PassedCases != 3 || unit.ScoredCases != 4 {
+		t.Errorf("unit: %d/%d cases, want 3/4 - the numbers the 75 came from",
+			unit.PassedCases, unit.ScoredCases)
+	}
+	// Report order, statuses and all: the skip is listed even though it scored
+	// on neither side.
+	var listed []string
+	for _, c := range unit.Cases {
+		listed = append(listed, c.Name+"="+c.Status)
+	}
+	const want = "adds=passed subtracts=passed divides=passed multiplies=failed bignum=skipped"
+	if got := strings.Join(listed, " "); got != want {
+		t.Errorf("unit cases %q, want %q", got, want)
 	}
 }
 

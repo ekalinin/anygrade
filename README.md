@@ -442,9 +442,29 @@ curl -H "Authorization: Bearer ag_..." https://grade.example.edu/api/v1/tasks
 |---|---|---|
 | `GET /api/v1/me` | any account | login, display name, role |
 | `GET /api/v1/tasks` | any account | the caller's tasks: status, score, override, attempts, deadlines |
-| `GET /api/v1/submissions/{id}` | its owner, or staff | one submission with its check results |
+| `GET /api/v1/submissions/{id}` | its owner, or staff | one submission with its check results and their test cases |
 | `GET /api/v1/matrix` | staff | the whole gradebook, students × tasks |
 | `GET /api/v1/queue` | staff | queued, running and infra-failed submissions |
+
+A check that names a `parser:` splits its weight over its test cases, so `passed` alone no longer says what it earned. Such a check carries the cases themselves, in report order, and the tally the score was made of:
+
+```json
+{
+  "name": "unit",
+  "passed": false,
+  "weight": 100,
+  "parse_failed": false,
+  "passed_cases": 3,
+  "scored_cases": 4,
+  "cases": [
+    {"name": "adds", "status": "passed", "duration_ms": 12, "message": ""},
+    {"name": "multiplies", "status": "failed", "duration_ms": 3, "message": "want 6, got 5"},
+    {"name": "bignum", "status": "skipped", "duration_ms": 0, "message": "not supported"}
+  ]
+}
+```
+
+`scored_cases` leaves the skips out, so this check earned 75 of its 100 weight even though it exited non-zero. `cases` is always there and is empty for a check with no parser; `parse_failed` is `true` when a parser could not read its report and the exit code decided the check instead, which is the one case where an empty `cases` means something went wrong rather than nothing was configured. The earned weight is not a field of its own: a gate is decided by its exit code whatever its cases say, and the result row does not record which checks were gates, so the counts are published and the division is yours.
 
 Errors carry a stable code beside the human message, and are not localized:
 

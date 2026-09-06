@@ -109,6 +109,28 @@ type apiSubmissionDTO struct {
 	Checks         []apiCheckDTO `json:"checks"`
 }
 
+// apiCheckDTO is one check result. Weight is what the check could be worth;
+// since a check that declares a `parser:` earns `weight × passed / scored`
+// (SPEC §4.3), Passed alone no longer says what it contributed, and the case
+// tally is what does.
+//
+// The cases ride along instead of living behind an endpoint of their own,
+// because GetSubmission already loads them for the page: a second URL would
+// save no query, only bytes, and would cost a second ownership gate that has to
+// keep agreeing with findSubmission forever. The bytes are bounded rather than
+// hoped for: §4.3 refuses a report over 1000 cases, caps a case name at 200
+// bytes and every message of one report at 64 KB together, so one parsed
+// check's cases are at most ~264 KB of text at rest - a few KB in the runs a
+// course actually produces - and JSON escaping is the only multiplier on top.
+//
+// PassedCases and ScoredCases are the tally the score was made of rather than
+// an earned-weight number, because the rule that turns a tally into a score
+// lives in scoring.RawScore and needs the check's `required` flag: a failed
+// gate zeroes the submission whatever its cases say, and check_results stores
+// no such flag (the course metadata may also have moved on since the run, SPEC
+// §13). An "earned weight" computed here would therefore be a second, sometimes
+// disagreeing implementation of §4.3. These two counts are what is stored, and
+// the division is the client's to do.
 type apiCheckDTO struct {
 	Name        string `json:"name"`
 	Passed      bool   `json:"passed"`
@@ -118,7 +140,29 @@ type apiCheckDTO struct {
 	Skipped     bool   `json:"skipped"`
 	TimedOut    bool   `json:"timed_out"`
 	BuildFailed bool   `json:"build_failed"`
-	LogExcerpt  string `json:"log_excerpt"`
+	// ParseFailed says the check declared a `parser:` whose report could not be
+	// read, so the exit code decided it and Cases is empty on purpose. Without
+	// it a fallback and a check that never had cases are the same payload.
+	ParseFailed bool         `json:"parse_failed"`
+	PassedCases int          `json:"passed_cases"`
+	ScoredCases int          `json:"scored_cases"`
+	Cases       []apiCaseDTO `json:"cases"`
+	LogExcerpt  string       `json:"log_excerpt"`
+}
+
+// apiCaseDTO is one test case of a check's report, in the order the report
+// listed them. Name and Message are written by a run of the student's own code
+// and are bounded and stripped of control characters before they are stored
+// (internal/testreport, SPEC §4.3); they are the same strings the submission
+// page already shows that student, so encoding them crosses no role boundary.
+// Nothing here comes from a build phase: a check whose build failed is never
+// parsed at all, which is what keeps the staff-only phase (SPEC §14) out of a
+// field that looks student-safe.
+type apiCaseDTO struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"` // passed | failed | skipped
+	DurationMS int64  `json:"duration_ms"`
+	Message    string `json:"message"`
 }
 
 // apiSubmission serves one submission: the caller's own, or any for a teacher.
@@ -143,12 +187,28 @@ func (h *Handler) apiSubmission(w http.ResponseWriter, r *http.Request) {
 		Checks: make([]apiCheckDTO, 0, len(data.Checks)),
 	}
 	for _, c := range data.Checks {
-		dto.Checks = append(dto.Checks, apiCheckDTO{
+		check := apiCheckDTO{
 			Name: c.Name, Passed: c.Passed, ExitCode: c.ExitCode,
 			DurationMS: c.Duration.Milliseconds(), Weight: c.Weight,
 			Skipped: c.Skipped, TimedOut: c.TimedOut, BuildFailed: c.BuildFailed,
+			ParseFailed: c.ParseFailed,
+			// The same two counts the page's tally prints, from the same
+			// methods: the proportion must have one implementation, not one per
+			// encoder.
+			PassedCases: c.Cases.Passed(), ScoredCases: c.Cases.Scored(),
+			// Always an array, empty when the check had no parser: a field whose
+			// type depends on the course's metadata is a field a client has to
+			// test before using.
+			Cases:      make([]apiCaseDTO, 0, len(c.Cases)),
 			LogExcerpt: c.LogExcerpt,
-		})
+		}
+		for _, cs := range c.Cases {
+			check.Cases = append(check.Cases, apiCaseDTO{
+				Name: cs.Name, Status: cs.Status,
+				DurationMS: cs.Duration.Milliseconds(), Message: cs.Message,
+			})
+		}
+		dto.Checks = append(dto.Checks, check)
 	}
 	writeJSON(w, http.StatusOK, dto)
 }
