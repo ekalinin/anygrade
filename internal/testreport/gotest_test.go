@@ -116,6 +116,246 @@ func TestGoTestSubtestsCountOnce(t *testing.T) {
 	}
 }
 
+// A parent that fails on its own after every subtest passed - a post-loop
+// assertion here - is a real result, not the merely redundant parent line
+// dropParents otherwise erases (#122). Captured with `go test -json` from:
+//
+//	func TestParent(t *testing.T) {
+//		t.Run("a", func(t *testing.T) {})
+//		t.Run("b", func(t *testing.T) {})
+//		t.Errorf("post-loop invariant broken")
+//	}
+const goFailedParentPassingChildren = `{"Action":"start","Package":"example.com/parenttest"}
+{"Action":"run","Package":"example.com/parenttest","Test":"TestParent"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestParent","Output":"=== RUN   TestParent\n"}
+{"Action":"run","Package":"example.com/parenttest","Test":"TestParent/a"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestParent/a","Output":"=== RUN   TestParent/a\n"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestParent/a","Output":"--- PASS: TestParent/a (0.00s)\n"}
+{"Action":"pass","Package":"example.com/parenttest","Test":"TestParent/a","Elapsed":0}
+{"Action":"run","Package":"example.com/parenttest","Test":"TestParent/b"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestParent/b","Output":"=== RUN   TestParent/b\n"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestParent/b","Output":"--- PASS: TestParent/b (0.00s)\n"}
+{"Action":"pass","Package":"example.com/parenttest","Test":"TestParent/b","Elapsed":0}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestParent","Output":"    parent_test.go:8: post-loop invariant broken\n"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestParent","Output":"--- FAIL: TestParent (0.00s)\n"}
+{"Action":"fail","Package":"example.com/parenttest","Test":"TestParent","Elapsed":0}
+{"Action":"output","Package":"example.com/parenttest","Output":"FAIL\n"}
+{"Action":"output","Package":"example.com/parenttest","Output":"FAIL\texample.com/parenttest\t0.187s\n"}
+{"Action":"fail","Package":"example.com/parenttest","Elapsed":0.188}
+`
+
+func TestGoTestFailedParentKeptWithPassingChildren(t *testing.T) {
+	cases := mustParse(t, GoTestJSON, goFailedParentPassingChildren)
+	names := make([]string, len(cases))
+	for i, c := range cases {
+		names[i] = c.Name
+	}
+	want := []string{"TestParent", "TestParent/a", "TestParent/b"}
+	if len(names) != len(want) || names[0] != want[0] || names[1] != want[1] || names[2] != want[2] {
+		t.Fatalf("parent kept alongside its children: got %v, want %v", names, want)
+	}
+	parent := cases[0]
+	if parent.Status != Fail {
+		t.Fatalf("TestParent failed on its own and must be reported as failed: %+v", parent)
+	}
+	if !strings.Contains(parent.Message, "post-loop invariant broken") {
+		t.Errorf("failure text missing from the parent's message: %q", parent.Message)
+	}
+	if p, s := Tally(cases); p != 2 || s != 3 {
+		t.Errorf("tally = %d/%d, want 2/3", p, s)
+	}
+}
+
+// A parent whose subtests all pass is still just the redundant summary line:
+// dropping it is unchanged behaviour. Captured from:
+//
+//	func TestAllPass(t *testing.T) {
+//		t.Run("a", func(t *testing.T) {})
+//		t.Run("b", func(t *testing.T) {})
+//	}
+const goAllPassingParentDropped = `{"Action":"start","Package":"example.com/parenttest"}
+{"Action":"run","Package":"example.com/parenttest","Test":"TestAllPass"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestAllPass","Output":"=== RUN   TestAllPass\n"}
+{"Action":"run","Package":"example.com/parenttest","Test":"TestAllPass/a"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestAllPass/a","Output":"=== RUN   TestAllPass/a\n"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestAllPass/a","Output":"--- PASS: TestAllPass/a (0.00s)\n"}
+{"Action":"pass","Package":"example.com/parenttest","Test":"TestAllPass/a","Elapsed":0}
+{"Action":"run","Package":"example.com/parenttest","Test":"TestAllPass/b"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestAllPass/b","Output":"=== RUN   TestAllPass/b\n"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestAllPass/b","Output":"--- PASS: TestAllPass/b (0.00s)\n"}
+{"Action":"pass","Package":"example.com/parenttest","Test":"TestAllPass/b","Elapsed":0}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestAllPass","Output":"--- PASS: TestAllPass (0.00s)\n"}
+{"Action":"pass","Package":"example.com/parenttest","Test":"TestAllPass","Elapsed":0}
+{"Action":"output","Package":"example.com/parenttest","Output":"PASS\n"}
+{"Action":"output","Package":"example.com/parenttest","Output":"ok  \texample.com/parenttest\t0.167s\n"}
+{"Action":"pass","Package":"example.com/parenttest","Elapsed":0.168}
+`
+
+func TestGoTestSubtestsAllPassingDropsParent(t *testing.T) {
+	cases := mustParse(t, GoTestJSON, goAllPassingParentDropped)
+	names := make([]string, len(cases))
+	for i, c := range cases {
+		names[i] = c.Name
+	}
+	want := []string{"TestAllPass/a", "TestAllPass/b"}
+	if len(names) != len(want) || names[0] != want[0] || names[1] != want[1] {
+		t.Fatalf("a passing parent stays dropped: got %v, want %v", names, want)
+	}
+	if p, s := Tally(cases); p != 2 || s != 2 {
+		t.Errorf("tally = %d/%d, want 2/2", p, s)
+	}
+}
+
+// "Every descendant passed" in the keep rule includes a skipped one: a
+// skipped subtest is neither a pass nor the fail that would explain the
+// parent's own. Captured from:
+//
+//	func TestMixed(t *testing.T) {
+//		t.Run("a", func(t *testing.T) {})
+//		t.Run("b", func(t *testing.T) {
+//			t.Skip("not applicable")
+//		})
+//		t.Errorf("post-loop invariant broken")
+//	}
+const goFailedParentWithSkippedChild = `{"Action":"start","Package":"example.com/parenttest"}
+{"Action":"run","Package":"example.com/parenttest","Test":"TestMixed"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestMixed","Output":"=== RUN   TestMixed\n"}
+{"Action":"run","Package":"example.com/parenttest","Test":"TestMixed/a"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestMixed/a","Output":"=== RUN   TestMixed/a\n"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestMixed/a","Output":"--- PASS: TestMixed/a (0.00s)\n"}
+{"Action":"pass","Package":"example.com/parenttest","Test":"TestMixed/a","Elapsed":0}
+{"Action":"run","Package":"example.com/parenttest","Test":"TestMixed/b"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestMixed/b","Output":"=== RUN   TestMixed/b\n"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestMixed/b","Output":"    parent_test.go:8: not applicable\n"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestMixed/b","Output":"--- SKIP: TestMixed/b (0.00s)\n"}
+{"Action":"skip","Package":"example.com/parenttest","Test":"TestMixed/b","Elapsed":0}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestMixed","Output":"    parent_test.go:10: post-loop invariant broken\n"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestMixed","Output":"--- FAIL: TestMixed (0.00s)\n"}
+{"Action":"fail","Package":"example.com/parenttest","Test":"TestMixed","Elapsed":0}
+{"Action":"output","Package":"example.com/parenttest","Output":"FAIL\n"}
+{"Action":"output","Package":"example.com/parenttest","Output":"FAIL\texample.com/parenttest\t0.178s\n"}
+{"Action":"fail","Package":"example.com/parenttest","Elapsed":0.178}
+`
+
+func TestGoTestFailedParentKeptWithSkippedChild(t *testing.T) {
+	cases := mustParse(t, GoTestJSON, goFailedParentWithSkippedChild)
+	names := make([]string, len(cases))
+	for i, c := range cases {
+		names[i] = c.Name
+	}
+	want := []string{"TestMixed", "TestMixed/a", "TestMixed/b"}
+	if len(names) != len(want) || names[0] != want[0] || names[1] != want[1] || names[2] != want[2] {
+		t.Fatalf("parent kept alongside its passing and skipped children: got %v, want %v", names, want)
+	}
+	if cases[0].Status != Fail {
+		t.Fatalf("TestMixed failed on its own and must be reported as failed: %+v", cases[0])
+	}
+	if cases[2].Status != Skip {
+		t.Fatalf("TestMixed/b was skipped, not failed: %+v", cases[2])
+	}
+	if p, s := Tally(cases); p != 1 || s != 2 {
+		t.Errorf("tally = %d/%d, want 1/2: the skip counts on neither side", p, s)
+	}
+}
+
+// The all-skip extreme of the same rule: every descendant of the failing
+// parent is skipped, none passed, and the parent still stays. Captured from:
+//
+//	func TestAllSkip(t *testing.T) {
+//		t.Run("a", func(t *testing.T) {
+//			t.Skip("skip a")
+//		})
+//		t.Run("b", func(t *testing.T) {
+//			t.Skip("skip b")
+//		})
+//		t.Errorf("post-loop invariant broken")
+//	}
+const goFailedParentWithAllSkippedChildren = `{"Action":"start","Package":"example.com/parenttest"}
+{"Action":"run","Package":"example.com/parenttest","Test":"TestAllSkip"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestAllSkip","Output":"=== RUN   TestAllSkip\n"}
+{"Action":"run","Package":"example.com/parenttest","Test":"TestAllSkip/a"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestAllSkip/a","Output":"=== RUN   TestAllSkip/a\n"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestAllSkip/a","Output":"    parent_test.go:7: skip a\n"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestAllSkip/a","Output":"--- SKIP: TestAllSkip/a (0.00s)\n"}
+{"Action":"skip","Package":"example.com/parenttest","Test":"TestAllSkip/a","Elapsed":0}
+{"Action":"run","Package":"example.com/parenttest","Test":"TestAllSkip/b"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestAllSkip/b","Output":"=== RUN   TestAllSkip/b\n"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestAllSkip/b","Output":"    parent_test.go:10: skip b\n"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestAllSkip/b","Output":"--- SKIP: TestAllSkip/b (0.00s)\n"}
+{"Action":"skip","Package":"example.com/parenttest","Test":"TestAllSkip/b","Elapsed":0}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestAllSkip","Output":"    parent_test.go:12: post-loop invariant broken\n"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestAllSkip","Output":"--- FAIL: TestAllSkip (0.00s)\n"}
+{"Action":"fail","Package":"example.com/parenttest","Test":"TestAllSkip","Elapsed":0}
+{"Action":"output","Package":"example.com/parenttest","Output":"FAIL\n"}
+{"Action":"output","Package":"example.com/parenttest","Output":"FAIL\texample.com/parenttest\t0.230s\n"}
+{"Action":"fail","Package":"example.com/parenttest","Elapsed":0.23}
+`
+
+func TestGoTestFailedParentKeptWithAllSkippedChildren(t *testing.T) {
+	cases := mustParse(t, GoTestJSON, goFailedParentWithAllSkippedChildren)
+	names := make([]string, len(cases))
+	for i, c := range cases {
+		names[i] = c.Name
+	}
+	want := []string{"TestAllSkip", "TestAllSkip/a", "TestAllSkip/b"}
+	if len(names) != len(want) || names[0] != want[0] || names[1] != want[1] || names[2] != want[2] {
+		t.Fatalf("parent kept alongside its two skipped children: got %v, want %v", names, want)
+	}
+	if cases[0].Status != Fail {
+		t.Fatalf("TestAllSkip failed on its own and must be reported as failed: %+v", cases[0])
+	}
+	if p, s := Tally(cases); p != 0 || s != 1 {
+		t.Errorf("tally = %d/%d, want 0/1: only the parent scores, both children are skips", p, s)
+	}
+}
+
+// Three levels deep: TestOuter/mid fails on its own after its only child
+// passed, so it stays; TestOuter itself fails only because TestOuter/mid
+// failed, so it is still dropped. Captured from:
+//
+//	func TestOuter(t *testing.T) {
+//		t.Run("mid", func(t *testing.T) {
+//			t.Run("leaf", func(t *testing.T) {})
+//			t.Errorf("mid-level invariant broken")
+//		})
+//	}
+const goNestedParentFailsOnItsOwn = `{"Action":"start","Package":"example.com/parenttest"}
+{"Action":"run","Package":"example.com/parenttest","Test":"TestOuter"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestOuter","Output":"=== RUN   TestOuter\n"}
+{"Action":"run","Package":"example.com/parenttest","Test":"TestOuter/mid"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestOuter/mid","Output":"=== RUN   TestOuter/mid\n"}
+{"Action":"run","Package":"example.com/parenttest","Test":"TestOuter/mid/leaf"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestOuter/mid/leaf","Output":"=== RUN   TestOuter/mid/leaf\n"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestOuter/mid/leaf","Output":"--- PASS: TestOuter/mid/leaf (0.00s)\n"}
+{"Action":"pass","Package":"example.com/parenttest","Test":"TestOuter/mid/leaf","Elapsed":0}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestOuter/mid","Output":"    parent_test.go:8: mid-level invariant broken\n"}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestOuter/mid","Output":"--- FAIL: TestOuter/mid (0.00s)\n"}
+{"Action":"fail","Package":"example.com/parenttest","Test":"TestOuter/mid","Elapsed":0}
+{"Action":"output","Package":"example.com/parenttest","Test":"TestOuter","Output":"--- FAIL: TestOuter (0.00s)\n"}
+{"Action":"fail","Package":"example.com/parenttest","Test":"TestOuter","Elapsed":0}
+{"Action":"output","Package":"example.com/parenttest","Output":"FAIL\n"}
+{"Action":"output","Package":"example.com/parenttest","Output":"FAIL\texample.com/parenttest\t0.194s\n"}
+{"Action":"fail","Package":"example.com/parenttest","Elapsed":0.194}
+`
+
+func TestGoTestNestedParentFailsOnItsOwn(t *testing.T) {
+	cases := mustParse(t, GoTestJSON, goNestedParentFailsOnItsOwn)
+	names := make([]string, len(cases))
+	for i, c := range cases {
+		names[i] = c.Name
+	}
+	want := []string{"TestOuter/mid", "TestOuter/mid/leaf"}
+	if len(names) != len(want) || names[0] != want[0] || names[1] != want[1] {
+		t.Fatalf("the middle node stays, the outer summary line does not: got %v, want %v", names, want)
+	}
+	if cases[0].Status != Fail {
+		t.Fatalf("TestOuter/mid failed on its own: %+v", cases[0])
+	}
+	if p, s := Tally(cases); p != 1 || s != 2 {
+		t.Errorf("tally = %d/%d, want 1/2", p, s)
+	}
+}
+
 // The stream is the check's stdout AND stderr, so noise around the report is
 // the normal case, not the broken one.
 func TestGoTestIgnoresNonJSONNoise(t *testing.T) {
