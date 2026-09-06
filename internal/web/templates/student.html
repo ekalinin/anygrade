@@ -93,6 +93,10 @@
 </li>{{end}}</ul>
 {{else}}<p class="hint">{{t "common.no_keys"}}</p>{{end}}
 
+{{/* The audit rows are administrative, like the account controls above: a TA
+     is refused every action they name, so the record of one stays with the
+     controls (SPEC §8, §10). */}}
+{{if .User.Admin}}
 <h2>{{t "student.recent_activity"}}</h2>
 {{if .Events}}
 <table>
@@ -104,4 +108,5 @@
   </tbody>
 </table>
 {{else}}<p class="hint">{{t "common.no_events"}}</p>{{end}}
+{{end}}
 {{end}}
