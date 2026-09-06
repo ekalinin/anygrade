@@ -74,6 +74,118 @@ func TestValidateFixtureBad(t *testing.T) {
 	}
 }
 
+// writeTasksDirTask writes a minimal valid task directly under dir, for the
+// tasks_dir containment tests below.
+func writeTasksDirTask(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "task.yaml"), []byte(
+		"name: One\nscore: 100\nsolution_files: [main.go]\n"+
+			"checks:\n  - name: plain\n    weight: 40\n    run: 'true'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeTasksDirCourse writes course.yaml with the given tasks_dir line (empty
+// for the absent key) into repo.
+func writeTasksDirCourse(t *testing.T, repo, tasksDirLine string) {
+	t.Helper()
+	content := "name: C\n" + tasksDirLine + "registration:\n  mode: invite\ndefaults:\n  runner:\n    type: local\n"
+	if err := os.WriteFile(filepath.Join(repo, "course.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestLoadTasksDirAccepted covers the tasks_dir forms that must keep loading
+// cleanly: the default, a trailing slash, a dot-relative prefix, a nested
+// path, and the repo root itself (SPEC §4.1, §6.1).
+func TestLoadTasksDirAccepted(t *testing.T) {
+	cases := []struct {
+		name     string
+		tasksDir string // "" = absent key, uses the "tasks" default
+		taskRel  string // task dir, relative to repo
+	}{
+		{name: "default (absent)", taskRel: "tasks/one"},
+		{name: "tasks", tasksDir: "tasks", taskRel: "tasks/one"},
+		{name: "trailing slash", tasksDir: "tasks/", taskRel: "tasks/one"},
+		{name: "dot-relative", tasksDir: "./tasks", taskRel: "tasks/one"},
+		{name: "nested", tasksDir: "courses/go/tasks", taskRel: "courses/go/tasks/one"},
+		{name: "repo root itself", tasksDir: ".", taskRel: "."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			line := ""
+			if tc.tasksDir != "" {
+				line = "tasks_dir: " + tc.tasksDir + "\n"
+			}
+			writeTasksDirCourse(t, repo, line)
+			writeTasksDirTask(t, filepath.Join(repo, filepath.FromSlash(tc.taskRel)))
+
+			r, diags, err := LoadAll(repo)
+			if err != nil {
+				t.Fatalf("LoadAll: %v", err)
+			}
+			if HasErrors(diags) {
+				t.Fatalf("unexpected errors: %v", diagStrings(diags))
+			}
+			if len(r.Tasks) != 1 {
+				t.Fatalf("expected 1 task, got %d", len(r.Tasks))
+			}
+		})
+	}
+}
+
+// TestLoadTasksDirRefused covers the tasks_dir forms that must be refused: an
+// absolute path or anything that leaves the repo (issue: tasks_dir escaping
+// the course repo). The refusal is a load-time diagnostic, and the walk must
+// never descend into the escaped tree - repo and outside are siblings under
+// one parent, and outside/evil/task.yaml must never be found.
+func TestLoadTasksDirRefused(t *testing.T) {
+	cases := []string{"..", "../x", "tasks/../..", "/abs/path", "../../../.."}
+	for _, td := range cases {
+		t.Run(td, func(t *testing.T) {
+			parent := t.TempDir()
+			repo := filepath.Join(parent, "repo")
+			outside := filepath.Join(parent, "outside")
+			if err := os.MkdirAll(repo, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeTasksDirTask(t, filepath.Join(outside, "evil"))
+			writeTasksDirCourse(t, repo, "tasks_dir: "+td+"\n")
+
+			r, diags, err := LoadAll(repo)
+			if err != nil {
+				t.Fatalf("LoadAll: %v", err)
+			}
+			if len(r.Tasks) != 0 {
+				t.Fatalf("walk must not descend when tasks_dir is refused, found %d tasks", len(r.Tasks))
+			}
+			var found *Diagnostic
+			for i := range diags {
+				if diags[i].Field == "tasks_dir" {
+					found = &diags[i]
+					break
+				}
+			}
+			if found == nil {
+				t.Fatalf("expected a tasks_dir diagnostic, got: %v", diagStrings(diags))
+			}
+			if found.Severity != SevError {
+				t.Errorf("severity = %v, want SevError", found.Severity)
+			}
+			if found.File != courseFile {
+				t.Errorf("file = %q, want %q", found.File, courseFile)
+			}
+		})
+	}
+}
+
 // TestValidateWarnings covers the warning rules (gate weight ignored, dead
 // weight) without failing validation.
 func TestValidateWarnings(t *testing.T) {
