@@ -854,3 +854,218 @@ checks:
 		t.Errorf("a check without the key must stay unparsed: %q", checks[2].Parser)
 	}
 }
+
+// TestLocalRunnerLimitWarningInheritedDefaults covers the SPEC §14 warning:
+// it must fire when memory/cpu limits are set explicitly at either merge
+// layer - the task's own runner block or the course defaults.runner block -
+// as long as the resolved runner type is local. Only the raw task block was
+// checked before, so limits set in defaults.runner never warned.
+func TestLocalRunnerLimitWarningInheritedDefaults(t *testing.T) {
+	dir := mainGoDir(t)
+	build := func(courseRunner, taskRunner RunnerSpec) []Diagnostic {
+		task := taskWithDir(dir)
+		task.Runner = taskRunner
+		rt := Resolve(&Course{Defaults: Defaults{Runner: courseRunner}}, task)
+		rt.file = "task.yaml"
+		return Validate(&Resolved{
+			Course:    ResolvedCourse{Name: "C", TasksDir: "tasks", Registration: Registration{Mode: "invite"}, ScoringPolicy: "best"},
+			rawCourse: &Course{Registration: Registration{Mode: "invite"}, Scoring: Scoring{Policy: "best"}, Defaults: Defaults{Runner: courseRunner}},
+			Tasks:     []ResolvedTask{rt},
+		})
+	}
+
+	// Limits in defaults.runner, task sets only type: local.
+	diags := build(RunnerSpec{Memory: new(ByteSize(512 << 20)), CPUs: new(1.0)}, RunnerSpec{Type: new("local")})
+	if !hasFieldWarning(diags, "runner.memory") || !hasFieldWarning(diags, "runner.cpus") {
+		t.Errorf("expected memory and cpu warnings from inherited defaults, got:\n%s", strings.Join(diagStrings(diags), "\n"))
+	}
+
+	// Course-wide type: local, with limits also set in defaults.runner and no
+	// per-task override at all.
+	diags = build(RunnerSpec{Type: new("local"), Memory: new(ByteSize(512 << 20)), CPUs: new(1.0)}, RunnerSpec{})
+	if !hasFieldWarning(diags, "runner.memory") || !hasFieldWarning(diags, "runner.cpus") {
+		t.Errorf("expected memory and cpu warnings from course-wide local, got:\n%s", strings.Join(diagStrings(diags), "\n"))
+	}
+
+	// Docker task (type resolves to the builtin default) with limits in
+	// defaults.runner: the limits are enforced, so no warning.
+	diags = build(RunnerSpec{Memory: new(ByteSize(512 << 20)), CPUs: new(1.0)}, RunnerSpec{Image: new("golang:1.24")})
+	if hasFieldWarning(diags, "runner.memory") || hasFieldWarning(diags, "runner.cpus") {
+		t.Errorf("a docker task must not warn about local-runner-only limits, got:\n%s", strings.Join(diagStrings(diags), "\n"))
+	}
+}
+
+// TestValidateCourseWorkspaceIncludeOnce covers the course-level
+// defaults.workspace.include diagnostic: a bad entry must be reported once
+// against course.yaml, with the course-level index, not once per task.
+func TestValidateCourseWorkspaceIncludeOnce(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(repo, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("course.yaml", "name: C\nregistration:\n  mode: invite\ndefaults:\n  runner:\n    type: local\n  workspace:\n    include: [\"../secret\"]\n")
+	for _, id := range []string{"one", "two"} {
+		write("tasks/"+id+"/main.go", "package main\n")
+		write("tasks/"+id+"/task.yaml", "name: "+id+"\nscore: 100\nsolution_files: [main.go]\nchecks:\n  - name: test\n    weight: 100\n    run: go test ./...\n")
+	}
+
+	r, diags, err := LoadAll(repo)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	all := append(diags, Validate(r)...)
+
+	var got []Diagnostic
+	for _, d := range all {
+		if d.Field == "defaults.workspace.include[0]" {
+			got = append(got, d)
+		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected exactly one diagnostic for defaults.workspace.include[0], got %d:\n%s", len(got), strings.Join(diagStrings(all), "\n"))
+	}
+	if got[0].File != courseFile {
+		t.Errorf("expected the diagnostic against %q, got %q", courseFile, got[0].File)
+	}
+	if !strings.Contains(got[0].Message, "must not escape the course repo") {
+		t.Errorf("unexpected message: %s", got[0].Message)
+	}
+	// The per-task field must not also fire for this inherited entry.
+	for _, d := range all {
+		if d.Field == "workspace.include[0]" {
+			t.Errorf("a course-level entry must not be reported per task too: %s", d)
+		}
+	}
+}
+
+// TestValidateCourseWorkspaceIncludeNoTasks covers the case a course has no
+// tasks at all: the course-level workspace.include check must still run,
+// alongside the separate "no task.yaml found" error, rather than being
+// silently skipped for lack of a task to borrow a repo root from.
+func TestValidateCourseWorkspaceIncludeNoTasks(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "course.yaml"),
+		[]byte("name: C\nregistration:\n  mode: invite\ndefaults:\n  workspace:\n    include: [\"../secret\"]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r, diags, err := LoadAll(repo)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	all := append(diags, Validate(r)...)
+	joined := strings.Join(diagStrings(all), "\n")
+
+	if !hasFieldError(all, "defaults.workspace.include[0]") {
+		t.Errorf("expected the course-level include error even with no tasks, got:\n%s", joined)
+	}
+	if !hasFieldError(all, "tasks_dir") {
+		t.Errorf("expected the no-tasks error alongside it, got:\n%s", joined)
+	}
+}
+
+// TestLoadTaskDecodeErrorSkipsResolution covers a task.yaml that fails to
+// decode: it must not be resolved and validated further, since a zero-value
+// Task would otherwise produce phantom diagnostics ("at least one check is
+// required") on top of the real decode error.
+func TestLoadTaskDecodeErrorSkipsResolution(t *testing.T) {
+	repo := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		p := filepath.Join(repo, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("course.yaml", "name: C\nregistration:\n  mode: invite\ndefaults:\n  runner:\n    type: local\n")
+	write("tasks/bad/main.go", "package main\n")
+	write("tasks/bad/task.yaml", `name: Bad
+score: 100
+solution_files: [main.go]
+deadline:
+  soft: "2026-09-24T23:59:59"
+checks:
+  - name: test
+    weight: 100
+    run: go test ./...
+`)
+	write("tasks/ok/main.go", "package main\n")
+	write("tasks/ok/task.yaml", `name: Ok
+score: 100
+solution_files: [main.go]
+checks:
+  - name: test
+    weight: 100
+    run: go test ./...
+`)
+
+	r, diags, err := LoadAll(repo)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	all := append(diags, Validate(r)...)
+	if len(all) != 1 {
+		t.Fatalf("expected exactly one diagnostic, got %d:\n%s", len(all), strings.Join(diagStrings(all), "\n"))
+	}
+	if !strings.Contains(all[0].Message, "must be RFC3339 with an explicit offset") {
+		t.Errorf("expected the decode error, got: %s", all[0].Message)
+	}
+	if len(r.Tasks) != 1 {
+		t.Errorf("only the valid task must be resolved, got %d tasks", len(r.Tasks))
+	}
+}
+
+// TestValidateTaskIDCarriageReturn covers the id charset rule: \r must be
+// refused like the other whitespace. The id is presentation-only - never used
+// to build a filesystem path - but a CR rewrites the visible remote: line in a
+// student's terminal.
+func TestValidateTaskIDCarriageReturn(t *testing.T) {
+	dir := mainGoDir(t)
+	task := taskWithDir(dir)
+	task.ID = "a\rb"
+	if !hasFieldError(validateOneTask(task), "id") {
+		t.Error("a task id containing \\r should be an error")
+	}
+}
+
+// TestValidateHiddenGitPathEscape covers hidden_tests.path under source: git:
+// internal/hidden uses it as a git tree path, so an absolute or escaping value
+// must be a validate error rather than a submission failure at grading time.
+func TestValidateHiddenGitPathEscape(t *testing.T) {
+	dir := mainGoDir(t)
+	build := func(path string) []Diagnostic {
+		return validateOneTask(&Task{
+			Dir: dir, ID: "w", Name: "W", Score: 100,
+			SolutionFiles: []string{"main.go"},
+			Runner:        RunnerSpec{Type: new("local")},
+			HiddenTests:   &HiddenTests{Source: "git", URL: "https://example.com/org/hidden.git", Path: path},
+			Checks:        []Check{{Name: "test", Weight: 100, Run: "go test ./..."}},
+		})
+	}
+
+	cases := []struct {
+		path    string
+		wantErr bool
+	}{
+		{"", false},
+		{"sub/dir", false},
+		{"/abs/path", true},
+		{"../escape", true},
+	}
+	for _, tc := range cases {
+		diags := build(tc.path)
+		if got := hasFieldError(diags, "hidden_tests.path"); got != tc.wantErr {
+			t.Errorf("path %q: error=%v, want %v; diagnostics:\n%s", tc.path, got, tc.wantErr, strings.Join(diagStrings(diags), "\n"))
+		}
+	}
+}
