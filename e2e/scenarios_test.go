@@ -193,7 +193,7 @@ func testHardDeadline(t *testing.T, e *env) {
 	writeFile(t, filepath.Join(e.aliceDir, "tasks", "late", "notes.txt"), "changed\n")
 	git(t, e.aliceDir, nil, "add", "-A")
 	git(t, e.aliceDir, nil, "commit", "-q", "-m", "touch late")
-	out, err := gitErr(e.aliceDir, nil, "push", "origin", "main")
+	out, err := gitErr(t, e.aliceDir, nil, "push", "origin", "main")
 	if err != nil {
 		t.Fatalf("push (late task): %v\n%s", err, out)
 	}
@@ -499,7 +499,7 @@ func testTeacherCourseUpdate(t *testing.T, e *env) {
 	}
 	git(t, e.profCloneDir, nil, "add", "-A")
 	git(t, e.profCloneDir, nil, "commit", "-q", "-m", "break late task")
-	out, err := gitErr(e.profCloneDir, nil, "push", "origin", "main")
+	out, err := gitErr(t, e.profCloneDir, nil, "push", "origin", "main")
 	if err == nil {
 		t.Fatalf("push with broken yaml unexpectedly succeeded:\n%s", out)
 	}
@@ -917,7 +917,7 @@ func testNonDefaultBranch(t *testing.T, e *env) {
 	}
 	// Stored means stored: the ref exists in the personal repo.
 	bare := filepath.Join(e.dataDir, "repos", "students", "alice.git")
-	if out, err := gitErr(bare, nil, "rev-parse", "--verify", "refs/heads/scratch"); err != nil {
+	if out, err := gitErr(t, bare, nil, "rev-parse", "--verify", "refs/heads/scratch"); err != nil {
 		t.Fatalf("scratch branch not stored in the personal repo: %v\n%s", err, out)
 	}
 }
@@ -1077,7 +1077,7 @@ func testTokenReset(t *testing.T, e *env) {
 	httpURL := func(tok string) string {
 		return fmt.Sprintf("http://bob:%s@127.0.0.1:%d/git/bob/course.git", tok, e.httpPort)
 	}
-	if out, err := gitErr(e.root, nil, "ls-remote", httpURL(old)); err != nil {
+	if out, err := gitErr(t, e.root, nil, "ls-remote", httpURL(old)); err != nil {
 		t.Fatalf("bob's token should work before the reset: %v\n%s", err, out)
 	}
 
@@ -1088,10 +1088,10 @@ func testTokenReset(t *testing.T, e *env) {
 	}
 	e.bobToken = fresh
 
-	if out, err := gitErr(e.root, nil, "ls-remote", httpURL(old)); err == nil {
+	if out, err := gitErr(t, e.root, nil, "ls-remote", httpURL(old)); err == nil {
 		t.Fatalf("the old token still authenticates git over http:\n%s", out)
 	}
-	if out, err := gitErr(e.root, nil, "ls-remote", httpURL(fresh)); err != nil {
+	if out, err := gitErr(t, e.root, nil, "ls-remote", httpURL(fresh)); err != nil {
 		t.Fatalf("the new token does not authenticate git over http: %v\n%s", err, out)
 	}
 
@@ -1106,7 +1106,7 @@ func testTokenReset(t *testing.T, e *env) {
 	// SSH authenticates by key, so the rotation must not have touched it.
 	sshEnv := []string{"GIT_SSH_COMMAND=ssh -i " + e.bobKey +
 		" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes"}
-	if out, err := gitErr(e.bobDir, sshEnv, "ls-remote", "origin"); err != nil {
+	if out, err := gitErr(t, e.bobDir, sshEnv, "ls-remote", "origin"); err != nil {
 		t.Fatalf("bob's ssh key stopped working after a token reset: %v\n%s", err, out)
 	}
 
@@ -1201,7 +1201,7 @@ func assertBobAccess(t *testing.T, e *env, want bool) {
 
 	// git over http: basic auth with the same token, against receive-pack.
 	httpURL := fmt.Sprintf("http://bob:%s@127.0.0.1:%d/git/bob/course.git", e.bobToken, e.httpPort)
-	out, err := gitErr(e.bobDir, nil, "push", httpURL, "main")
+	out, err := gitErr(t, e.bobDir, nil, "push", httpURL, "main")
 	if ok := err == nil; ok != want {
 		t.Fatalf("git push over http: err=%v, want ok=%v\n%s", err, want, out)
 	}
@@ -1210,7 +1210,7 @@ func assertBobAccess(t *testing.T, e *env, want bool) {
 	// touched, so this is the ssh_keys lookup and nothing else.
 	sshEnv := []string{"GIT_SSH_COMMAND=ssh -i " + e.bobKey +
 		" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes"}
-	out, err = gitErr(e.bobDir, sshEnv, "push", "origin", "main")
+	out, err = gitErr(t, e.bobDir, sshEnv, "push", "origin", "main")
 	if ok := err == nil; ok != want {
 		t.Fatalf("git push over ssh: err=%v, want ok=%v\n%s", err, want, out)
 	}
@@ -1290,12 +1290,13 @@ func testMaxPushSize(t *testing.T, e *env) {
 	if _, err := rand.Read(blob); err != nil {
 		t.Fatalf("rand: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(e.aliceDir, "big.bin"), blob, 0o644); err != nil {
-		t.Fatalf("write big.bin: %v", err)
-	}
+	// Through writeFile rather than os.WriteFile: the blob is written into a dir
+	// an earlier subtest filled in, so it goes through the same path guard as
+	// every other fixture write.
+	writeFile(t, filepath.Join(e.aliceDir, "big.bin"), string(blob))
 	git(t, e.aliceDir, nil, "add", "-A")
 	git(t, e.aliceDir, nil, "commit", "-q", "-m", "push something oversized")
-	out, err := gitErr(e.aliceDir, nil, "push", "origin", "main")
+	out, err := gitErr(t, e.aliceDir, nil, "push", "origin", "main")
 	if err == nil {
 		t.Fatalf("oversized push unexpectedly succeeded:\n%s", out)
 	}
@@ -1377,7 +1378,7 @@ func testTLSListener(t *testing.T, e *env) {
 	// machine that has turned verification off globally cannot turn either
 	// half of this into a pass.
 	cloneURL := fmt.Sprintf("https://tina:%s@127.0.0.1:%d/git/tina/course.git", token, tlsEnv.httpPort)
-	if out, err := gitErr(e.root, nil, "-c", "http.sslVerify=true", "ls-remote", cloneURL); err == nil {
+	if out, err := gitErr(t, e.root, nil, "-c", "http.sslVerify=true", "ls-remote", cloneURL); err == nil {
 		t.Fatalf("git verified the certificate without GIT_SSL_CAINFO:\n%s", out)
 	}
 
@@ -1549,7 +1550,7 @@ func testForcePushAfterSubmission(t *testing.T, e *env) {
 	// gc drops every unreachable object: the pin is the only thing left
 	// holding the graded tree.
 	git(t, bare, nil, "gc", "--prune=now", "--quiet")
-	if out, err := gitErr(bare, nil, "cat-file", "-e", graded+"^{commit}"); err != nil {
+	if out, err := gitErr(t, bare, nil, "cat-file", "-e", graded+"^{commit}"); err != nil {
 		t.Fatalf("graded commit %s gone after the force push and gc: %v\n%s", graded, err, out)
 	}
 	status, body := get(t, e.aliceClient, fmt.Sprintf("%s/submissions/%d", e.baseURL, gradedID))

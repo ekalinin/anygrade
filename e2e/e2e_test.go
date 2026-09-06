@@ -358,16 +358,35 @@ func runBinErr(dir string, args ...string) (string, error) {
 
 // ---- git helpers ----
 
+// orderedSuiteHint names the mistake that an empty or relative path in these
+// helpers always is, so the failure reads as the thing to do about it rather
+// than as a bug in the helper.
+const orderedSuiteHint = "the TestE2E subtests are ordered and share one env - " +
+	"the dirs a later one reads are filled in by an earlier one, so run the whole " +
+	"suite (make e2e) rather than one subtest on its own"
+
 func git(t *testing.T, dir string, env []string, args ...string) string {
 	t.Helper()
-	out, err := gitErr(dir, env, args...)
+	out, err := gitErr(t, dir, env, args...)
 	if err != nil {
 		t.Fatalf("git %s (dir=%s): %v\n%s", strings.Join(args, " "), dir, err, out)
 	}
 	return out
 }
 
-func gitErr(dir string, env []string, args ...string) (string, error) {
+// gitErr runs git in dir and hands the caller the error, for the scenarios that
+// assert a push or a fetch fails. dir must be absolute: os/exec resolves an
+// empty or relative Dir against the checkout `go test` was started from, which
+// is how one subtest run on its own once committed and pushed the working tree.
+// The refusal is a t.Fatal and not a returned error on purpose - an error here
+// would be indistinguishable from the failure those callers are asserting, and
+// the scenario would pass having tested nothing.
+func gitErr(t *testing.T, dir string, env []string, args ...string) (string, error) {
+	t.Helper()
+	if !filepath.IsAbs(dir) {
+		t.Fatalf("git %s: dir %q resolves against the checkout under test; %s",
+			strings.Join(args, " "), dir, orderedSuiteHint)
+	}
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), env...)
