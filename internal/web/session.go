@@ -52,7 +52,7 @@ func (h *Handler) isSecure(r *http.Request) bool {
 // everyone out; X-Forwarded-For is forgeable, so it is read under the same
 // opt-in that gates X-Forwarded-Proto above.
 func (h *Handler) clientAddr(r *http.Request) string {
-	return ratelimit.ClientAddr(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.BehindProxy)
+	return ratelimit.ClientAddr(r.RemoteAddr, r.Header.Values("X-Forwarded-For"), h.BehindProxy)
 }
 
 // secure reads the flag secureContext placed on the request.

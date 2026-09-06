@@ -7,9 +7,11 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ekalinin/anygrade/internal/config"
 	"github.com/ekalinin/anygrade/internal/intake"
+	"github.com/ekalinin/anygrade/internal/ratelimit"
 	"github.com/ekalinin/anygrade/internal/store"
 )
 
@@ -143,5 +145,40 @@ func TestSessionCookieSecureFlag(t *testing.T) {
 					got, tc.want, rec.Header().Get("Set-Cookie"))
 			}
 		})
+	}
+}
+
+// TestLoginFailureChargesLastForwardedLine: an adding proxy appends its own
+// X-Forwarded-For field line rather than editing the client's, so the header
+// carries two lines - the client's own value, then the proxy's. Only the
+// second is trustworthy; charging the first lets a client behind the proxy
+// pick its own failure budget (issue #128).
+func TestLoginFailureChargesLastForwardedLine(t *testing.T) {
+	h, _ := newTestSite(t)
+	h.BehindProxy = true
+	h.Limit = ratelimit.New(1, time.Minute)
+
+	attempt := func(forwarded ...string) *httptest.ResponseRecorder {
+		form := url.Values{"login": {"nope"}, "token": {"bad"}}
+		req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.RemoteAddr = "10.0.0.1:443"
+		for _, v := range forwarded {
+			req.Header.Add("X-Forwarded-For", v)
+		}
+		rec := httptest.NewRecorder()
+		New(h).ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := attempt("3.3.3.3", "4.4.4.4"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("first failing attempt: status %d, want 401", rec.Code)
+	}
+
+	if rec := attempt("3.3.3.3"); rec.Code != http.StatusUnauthorized {
+		t.Errorf("the client's own line was charged instead of the proxy's: status %d, want 401", rec.Code)
+	}
+	if rec := attempt("4.4.4.4"); rec.Code != http.StatusTooManyRequests {
+		t.Errorf("the proxy's line was not charged: status %d, want 429", rec.Code)
 	}
 }
