@@ -62,7 +62,12 @@ func (s *Server) TeacherRecheck(ctx context.Context, actor store.User, targetUse
 func (s *Server) recheck(ctx context.Context, userID int64, taskID string, teacher bool) (store.Submission, queue.Decision, RecheckWarning, error) {
 	task, _, ok := s.Course.Get().Task(taskID)
 	if !ok {
-		return store.Submission{}, queue.Decision{}, "", fmt.Errorf("unknown task %q", taskID)
+		// The same fault prep reports for a queued submission whose task was
+		// deleted or renamed (SPEC §13), so it carries the same sentinel: the
+		// caller can tell "the course lost the task" from "the store broke"
+		// without reading the message, and the id stays in the text because the
+		// server log is the only place it survives.
+		return store.Submission{}, queue.Decision{}, "", fmt.Errorf("%s: %w", taskID, queue.ErrTaskGone)
 	}
 	user, err := s.DB.GetUserByID(ctx, userID)
 	if err != nil {

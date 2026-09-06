@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/ekalinin/anygrade/internal/gradebook"
 	"github.com/ekalinin/anygrade/internal/intake"
+	"github.com/ekalinin/anygrade/internal/queue"
 	"github.com/ekalinin/anygrade/internal/store"
 )
 
@@ -55,6 +57,10 @@ type queueRow struct {
 	Sub    store.Submission
 	Login  string
 	Status string // display status incl. canceled/retrying/error
+	// TaskGone: the current course snapshot has no Sub.TaskID (deleted or
+	// renamed, SPEC §13). The row itself stays - history does - but there is
+	// no task metadata left to re-grade the commit against.
+	TaskGone bool
 }
 
 // subDisplayStatus refines one submission's status for the queue view.
@@ -82,8 +88,12 @@ func subDisplayStatus(s store.Submission) string {
 // the latest *counting* commit, so the button there would silently grade some
 // other commit than the row shows - or fail outright when the canceled row was
 // the student's only submission.
+//
+// A row whose task the course has since lost is the other exclusion, and the
+// only one the status cannot see: recheck resolves the task id against the
+// current snapshot, so the click could do nothing but fail (SPEC §13).
 func (r queueRow) CanRecheck() bool {
-	return r.Status == gradebook.StatusError
+	return r.Status == gradebook.StatusError && !r.TaskGone
 }
 
 // loadQueueRows assembles the unfinished submissions with their owners'
@@ -103,9 +113,14 @@ func (h *Handler) loadQueueRows(ctx context.Context) ([]queueRow, error) {
 	for _, x := range users {
 		logins[x.ID] = x.Login
 	}
+	// One snapshot for the whole listing: the holder is swapped whole on a
+	// teacher push, so reading it per row could answer differently for two rows
+	// of the same task.
+	course := h.Course.Get()
 	rows := make([]queueRow, len(subs))
 	for i, s := range subs {
-		rows[i] = queueRow{Sub: s, Login: logins[s.UserID], Status: subDisplayStatus(s)}
+		_, _, known := course.Task(s.TaskID)
+		rows[i] = queueRow{Sub: s, Login: logins[s.UserID], Status: subDisplayStatus(s), TaskGone: !known}
 	}
 	return rows, nil
 }
@@ -164,7 +179,8 @@ func (h *Handler) sendQueueRow(r *http.Request, sse *sseWriter, lang string, id 
 	if err != nil {
 		return
 	}
-	row := queueRow{Sub: sub, Login: target.Login, Status: subDisplayStatus(sub)}
+	_, _, known := h.Course.Get().Task(sub.TaskID)
+	row := queueRow{Sub: sub, Login: target.Login, Status: subDisplayStatus(sub), TaskGone: !known}
 	html, err := renderPartial(lang, "queue-row", row)
 	if err != nil {
 		return
@@ -229,10 +245,34 @@ func (h *Handler) recheckSubmission(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, intake.ErrNothingToRecheck):
 		http.Redirect(w, r, "/queue?flash=nothing_to_recheck", http.StatusSeeOther)
 	case err != nil:
-		h.httpError(w, r, "error.recheck_failed", http.StatusInternalServerError)
+		h.recheckError(w, r, err)
 	default:
 		http.Redirect(w, r, submissionURL(fresh.ID, warn), http.StatusSeeOther)
 	}
+}
+
+// recheckError answers a refused recheck; all three recheck routes share it so
+// one failure cannot mean two things depending on where it was clicked.
+//
+// A task the course no longer has is a state the server understands rather than
+// a fault of its own (SPEC §13), so it is a 404 naming the reason - the same
+// answer GET /tasks/{id} already gives for that id, and it tells a student
+// nothing they could not read off the task list. Everything else stays one
+// opaque 500: a store failure describes the server, and one of these routes is
+// the student's own.
+//
+// Either way the original error goes to the log, which is the only place the
+// task id and the cause survive - httpError renders a catalog string and keeps
+// nothing.
+func (h *Handler) recheckError(w http.ResponseWriter, r *http.Request, err error) {
+	if errors.Is(err, queue.ErrTaskGone) {
+		slog.Warn("recheck refused: the course no longer has the task",
+			"path", r.URL.Path, "actor", user(r).Login, "err", err)
+		h.httpError(w, r, "error.task_gone", http.StatusNotFound)
+		return
+	}
+	slog.Error("recheck failed", "path", r.URL.Path, "actor", user(r).Login, "err", err)
+	h.httpError(w, r, "error.recheck_failed", http.StatusInternalServerError)
 }
 
 // submissionURL points at a freshly queued submission, carrying a recheck
