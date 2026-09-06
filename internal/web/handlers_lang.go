@@ -44,7 +44,9 @@ func (h *Handler) setLang(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   int((365 * 24 * time.Hour).Seconds()),
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   r.TLS != nil,
+		// The same rule every other cookie writer uses (session.go): a proxy's
+		// X-Forwarded-Proto counts only under the operator's opt-in.
+		Secure: h.isSecure(r),
 	})
 	http.Redirect(w, r, returnPath(r), http.StatusSeeOther)
 }

@@ -175,7 +175,7 @@ func (h *Handler) apiSubmission(w http.ResponseWriter, r *http.Request) {
 		apiNotFound(w)
 		return
 	}
-	data := h.submissionData(sub, checks, user(r))
+	data := h.submissionData(r.Context(), sub, checks, user(r))
 	dto := apiSubmissionDTO{
 		ID: sub.ID, TaskID: sub.TaskID, TaskName: data.TaskName, MaxScore: data.TaskScore,
 		Commit: sub.CommitSHA, Status: data.Status,

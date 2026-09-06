@@ -10,11 +10,14 @@ import (
 	"github.com/ekalinin/anygrade/internal/store"
 )
 
-// matrixStatuses lists the filterable statuses in display order (SPEC §10).
+// matrixStatuses lists the filterable statuses in display order (SPEC §10):
+// every value gradebook.DeriveStatus can put in a cell, in the order a
+// submission travels through them, with the hand-scored one last.
 var matrixStatuses = []string{
-	gradebook.StatusNotStarted, gradebook.StatusRetrying, gradebook.StatusError,
+	gradebook.StatusNotStarted, store.StatusQueued, store.StatusRunning,
+	gradebook.StatusRetrying, gradebook.StatusError,
 	gradebook.StatusCanceled, gradebook.StatusRejected, gradebook.StatusPassed,
-	gradebook.StatusPartial, gradebook.StatusFailed,
+	gradebook.StatusPartial, gradebook.StatusFailed, gradebook.StatusOverridden,
 }
 
 type matrixData struct {

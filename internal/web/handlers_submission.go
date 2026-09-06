@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"mime"
 	"net/http"
 	"os"
@@ -43,6 +44,11 @@ type submissionData struct {
 	Note     string
 	Running  bool
 	Rejected bool
+	// Owner is the student the submission belongs to, resolved for a reviewer
+	// only: the page then names them, links to their code view - staff-only in
+	// itself (SPEC §14) - and points the breadcrumb at their task instead of
+	// the reviewer's own. Zero for the owner reading their own submission.
+	Owner store.User
 	// Flash carries a recheck warning from the redirect that landed here
 	// (submissionURL); the fragment renderer leaves it empty.
 	Flash string
@@ -78,7 +84,7 @@ func (h *Handler) loadSubmission(w http.ResponseWriter, r *http.Request) (store.
 	return sub, checks, ok
 }
 
-func (h *Handler) submissionData(sub store.Submission, checks []store.CheckRow, viewer store.User) submissionData {
+func (h *Handler) submissionData(ctx context.Context, sub store.Submission, checks []store.CheckRow, viewer store.User) submissionData {
 	data := submissionData{
 		Sub:             sub,
 		Status:          subDisplayStatus(sub),
@@ -90,6 +96,12 @@ func (h *Handler) submissionData(sub store.Submission, checks []store.CheckRow, 
 	}
 	if viewer.CanReview() {
 		data.Note = sub.WorkerNote
+		// One indexed read for the whole reviewer's half of the page. A lookup
+		// that fails costs those links and nothing else: the results are what
+		// the page is for.
+		if owner, err := h.DB.GetUserByID(ctx, sub.UserID); err == nil {
+			data.Owner = owner
+		}
 	}
 	if task, _, ok := h.Course.Get().Task(sub.TaskID); ok {
 		data.TaskName = task.Name
@@ -111,7 +123,7 @@ func (h *Handler) submissionPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := user(r)
-	data := h.submissionData(sub, checks, u)
+	data := h.submissionData(r.Context(), sub, checks, u)
 	data.CourseName = h.Course.Get().Resolved.Course.Name
 	data.User = h.userViewOf(u)
 	data.Flash = r.URL.Query().Get("flash")
@@ -125,7 +137,7 @@ func (h *Handler) submissionFragment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	html, err := renderPartial(h.lang(r), "sub-results", h.submissionData(sub, checks, user(r)))
+	html, err := renderPartial(h.lang(r), "sub-results", h.submissionData(r.Context(), sub, checks, user(r)))
 	if err != nil {
 		h.httpError(w, r, "error.render_failed", http.StatusInternalServerError)
 		return
