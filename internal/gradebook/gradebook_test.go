@@ -42,9 +42,67 @@ func TestDeriveStatus(t *testing.T) {
 		{"canceled", []store.Submission{{Status: store.StatusInfraError, CanceledAt: &canceledAt}}, false, StatusCanceled},
 	}
 	for _, tc := range tests {
-		if got := DeriveStatus(tc.history, 100, tc.overridden); got != tc.want {
+		win := Winner(tc.history, "best")
+		if got := DeriveStatus(tc.history, 100, tc.overridden, win); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestDeriveStatusFollowsWinner: the score-derived statuses (passed/partial/
+// failed) must describe the submission the course policy picked, the same one
+// DisplayScore reads - not unconditionally the latest row (issue #133). The
+// in-flight and rejected statuses stay latest-row facts regardless of policy.
+func TestDeriveStatusFollowsWinner(t *testing.T) {
+	retryAt := time.Now().Add(time.Minute)
+	base := func(status string, final *float64) store.Submission {
+		return store.Submission{ID: 1, UserID: 1, TaskID: "t1", Status: status, FinalScore: final, Counts: true}
+	}
+
+	tests := []struct {
+		name       string
+		policy     string
+		history    []store.Submission
+		wantStatus string
+		wantScore  *float64
+	}{
+		{"best keeps the good attempt's status and score",
+			"best",
+			[]store.Submission{base(store.StatusDone, new(float64(100))), base(store.StatusDone, new(float64(0)))},
+			StatusPassed, new(float64(100))},
+		{"latest follows the bad attempt instead",
+			"latest",
+			[]store.Submission{base(store.StatusDone, new(float64(100))), base(store.StatusDone, new(float64(0)))},
+			StatusFailed, new(float64(0))},
+		{"a queued latest attempt shows as queued while the score keeps the prior done attempt",
+			"best",
+			[]store.Submission{base(store.StatusDone, new(float64(100))), base(store.StatusQueued, nil)},
+			store.StatusQueued, new(float64(100))},
+		{"a retrying latest attempt shows as retrying while the score keeps the prior done attempt",
+			"best",
+			[]store.Submission{base(store.StatusDone, new(float64(100))),
+				{ID: 2, UserID: 1, TaskID: "t1", Status: store.StatusInfraError, RetryAt: &retryAt}},
+			StatusRetrying, new(float64(100))},
+		{"a rejected latest attempt still shows as rejected, keeping the earlier score " +
+			"(current behaviour kept: the rejection is a fact about the latest attempt the student should see)",
+			"best",
+			[]store.Submission{base(store.StatusDone, new(float64(100))), base(store.StatusRejectedLimit, nil)},
+			StatusRejected, new(float64(100))},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			win := Winner(tc.history, tc.policy)
+			if got := DeriveStatus(tc.history, 100, false, win); got != tc.wantStatus {
+				t.Errorf("status = %q, want %q", got, tc.wantStatus)
+			}
+			got := DisplayScore(tc.history, tc.policy)
+			switch {
+			case tc.wantScore == nil && got != nil:
+				t.Errorf("score = %v, want nil", *got)
+			case tc.wantScore != nil && (got == nil || *got != *tc.wantScore):
+				t.Errorf("score = %v, want %v", got, *tc.wantScore)
+			}
+		})
 	}
 }
 
@@ -104,6 +162,24 @@ func TestBuildMatrix(t *testing.T) {
 	}
 	if c := b.Cells["t1"]; c.Status != "" || c.LatestSubID != 0 {
 		t.Errorf("bob t1 empty cell: %+v", c)
+	}
+}
+
+// TestBuildCellStatusMatchesScore: Build must wire DeriveStatus and
+// DisplayScore to the same submission (issue #133) - a student who scored
+// well and then pushed a broken attempt must not see the good score next to
+// a "failed" status under the default best policy.
+func TestBuildCellStatusMatchesScore(t *testing.T) {
+	users := []store.User{{ID: 1, Login: "alice", Role: "student"}}
+	tasks := []TaskCol{{ID: "t1", MaxScore: 100}}
+	subs := []store.Submission{
+		{ID: 10, UserID: 1, TaskID: "t1", Status: store.StatusDone, FinalScore: new(float64(100)), Counts: true},
+		{ID: 11, UserID: 1, TaskID: "t1", Status: store.StatusDone, FinalScore: new(float64(0)), Counts: true},
+	}
+	m := Build(users, tasks, subs, nil, "best")
+	c := m.Rows[0].Cells["t1"]
+	if c.Status != StatusPassed || c.Display != 100 {
+		t.Errorf("best policy: status=%q display=%v, want passed/100", c.Status, c.Display)
 	}
 }
 
