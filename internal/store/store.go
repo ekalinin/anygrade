@@ -114,6 +114,13 @@ type UserStore interface {
 	// account that only ever signed in through the identity provider has none,
 	// and cannot push over HTTP until it asks for one (SPEC §8).
 	HasToken(ctx context.Context, userID int64) (bool, error)
+	// Activated reports whether the account is in use by its owner: it holds
+	// a personal token, or it is bound to an identity provider and takes its
+	// first token from the settings page. It is what an invite is refused on
+	// - activating an account a second time issues a token over the credential
+	// its owner is already using and opens a session as them (SPEC §8). It is
+	// not `users.state`, which is the separate teacher-operated switch.
+	Activated(ctx context.Context, userID int64) (bool, error)
 }
 
 // SessionStore persists browser sessions (SPEC §8: token login → cookie).
@@ -347,10 +354,10 @@ type SubmissionStore interface {
 	GetSubmission(ctx context.Context, id int64) (Submission, []CheckRow, error)
 	// NextRetryAt returns the earliest pending retry_at, nil if none.
 	NextRetryAt(ctx context.Context) (*time.Time, error)
-	// CancelSubmission marks a queued/running submission canceled by a
-	// teacher: terminal infra_error, counts=0, canceled_at set (the status
-	// CHECK has no 'canceled'; canceled_at is the display marker). ok=false
-	// when the row is already terminal.
+	// CancelSubmission marks a submission canceled by a teacher: terminal
+	// infra_error, counts=0, canceled_at set (the status CHECK has no
+	// 'canceled'; canceled_at is the display marker). Queued, running and
+	// retrying rows all qualify. ok=false when the row is already terminal.
 	CancelSubmission(ctx context.Context, id int64, now time.Time) (Submission, bool, error)
 	// ListAllSubmissions returns every submission across all users, ordered
 	// by user_id, task_id, received_at (matrix + CSV read model).
@@ -407,6 +414,9 @@ type Invite struct {
 
 // InviteStore persists hashed invite tokens.
 type InviteStore interface {
+	// CreateInvite issues the account's activation link. An account has at
+	// most one: a second live link is a second way to replace its token, so
+	// this replaces the outstanding one, expiry and used_at included.
 	CreateInvite(ctx context.Context, userID int64, tokenPlaintext string, expiresAt time.Time) error
 	// VerifyInvite resolves a plaintext token to an unused, unexpired invite.
 	VerifyInvite(ctx context.Context, tokenPlaintext string) (Invite, bool, error)

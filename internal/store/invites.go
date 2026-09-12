@@ -7,11 +7,18 @@ import (
 	"time"
 )
 
-// CreateInvite implements InviteStore.
+// CreateInvite implements InviteStore: an account has at most one live invite.
+//
+// One upsert against UNIQUE(user_id), like IssueToken: a second row would be a
+// second working activation for the same account, and activating replaces the
+// account's token. Clearing used_at is what makes a re-invite of a spent link
+// - an activation that failed - usable again.
 func (s *DB) CreateInvite(ctx context.Context, userID int64, tokenPlaintext string, expiresAt time.Time) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO invites (token_hash, user_id, expires_at)
-		VALUES (?, ?, ?)`,
+		VALUES (?, ?, ?)
+		ON CONFLICT(user_id) DO UPDATE SET
+		  token_hash = excluded.token_hash, expires_at = excluded.expires_at, used_at = NULL`,
 		hashToken(tokenPlaintext), userID, fmtTime(expiresAt))
 	return err
 }

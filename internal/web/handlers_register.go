@@ -62,6 +62,33 @@ func (h *Handler) sshBase() string {
 
 // resolveInvite maps the URL token to its pending user; every failure mode
 // renders the same neutral "invalid" page.
+//
+// An account already in use by its owner is one of those failure modes.
+// Activating it a second time issues a token over the credential it is already
+// using and opens a session as them, so the link would be a way to take the
+// account over. store.Activated is the predicate for both halves of "in use" -
+// a token, or a provider binding on an account that has not asked for a token
+// yet.
+//
+// The store keeps an account to one live invite, so this is a backstop for the
+// two shapes that index cannot catch: a link issued while the account had no
+// credential and still outstanding when it gained one (`user reset-token`, or
+// a first provider login), and a database upgraded from before that index,
+// where the duplicate 0014 kept may be the live one of an account that
+// activated on an earlier link.
+//
+// The row is burned on the way out, on GET as on POST. That costs almost
+// nothing: the predicate turns true as an account gains a credential and has
+// one way back, `anygrade user unbind-oidc` on a provider-only account, so a
+// link refused here would be refused again by the POST that followed. What the
+// exception costs is that a link burned while the account was bound stays dead
+// after an unbind, and the teacher re-issues it - which the 0014 upsert makes
+// idempotent. The burn direction is the fail-safe one either way: it can
+// destroy access to an account, never grant it.
+//
+// The page says only "invalid", exactly as it does for an unknown token: a
+// distinct message would turn the link into an oracle for which accounts are
+// live.
 func (h *Handler) resolveInvite(r *http.Request) (store.Invite, store.User, bool) {
 	inv, ok, err := h.DB.VerifyInvite(r.Context(), r.PathValue("token"))
 	if err != nil || !ok {
@@ -69,6 +96,14 @@ func (h *Handler) resolveInvite(r *http.Request) (store.Invite, store.User, bool
 	}
 	target, err := h.DB.GetUserByID(r.Context(), inv.UserID)
 	if err != nil || target.State != "active" {
+		return store.Invite{}, store.User{}, false
+	}
+	active, err := h.DB.Activated(r.Context(), target.ID)
+	if err != nil {
+		return store.Invite{}, store.User{}, false
+	}
+	if active {
+		_, _ = h.DB.ConsumeInvite(r.Context(), inv.ID, time.Now())
 		return store.Invite{}, store.User{}, false
 	}
 	return inv, target, true

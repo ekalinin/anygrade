@@ -31,7 +31,7 @@ func attachCases(ctx context.Context, job Job, c config.Check, o *Outcome, ex ch
 	if !testreport.Enabled(c.Parser) || o.Skipped || o.BuildFailed || o.TimedOut {
 		return
 	}
-	cases, err := parseReport(ctx, job, c, o.LogPath, ex)
+	cases, err := parseReport(ctx, job, c, o.LogPath, o.logTruncated, ex)
 	if err == nil {
 		o.Cases = cases
 		return
@@ -47,14 +47,16 @@ func attachCases(ctx context.Context, job Job, c config.Check, o *Outcome, ex ch
 // parseReport reads what the parser parses: the check's own log - stdout and
 // stderr as the run produced them, which is where `go test -json` and TAP put
 // the report - or the file the check wrote when `parser_file:` names one, which
-// is how a format that is a file by convention (JUnit XML) reaches us.
-func parseReport(ctx context.Context, job Job, c config.Check, logPath string, ex checkExecutor) ([]testreport.Case, error) {
+// is how a format that is a file by convention (JUnit XML) reaches us. truncated
+// only applies to the log: a `parser_file:` report is a different file and is
+// not affected by the log cap.
+func parseReport(ctx context.Context, job Job, c config.Check, logPath string, truncated bool, ex checkExecutor) ([]testreport.Case, error) {
 	var (
 		data []byte
 		err  error
 	)
 	if c.ParserFile == "" {
-		data, err = readLogReport(logPath)
+		data, err = readLogReport(logPath, truncated)
 	} else {
 		var rel string
 		if rel, err = reportPath(job.TaskRelDir, c.ParserFile); err == nil {
@@ -80,10 +82,17 @@ func reportPath(taskRelDir, file string) (string, error) {
 }
 
 // readLogReport reads a check's log file, one byte past the parser's own bound
-// so an oversized report is refused rather than silently truncated.
-func readLogReport(logPath string) ([]byte, error) {
+// so an oversized report is refused rather than silently truncated. A log
+// already cut short on disk - capWriter capped it at runner.log_max or its
+// write failed partway through - is refused before it is even opened: that
+// cap can sit well under the parser's own bound, so the file read here would
+// otherwise pass as complete and score a partial run as if it were whole.
+func readLogReport(logPath string, truncated bool) ([]byte, error) {
 	if logPath == "" {
 		return nil, errors.New("check wrote no log to parse")
+	}
+	if truncated {
+		return nil, testreport.ErrTooLarge
 	}
 	f, err := os.Open(logPath)
 	if err != nil {

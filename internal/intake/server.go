@@ -177,6 +177,9 @@ func (s *Server) dispatch(ctx context.Context, req hookproto.Request) hookproto.
 	case hookproto.KindValidateCourse:
 		return s.validateCourse(ctx, req)
 	case hookproto.KindPostReceive:
+		// "course" is the sentinel gitserver.hookEnv sets for the upstream
+		// repo; it can never be a student's own, since ident.ValidLogin
+		// reserves the name and every account-creation path enforces it.
 		if req.Repo == "course" {
 			return s.courseUpdated(ctx)
 		}

@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gliderlabs/ssh"
 	gossh "golang.org/x/crypto/ssh"
 )
 
@@ -55,14 +54,12 @@ func TestConnGateBudgets(t *testing.T) {
 // deadlineConn is a net.Conn stub that only records the deadline set on it.
 type deadlineConn struct {
 	net.Conn
-	addr     net.Addr
 	deadline time.Time
 	closed   bool
 }
 
 func (c *deadlineConn) SetDeadline(t time.Time) error { c.deadline = t; return nil }
 func (c *deadlineConn) Close() error                  { c.closed = true; return nil }
-func (c *deadlineConn) RemoteAddr() net.Addr          { return c.addr }
 
 // TestHandshakeConnHoldsTheDeadline: the ssh library restamps its idle deadline
 // on every read and write, so a handshake deadline only survives if the wrapper
@@ -134,98 +131,6 @@ func TestSSHServerBudgets(t *testing.T) {
 	}
 }
 
-// fakeSSHContext is the connection-scoped context the library builds per
-// connection, reduced to the two things the budget code uses: the value store
-// and the lock.
-type fakeSSHContext struct {
-	context.Context
-	sync.Mutex
-	values map[any]any
-}
-
-func newFakeSSHContext(t *testing.T) *fakeSSHContext {
-	return &fakeSSHContext{Context: t.Context(), values: map[any]any{}}
-}
-
-func (c *fakeSSHContext) SetValue(key, value any) { c.values[key] = value }
-func (c *fakeSSHContext) Value(key any) any {
-	if v, ok := c.values[key]; ok {
-		return v
-	}
-	return c.Context.Value(key)
-}
-func (c *fakeSSHContext) User() string          { return "" }
-func (c *fakeSSHContext) SessionID() string     { return "" }
-func (c *fakeSSHContext) ClientVersion() string { return "" }
-func (c *fakeSSHContext) ServerVersion() string { return "" }
-func (c *fakeSSHContext) RemoteAddr() net.Addr  { return nil }
-func (c *fakeSSHContext) LocalAddr() net.Addr   { return nil }
-func (c *fakeSSHContext) Permissions() *ssh.Permissions {
-	return &ssh.Permissions{Permissions: &gossh.Permissions{}}
-}
-
-// TestSSHAuthReleasesHandshakeSlot: the budget is on unauthenticated churn, so
-// a registered key has to hand its slot back before the transfer starts. If the
-// slot were held for the whole connection, a per-IP cap tight enough to be a
-// defence would also cap concurrent pushes from one classroom NAT address.
-func TestSSHAuthReleasesHandshakeSlot(t *testing.T) {
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	key, err := gossh.NewPublicKey(pub)
-	if err != nil {
-		t.Fatal(err)
-	}
-	signer, err := ensureHostKey(filepath.Join(t.TempDir(), "hostkey"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := (&SSHServer{
-		Auth: fakeAuth{ids: map[string]Identity{
-			gossh.FingerprintSHA256(key): {UserID: 1, Login: "alice", Role: "student"},
-		}},
-		MaxHandshakesPerIP: 1,
-	}).newServer(signer)
-
-	addr := &net.TCPAddr{IP: net.IPv4(10, 0, 0, 1), Port: 4242}
-	accept := func() net.Conn {
-		return srv.ConnCallback(newFakeSSHContext(t), &deadlineConn{addr: addr})
-	}
-
-	ctx := newFakeSSHContext(t)
-	if got := srv.ConnCallback(ctx, &deadlineConn{addr: addr}); got == nil {
-		t.Fatal("the first connection from a fresh address was refused")
-	}
-	if accept() != nil {
-		t.Fatal("the per-IP handshake cap of 1 did not hold")
-	}
-
-	// An unregistered key is not an authentication: the slot stays taken, and
-	// nothing else about the peer changes.
-	other, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	unknown, err := gossh.NewPublicKey(other)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if srv.PublicKeyHandler(ctx, unknown) {
-		t.Fatal("an unregistered fingerprint authenticated")
-	}
-	if accept() != nil {
-		t.Error("a rejected key released the handshake slot")
-	}
-
-	if !srv.PublicKeyHandler(ctx, key) {
-		t.Fatal("the registered fingerprint did not authenticate")
-	}
-	if accept() == nil {
-		t.Error("a registered key did not release its handshake slot; the cap would apply to pushes, not to churn")
-	}
-}
-
 // serveSSH starts s on a loopback port and returns its address.
 func serveSSH(t *testing.T, s *SSHServer) string {
 	t.Helper()
@@ -284,6 +189,24 @@ func expectClosed(t *testing.T, c net.Conn, within time.Duration) {
 			t.Logf("closed with %v", err) // RST instead of FIN is still closed
 		}
 		return
+	}
+}
+
+// expectRefused fails unless the peer was dropped before the key exchange: a
+// connection over budget never gets a version string, while one the server
+// admitted answers immediately - the distinction expectClosed cannot make,
+// since an admitted connection is closed too, at the handshake deadline.
+func expectRefused(t *testing.T, c net.Conn) {
+	t.Helper()
+	if err := c.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 64)
+	switch n, err := c.Read(buf); {
+	case err == nil:
+		t.Fatalf("the connection was admitted; the server answered %q", buf[:n])
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		t.Fatal("the connection was neither answered nor closed")
 	}
 }
 
@@ -348,4 +271,165 @@ func TestSSHHandshakeBudget(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// blockingSigner is a client key that stops between the public-key query and
+// the signature: x/crypto asks the server whether the key is acceptable, and
+// signs only once the test lets it. It embeds gossh.Signer and nothing else, so
+// the client cannot route around Sign through the AlgorithmSigner interface.
+type blockingSigner struct {
+	gossh.Signer
+	asked   chan struct{} // closed when the client asks for a signature
+	release chan struct{} // closed by the test to let Sign finish
+	once    sync.Once
+}
+
+func (s *blockingSigner) Sign(r io.Reader, data []byte) (*gossh.Signature, error) {
+	s.once.Do(func() { close(s.asked) })
+	<-s.release
+	return s.Signer.Sign(r, data)
+}
+
+// closeNotifyConn reports the moment the peer drops the connection. x/crypto
+// reads in a goroutine of its own, so this stays observable while the goroutine
+// driving the handshake is parked inside Sign.
+type closeNotifyConn struct {
+	net.Conn
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (c *closeNotifyConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	if err != nil {
+		c.once.Do(func() { close(c.closed) })
+	}
+	return n, err
+}
+
+// registeredKey generates a client key and the Authenticator that knows it.
+func registeredKey(t *testing.T) (gossh.Signer, Authenticator) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := gossh.NewPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := gossh.NewSignerFromKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signer, fakeAuth{ids: map[string]Identity{
+		gossh.FingerprintSHA256(key): {UserID: 1, Login: "alice", Role: "student"},
+	}}
+}
+
+// waitFor fails the test unless ch is closed within the deadline.
+func waitFor(t *testing.T, ch <-chan struct{}, within time.Duration, msg string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(within):
+		t.Fatal(msg)
+	}
+}
+
+// TestSSHUnsignedQueryKeepsHandshakeSlot: x/crypto calls the publickey callback
+// on the client's query packet - an offer carrying no signature - and caches
+// the answer, so the callback proves nothing about the peer. A public key is
+// public data: were the slot and the grace period released there, one known
+// registered key blob would let an unauthenticated peer park connections past
+// both budgets (SPEC §14).
+func TestSSHUnsignedQueryKeepsHandshakeSlot(t *testing.T) {
+	base, auth := registeredKey(t)
+	signer := &blockingSigner{Signer: base, asked: make(chan struct{}), release: make(chan struct{})}
+	addr := serveSSH(t, &SSHServer{
+		Auth:               auth,
+		MaxHandshakesPerIP: 1,
+		HandshakeTimeout:   2 * time.Second,
+	})
+
+	raw, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	watched := &closeNotifyConn{Conn: raw, closed: make(chan struct{})}
+	dialed := make(chan struct{})
+	// Registered before the unblock below, so it runs after it: the client
+	// goroutine returns only once Sign is free to fail on the dead socket.
+	t.Cleanup(func() { <-dialed })
+	t.Cleanup(func() { close(signer.release) })
+	go func() {
+		defer close(dialed)
+		c, _, _, err := gossh.NewClientConn(watched, addr, &gossh.ClientConfig{
+			User:            "git",
+			Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
+			HostKeyCallback: gossh.InsecureIgnoreHostKey(),
+		})
+		if err == nil {
+			c.Close()
+		}
+	}()
+	waitFor(t, signer.asked, 10*time.Second,
+		"the client never got as far as signing: the server did not answer the key query")
+
+	// The peer has offered a public key and nothing else, so it is still
+	// unauthenticated and must still hold the one slot this address gets: the
+	// second connection is refused before the key exchange.
+	second, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	expectRefused(t, second)
+
+	// And it must still be on the handshake clock, not on the idle one.
+	waitFor(t, watched.closed, 10*time.Second,
+		"the parked connection outlived the handshake deadline")
+}
+
+// TestSSHSessionReleasesHandshakeSlot: the slot still has to come back, or the
+// per-IP cap would bound real pushes instead of churn. The session is the place
+// for it - it opens only after a signature has been verified, and before the
+// transfer, which is the long part, starts.
+func TestSSHSessionReleasesHandshakeSlot(t *testing.T) {
+	signer, auth := registeredKey(t)
+	addr := serveSSH(t, &SSHServer{
+		Auth:               auth,
+		MaxHandshakesPerIP: 1,
+		HandshakeTimeout:   10 * time.Second,
+	})
+
+	client, err := gossh.Dial("tcp", addr, &gossh.ClientConfig{
+		User:            "git",
+		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
+		HostKeyCallback: gossh.InsecureIgnoreHostKey(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	sess, err := client.NewSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	// The handler hands the slot back before it looks at the command, so a
+	// rejected one is enough here: what matters is that a session was reached.
+	if err := sess.Run("whoami"); err == nil {
+		t.Fatal("a command other than git-upload-pack/git-receive-pack was accepted")
+	}
+
+	// The first connection is still open, but it no longer counts against the
+	// handshake budget.
+	second, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	readBanner(t, second)
 }

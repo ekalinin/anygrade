@@ -180,3 +180,105 @@ func TestNoParserLeavesTheOutcomeAlone(t *testing.T) {
 		}
 	}
 }
+
+// mixedGoTestReport is a `go test -json` stream with two passes and two
+// failures - enough lines that a `log_max` cutting the file in half lands
+// mid-report rather than mid-line, which is the shape the bug needs.
+func mixedGoTestReport() string {
+	lines := []string{
+		`{"Action":"run","Test":"T1"}`,
+		`{"Action":"pass","Test":"T1","Elapsed":0}`,
+		`{"Action":"run","Test":"T2"}`,
+		`{"Action":"fail","Test":"T2","Elapsed":0}`,
+		`{"Action":"run","Test":"T3"}`,
+		`{"Action":"pass","Test":"T3","Elapsed":0}`,
+		`{"Action":"run","Test":"T4"}`,
+		`{"Action":"fail","Test":"T4","Elapsed":0}`,
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+// TestParserRefusesALogCutShortByLogMax: `runner.log_max` can sit well under
+// the parser's own size bound (SPEC §13), so a log it truncated is smaller
+// than testreport.MaxInput and would otherwise slip past readLogReport as a
+// complete report - scoring a partial run as if it were whole.
+func TestParserRefusesALogCutShortByLogMax(t *testing.T) {
+	report := mixedGoTestReport()
+	// cat's heredoc reproduces the report byte for byte, unlike printf with an
+	// embedded literal - no quoting to get wrong for a multi-line JSON stream.
+	run := "cat <<'REPORT'\n" + report + "REPORT\nexit 1\n"
+	check := config.Check{Name: "unit", Weight: 1, Parser: testreport.GoTestJSON, Run: run}
+
+	job := localJob(t, time.Minute, []config.Check{check})
+	job.Spec.LogMax = int64(len(report) / 2) // cuts the report in half
+	outcomes, err := (&LocalRunner{}).Run(t.Context(), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := outcomes[0]
+	if !o.ParseFailed {
+		t.Errorf("a report cut short by log_max must be refused: %+v", o)
+	}
+	if len(o.Cases) != 0 {
+		t.Errorf("no cases may be kept from a truncated report: %+v", o.Cases)
+	}
+}
+
+// TestParserReadsTheSameReportUnderALargerLogMax: the same bytes, parsed in
+// full once `log_max` is not the thing cutting them short - the control for
+// the test above.
+func TestParserReadsTheSameReportUnderALargerLogMax(t *testing.T) {
+	report := mixedGoTestReport()
+	run := "cat <<'REPORT'\n" + report + "REPORT\nexit 1\n"
+	check := config.Check{Name: "unit", Weight: 1, Parser: testreport.GoTestJSON, Run: run}
+
+	job := localJob(t, time.Minute, []config.Check{check})
+	job.Spec.LogMax = int64(len(report)) + 1<<20 // comfortably fits
+	outcomes, err := (&LocalRunner{}).Run(t.Context(), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := outcomes[0]
+	if o.ParseFailed {
+		t.Fatalf("check: %+v", o)
+	}
+	if len(o.Cases) != 4 {
+		t.Fatalf("cases: %+v", o.Cases)
+	}
+	if p, s := testreport.Tally(o.Cases); p != 2 || s != 4 {
+		t.Errorf("tally = %d/%d, want 2/4", p, s)
+	}
+}
+
+// TestParserRefusesALogWhoseWriteFailed: a write that failed partway through
+// (capWriter.fail, logtee.go) leaves a partial file with no truncation marker
+// at all - readLogReport must refuse it the same way it refuses a capped one.
+func TestParserRefusesALogWhoseWriteFailed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unit.log")
+	log, err := openCheckLog(path, "unit", nil, 64, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Closing the file under the writer is the portable stand-in for ENOSPC
+	// (see TestCheckLogWriteError): the next write to the descriptor fails.
+	if err := log.file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := log.Write([]byte(`{"Action":"run","Test":"T1"}` + "\n")); err != nil {
+		t.Fatalf("write must not fail the check: %v", err)
+	}
+	if !log.Truncated() {
+		t.Fatal("a failed write must mark the log truncated")
+	}
+
+	job := localJob(t, time.Minute, nil)
+	check := config.Check{Name: "unit", Weight: 1, Parser: testreport.GoTestJSON}
+	o := &Outcome{Name: "unit", LogPath: path, logTruncated: log.Truncated()}
+	attachCases(t.Context(), job, check, o, &LocalRunner{})
+	if !o.ParseFailed {
+		t.Errorf("a log whose write failed must be refused: %+v", o)
+	}
+	if len(o.Cases) != 0 {
+		t.Errorf("no cases may be kept from it: %+v", o.Cases)
+	}
+}

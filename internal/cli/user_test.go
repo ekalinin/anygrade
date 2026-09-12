@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -100,6 +101,27 @@ func TestUserAddAcceptsEveryRole(t *testing.T) {
 	}
 	if _, gerr := db.GetUserByLogin(t.Context(), "nope"); gerr == nil {
 		t.Error("the rejected role still created an account")
+	}
+}
+
+// TestUserAddRefusesCourseLogin: "course" is the sentinel that routes a
+// post-receive hook to the upstream course repo instead of a student's own
+// (SPEC §8), so every account-creation path must refuse it like any other
+// invalid login rather than silently swallowing that student's pushes.
+func TestUserAddRefusesCourseLogin(t *testing.T) {
+	dir := t.TempDir()
+	err := userAdd([]string{"--login", "course", "--data-dir", dir})
+	if err == nil || !strings.Contains(err.Error(), "invalid login") {
+		t.Fatalf("err = %v, want an invalid login error", err)
+	}
+
+	db, oerr := store.Open(t.Context(), dir)
+	if oerr != nil {
+		t.Fatal(oerr)
+	}
+	defer db.Close()
+	if _, gerr := db.GetUserByLogin(t.Context(), "course"); gerr == nil {
+		t.Error("the refused login still created an account")
 	}
 }
 
@@ -219,14 +241,27 @@ func readState(t *testing.T, dir, login string) (string, []store.EventRow) {
 // os.Stderr, so this is the only way to read them back.
 func captureStderr(t *testing.T, f func()) string {
 	t.Helper()
+	return capture(t, &os.Stderr, f)
+}
+
+// captureStdout is the same for the command's own output - the invite links.
+func captureStdout(t *testing.T, f func()) string {
+	t.Helper()
+	return capture(t, &os.Stdout, f)
+}
+
+func capture(t *testing.T, stream **os.File, f func()) string {
+	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	saved := os.Stderr
-	os.Stderr = w
+	saved := *stream
+	*stream = w
+	// Deferred, so a t.Fatal inside f - which unwinds instead of returning -
+	// still hands the stream back and does not silence the rest of the run.
+	defer func() { *stream = saved }()
 	f()
-	os.Stderr = saved
 	w.Close()
 	out, err := io.ReadAll(r)
 	if err != nil {
@@ -324,5 +359,174 @@ func TestUserSetStateUnknownLogin(t *testing.T) {
 
 	if _, events := readState(t, dir, "alice"); len(events) != 0 {
 		t.Errorf("a missing account still logged %+v", events)
+	}
+}
+
+// activateUser gives a login its personal token, which is what the activation
+// page does and what makes the account live.
+func activateUser(t *testing.T, dir, login string) {
+	t.Helper()
+	db, err := store.Open(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	u, err := db.GetUserByLogin(t.Context(), login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.IssueToken(t.Context(), u.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestUserInviteRefusesActivatedAccount: an account that already holds a token
+// cannot be invited again - the link would activate it a second time, issuing
+// a new token and revoking the one the student is using, and handing the
+// account to whoever opens it (SPEC §8). An account that was never activated
+// is still re-invited: that is a lost or expired link being replaced.
+func TestUserInviteRefusesActivatedAccount(t *testing.T) {
+	dir := t.TempDir()
+	out := captureStdout(t, func() {
+		if err := userInvite([]string{"--login", "alice", "--data-dir", dir}); err != nil {
+			t.Fatalf("first invite: %v", err)
+		}
+		if err := userInvite([]string{"--login", "alice", "--data-dir", dir}); err != nil {
+			t.Fatalf("re-invite of a never-activated account: %v", err)
+		}
+	})
+	if n := strings.Count(out, "invite for alice: "); n != 2 {
+		t.Fatalf("%d links printed, want one per invite:\n%s", n, out)
+	}
+
+	activateUser(t, dir, "alice")
+
+	var err error
+	out = captureStdout(t, func() {
+		err = userInvite([]string{"--login", "alice", "--data-dir", dir})
+	})
+	if err == nil {
+		t.Fatal("inviting an activated account must fail")
+	}
+	if !strings.Contains(err.Error(), "alice") || !strings.Contains(err.Error(), "reset-token") {
+		t.Errorf("error = %q, want it to name the login and point at the rotation", err)
+	}
+	if strings.Contains(out, "/invite/") {
+		t.Errorf("the refusal still printed a link:\n%s", out)
+	}
+}
+
+// TestUserInviteCSVSkipsActivated: a roster is re-run to add a few names to a
+// group already invited, so an activated login on it is the ordinary case. It
+// is reported on stderr and skipped, the rest of the roster still gets its
+// links, and the command exits non-zero so the teacher is not left assuming
+// every line went out.
+func TestUserInviteCSVSkipsActivated(t *testing.T) {
+	dir := t.TempDir()
+	roster := filepath.Join(t.TempDir(), "roster.csv")
+	if err := os.WriteFile(roster, []byte("login\nalice\nbob\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	captureStdout(t, func() {
+		if err := userInvite([]string{"--csv", roster, "--data-dir", dir}); err != nil {
+			t.Fatalf("first roster: %v", err)
+		}
+	})
+	activateUser(t, dir, "alice")
+
+	var (
+		err error
+		out string
+	)
+	note := captureStderr(t, func() {
+		out = captureStdout(t, func() {
+			err = userInvite([]string{"--csv", roster, "--data-dir", dir})
+		})
+	})
+	if err == nil || !strings.Contains(err.Error(), "1 of 2") {
+		t.Fatalf("err = %v, want it to count the skipped logins", err)
+	}
+	if !strings.Contains(note, "alice") || strings.Contains(note, "bob") {
+		t.Errorf("stderr = %q, want it to name only the activated login", note)
+	}
+	if strings.Contains(out, "invite for alice: ") {
+		t.Errorf("the skipped login still got a link:\n%s", out)
+	}
+	if !strings.Contains(out, "invite for bob: ") {
+		t.Errorf("the rest of the roster was not invited:\n%s", out)
+	}
+}
+
+// TestUserInviteRefusesOIDCBoundAccount: a student who signs in through the
+// identity provider holds no personal token - the settings page issues their
+// first (SPEC §8) - so a refusal that only looked for a token would keep
+// printing live links for every one of them. The message names the provider
+// rather than `reset-token`, which such an account has nothing to rotate.
+func TestUserInviteRefusesOIDCBoundAccount(t *testing.T) {
+	dir := t.TempDir()
+	captureStdout(t, func() {
+		if err := userInvite([]string{"--login", "sso", "--data-dir", dir}); err != nil {
+			t.Fatalf("first invite: %v", err)
+		}
+	})
+	bindOIDC(t, dir, "sso")
+
+	var err error
+	out := captureStdout(t, func() {
+		err = userInvite([]string{"--login", "sso", "--data-dir", dir})
+	})
+	if err == nil {
+		t.Fatal("inviting a provider-bound account must fail")
+	}
+	if !strings.Contains(err.Error(), "sso") || !strings.Contains(err.Error(), "identity provider") {
+		t.Errorf("error = %q, want it to name the login and the provider", err)
+	}
+	if strings.Contains(err.Error(), "reset-token") {
+		t.Errorf("error = %q, want no rotation hint: the account has no token to rotate", err)
+	}
+	if strings.Contains(out, "/invite/") {
+		t.Errorf("the refusal still printed a link:\n%s", out)
+	}
+}
+
+// TestUserInviteRefusesDisabledAccount: a disabled account can never activate,
+// so a link for it is refused the way the activation page refuses it - and the
+// teacher is pointed at the switch that would make it activatable again.
+func TestUserInviteRefusesDisabledAccount(t *testing.T) {
+	dir := seedUser(t, "alice")
+	if err := userSetState([]string{"--login", "alice", "--data-dir", dir}, "deactivate", "disabled"); err != nil {
+		t.Fatal(err)
+	}
+
+	var err error
+	out := captureStdout(t, func() {
+		err = userInvite([]string{"--login", "alice", "--data-dir", dir})
+	})
+	if err == nil {
+		t.Fatal("inviting a disabled account must fail")
+	}
+	if !strings.Contains(err.Error(), "alice") || !strings.Contains(err.Error(), "reactivate") {
+		t.Errorf("error = %q, want it to name the login and point at reactivate", err)
+	}
+	if strings.Contains(out, "/invite/") {
+		t.Errorf("the refusal still printed a link:\n%s", out)
+	}
+}
+
+// bindOIDC links a login to an identity provider subject, the way a first
+// provider sign-in does.
+func bindOIDC(t *testing.T, dir, login string) {
+	t.Helper()
+	db, err := store.Open(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	u, err := db.GetUserByLogin(t.Context(), login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bound, berr := db.BindOIDC(t.Context(), u.ID, "https://idp.example", "sub-1"); berr != nil || !bound {
+		t.Fatalf("bind: bound=%v err=%v", bound, berr)
 	}
 }

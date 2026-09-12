@@ -146,3 +146,11 @@ func openCheckLog(path, name string, mirror io.Writer, excerpt, logMax int64) (*
 func (l *checkLog) Write(p []byte) (int, error) { return l.w.Write(p) }
 func (l *checkLog) Excerpt() string             { return l.tail.String() + l.cap.note() }
 func (l *checkLog) Close() error                { return l.file.Close() }
+
+// Truncated reports whether the log on disk is not the whole of what the
+// check wrote to it: capWriter either capped it at runner.log_max or its
+// write failed partway through. The excerpt already carries a note either way
+// (capWriter.note); a parser reading the file back off disk needs the same
+// signal, because runner.log_max can sit well under the parser's own size
+// bound and leaves no other trace once the file is reopened.
+func (l *checkLog) Truncated() bool { return l.cap.capped || l.cap.err != nil }

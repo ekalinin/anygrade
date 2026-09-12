@@ -78,6 +78,61 @@ func TestCancelSubmissionRunning(t *testing.T) {
 	}
 }
 
+// TestCancelSubmissionRetrying: a submission parked on an infra-error backoff
+// is still the teacher's to cancel (SPEC §13). While it is armed it holds its
+// attempt slot and blocks the pair's later submissions, so a guard that only
+// knew queued and running rows left the whole retry schedule with no lever.
+func TestCancelSubmissionRetrying(t *testing.T) {
+	db := openTestDB(t)
+	u := testUser(t, db)
+	subs := enqueueN(t, db, u.ID, "t1", 2)
+	if _, ok, err := db.ClaimNext(t.Context(), time.Now()); err != nil || !ok {
+		t.Fatalf("claim failed: ok=%v err=%v", ok, err)
+	}
+	at := time.Now().Add(time.Minute)
+	if ok, err := db.ScheduleRetry(t.Context(), subs[0].ID, &at, "docker unreachable", ""); err != nil || !ok {
+		t.Fatalf("park: ok=%v err=%v", ok, err)
+	}
+	// The armed row blocks the pair's next submission - the state the cancel
+	// has to be able to end.
+	if _, ok, err := db.ClaimNext(t.Context(), time.Now()); err != nil || ok {
+		t.Fatalf("claim behind the armed retry: ok=%v err=%v, want false/nil", ok, err)
+	}
+
+	got, ok, err := db.CancelSubmission(t.Context(), subs[0].ID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("cancel of a retrying submission must succeed")
+	}
+	if got.Status != StatusInfraError {
+		t.Errorf("status = %q, want %q", got.Status, StatusInfraError)
+	}
+	if got.RetryAt != nil {
+		t.Errorf("retry_at = %v, want nil", got.RetryAt)
+	}
+	if got.Counts {
+		t.Error("counts must be false after cancel")
+	}
+	if got.CanceledAt == nil {
+		t.Error("canceled_at must be set")
+	}
+	if got.WorkerNote != "canceled by teacher" || got.StudentNote != "canceled by teacher" {
+		t.Errorf("notes = %q / %q, want the cancel note in both", got.WorkerNote, got.StudentNote)
+	}
+
+	// The canceled row is out of the way: it never comes back itself, and the
+	// pair's next submission is finally claimable.
+	claimed, ok, err := db.ClaimNext(t.Context(), time.Now().Add(24*time.Hour))
+	if err != nil || !ok {
+		t.Fatalf("claim after cancel: ok=%v err=%v", ok, err)
+	}
+	if claimed.ID != subs[1].ID {
+		t.Fatalf("claimed #%d, want the pair's next submission #%d", claimed.ID, subs[1].ID)
+	}
+}
+
 // TestCancelSubmissionDone: a terminal (done) submission cannot be canceled.
 func TestCancelSubmissionDone(t *testing.T) {
 	db := openTestDB(t)
@@ -211,6 +266,51 @@ func TestInviteLifecycle(t *testing.T) {
 		t.Fatal(err)
 	} else if ok {
 		t.Fatal("expired invite must not verify")
+	}
+}
+
+// TestCreateInviteIsOnePerAccount: an account holds at most one live invite,
+// so re-inviting replaces the outstanding link instead of adding a second one.
+// Two live links for one account is what let a re-run roster hand out a
+// working activation for an account somebody was already using (SPEC §8).
+func TestCreateInviteIsOnePerAccount(t *testing.T) {
+	db := openTestDB(t)
+	u := testUser(t, db)
+
+	if err := db.CreateInvite(t.Context(), u.ID, "first", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateInvite(t.Context(), u.ID, "second", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	if err := db.db.QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM invites WHERE user_id = ?`, u.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("%d invite rows for one account, want 1", n)
+	}
+	inv, ok, err := db.VerifyInvite(t.Context(), "second")
+	if err != nil || !ok {
+		t.Fatalf("the newest link does not verify: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := db.VerifyInvite(t.Context(), "first"); err != nil || ok {
+		t.Fatalf("the replaced link still verifies: ok=%v err=%v", ok, err)
+	}
+
+	// A spent link is replaced too: an account whose activation failed is
+	// re-invited, and the upsert has to clear used_at or the new link is born
+	// consumed.
+	if used, cerr := db.ConsumeInvite(t.Context(), inv.ID, time.Now()); cerr != nil || !used {
+		t.Fatalf("consume: used=%v err=%v", used, cerr)
+	}
+	if err := db.CreateInvite(t.Context(), u.ID, "third", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := db.VerifyInvite(t.Context(), "third"); err != nil || !ok {
+		t.Fatalf("the re-invite of a spent link does not verify: ok=%v err=%v", ok, err)
 	}
 }
 

@@ -120,6 +120,68 @@ func TestLocalRunnerTimeoutKillsProcessGroup(t *testing.T) {
 	}
 }
 
+// TestChildEnv checks the server's own ANYGRADE_* variables are dropped from
+// the inherited environment while everything else, including a stale
+// ANYGRADE_ARTIFACTS from the server's own process, is replaced by exactly
+// one export of the given artifacts path.
+func TestChildEnv(t *testing.T) {
+	base := []string{
+		"PATH=/usr/bin",
+		"HOME=/home/anygrade",
+		"ANYGRADE_HIDDEN_GIT_TOKEN=x",
+		"ANYGRADE_WEBHOOK_SECRET=y",
+		"ANYGRADE_OIDC_CLIENT_SECRET=z",
+		"ANYGRADE_ARTIFACTS=/stale/path",
+	}
+	got := childEnv(base, "/work/.anygrade-artifacts")
+
+	want := map[string]bool{
+		"PATH=/usr/bin":       true,
+		"HOME=/home/anygrade": true,
+	}
+	artifactsCount := 0
+	for _, kv := range got {
+		if strings.HasPrefix(kv, "ANYGRADE_ARTIFACTS=") {
+			artifactsCount++
+			if kv != artifactsEnv+"=/work/.anygrade-artifacts" {
+				t.Errorf("artifacts export: got %q", kv)
+			}
+			continue
+		}
+		if strings.HasPrefix(kv, "ANYGRADE_") {
+			t.Errorf("server variable survived: %q", kv)
+		}
+		delete(want, kv)
+	}
+	if artifactsCount != 1 {
+		t.Errorf("ANYGRADE_ARTIFACTS: got %d entries, want exactly 1", artifactsCount)
+	}
+	if len(want) != 0 {
+		t.Errorf("missing inherited entries: %v", want)
+	}
+}
+
+// TestLocalRunnerStripsServerEnv checks the server's own secrets never reach
+// the check log: a check that dumps its environment sees the artifacts
+// export but not a variable only the server process holds.
+func TestLocalRunnerStripsServerEnv(t *testing.T) {
+	t.Setenv("ANYGRADE_HIDDEN_GIT_TOKEN", "s3cr3t")
+
+	r := &LocalRunner{}
+	job := localJob(t, time.Minute, []config.Check{{Name: "dump", Weight: 1, Run: "env"}})
+	outcomes, err := r.Run(t.Context(), job)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := readFile(t, outcomes[0].LogPath)
+	if !strings.Contains(got, "ANYGRADE_ARTIFACTS=") {
+		t.Errorf("missing artifacts export: %q", got)
+	}
+	if strings.Contains(got, "ANYGRADE_HIDDEN_GIT_TOKEN") {
+		t.Errorf("server secret leaked into check log: %q", got)
+	}
+}
+
 // TestLocalRunnerPassesDespitePipeHeldOpen guards against a regression in the
 // cmd.WaitDelay fix for issue #123: a command that exits successfully while
 // something it left running keeps the output pipe open must still be graded

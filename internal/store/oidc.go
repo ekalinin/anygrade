@@ -84,3 +84,22 @@ func (s *DB) HasToken(ctx context.Context, userID int64) (bool, error) {
 		`SELECT COUNT(*) FROM tokens WHERE user_id = ?`, userID).Scan(&n)
 	return n > 0, err
 }
+
+// Activated implements UserStore.
+//
+// Two credentials, one question. A token is the obvious one; a provider
+// binding is the other, and an account that has only ever signed in through
+// the provider carries no token at all - it takes its first from the settings
+// page. Asking about the token alone would leave every such student invitable,
+// which is the same takeover with one step missing.
+//
+// The binding is read from `oidc_sub`, not `oidc_iss`: BindOIDC writes both or
+// neither, and `oidc_sub` is the column its own guard tests for NULL.
+func (s *DB) Activated(ctx context.Context, userID int64) (bool, error) {
+	var ok bool
+	err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS(SELECT 1 FROM tokens WHERE user_id = ?)
+		    OR EXISTS(SELECT 1 FROM users WHERE id = ? AND oidc_sub IS NOT NULL)`,
+		userID, userID).Scan(&ok)
+	return ok, err
+}
