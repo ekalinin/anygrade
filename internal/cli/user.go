@@ -96,6 +96,12 @@ func userAdd(args []string) error {
 
 	u, err := db.CreateUser(ctx, *login, *name, *role)
 	if err != nil {
+		// Name the login instead of surfacing the raw SQLite text: the
+		// analogous case in add-key (fingerprint already registered) gets the
+		// same treatment.
+		if strings.Contains(err.Error(), "UNIQUE constraint") {
+			return fmt.Errorf("login %s already exists", *login)
+		}
 		return err
 	}
 	token, err := db.IssueToken(ctx, u.ID)
@@ -215,6 +221,12 @@ func userResetToken(args []string) error {
 	u, err := db.GetUserByLogin(ctx, *login)
 	if err != nil {
 		return err
+	}
+	// VerifyToken only ever resolves an active user (internal/store/tokens.go),
+	// so a token issued here for a disabled account would never authenticate;
+	// refuse instead of printing a token that quietly cannot be used.
+	if u.State != "active" {
+		return fmt.Errorf("user %s is %s; run `user reactivate --login %s` first", u.Login, u.State, u.Login)
 	}
 	token, err := db.IssueToken(ctx, u.ID)
 	if err != nil {

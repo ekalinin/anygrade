@@ -105,6 +105,17 @@ func checkRetryOptions(base, backoffCap time.Duration, maxRetries int) error {
 	return nil
 }
 
+// checkWorkerOptions rejects a non-positive --workers the same way
+// checkRetryOptions rejects a non-positive retry flag: the queue (SPEC §5)
+// would otherwise silently clamp it to its own default of 4, and an operator
+// who wrote 0 believes they asked for something that does not run checks.
+func checkWorkerOptions(workers int) error {
+	if workers <= 0 {
+		return fmt.Errorf("--workers must be > 0, got %d", workers)
+	}
+	return nil
+}
+
 // checkServeSafety enforces SPEC §14 at startup: --local never binds a
 // non-loopback address, and a public bind with any task resolved to the
 // local runner requires the explicit --allow-local-runner opt-in.

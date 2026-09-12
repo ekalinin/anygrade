@@ -1,12 +1,16 @@
 package app
 
 import (
+	"encoding/hex"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ekalinin/anygrade/internal/oidc"
 )
 
 // TestHTTPServerTimeouts pins the slowloris budget. The negative half matters
@@ -111,6 +115,33 @@ func TestCheckRetryOptions(t *testing.T) {
 	}
 }
 
+// TestCheckWorkerOptions: a non-positive --workers must be refused at startup
+// for the same reason a non-positive retry flag is - the queue would
+// otherwise silently clamp it to its own default of 4, and an operator who
+// wrote 0 believes they turned checking off.
+func TestCheckWorkerOptions(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		workers int
+		wantErr string
+	}{
+		{name: "the shipped default", workers: 4},
+		{name: "one worker is legitimate", workers: 1},
+		{name: "zero", workers: 0, wantErr: "--workers must be > 0"},
+		{name: "negative", workers: -3, wantErr: "--workers must be > 0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkWorkerOptions(tc.workers)
+			switch {
+			case tc.wantErr == "" && err != nil:
+				t.Fatalf("unexpected error: %v", err)
+			case tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)):
+				t.Fatalf("error %v, want containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // TestPlaintextWarning: the personal access token is both the git password and
 // the web login, so a public plaintext bind has to say so out loud - and stay
 // quiet when TLS is handled here or by a proxy the operator vouched for.
@@ -188,6 +219,60 @@ func TestBaseURL(t *testing.T) {
 				t.Errorf("baseURL(%+v) = %q, want %q", tc.opts, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestOidcProviderRequiresExplicitBaseURL: the redirect URI is registered at
+// the provider ahead of time, so oidcProvider must see the operator's own
+// --base-url and nothing baseURL derives from --http-addr - a derived value is
+// always non-empty (e.g. "http://localhost:8080"), which made FromEnv's own
+// "public base URL is unknown" guard unreachable.
+func TestOidcProviderRequiresExplicitBaseURL(t *testing.T) {
+	t.Setenv(oidc.EnvIssuer, "https://idp.example.org")
+	t.Setenv(oidc.EnvClientID, "anygrade")
+
+	opts := Options{HTTPAddr: ":8080"} // baseURL(opts) would derive http://localhost:8080
+	if _, err := oidcProvider(t.Context(), opts, io.Discard); err == nil ||
+		!strings.Contains(err.Error(), "--base-url") {
+		t.Fatalf("oidcProvider with no --base-url = %v, want it to require the flag explicitly", err)
+	}
+}
+
+// TestLoadLeaderboardSecretRejectsWrongLength: the generator always writes
+// leaderboardSecretLen bytes; a file that decodes to any other length - a
+// truncated backup, a key typed by hand - must not silently become a weaker
+// (or wider) HMAC key.
+func TestLoadLeaderboardSecretRejectsWrongLength(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, leaderboardKeyFile)
+	short := "ab" // decodes to one byte, not leaderboardSecretLen
+	if err := os.WriteFile(path, []byte(short+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadLeaderboardSecret(dir); err == nil || !strings.Contains(err.Error(), "remove it to regenerate") {
+		t.Fatalf("loadLeaderboardSecret with a 1-byte key = %v, want the regenerate instruction", err)
+	}
+}
+
+// TestLoadLeaderboardSecretTightensPermissions: a key restored from a backup
+// under a loose umask must end up 0600 on load, exactly like the data dir
+// itself.
+func TestLoadLeaderboardSecretTightensPermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, leaderboardKeyFile)
+	secret := make([]byte, leaderboardSecretLen)
+	if err := os.WriteFile(path, []byte(hex.EncodeToString(secret)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadLeaderboardSecret(dir); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("permissions after load = %#o, want 0600", perm)
 	}
 }
 
