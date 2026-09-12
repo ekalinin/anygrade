@@ -469,6 +469,22 @@ func (q *Queue) wasCanceled(id int64) bool {
 	return q.canceling[id]
 }
 
+// backoffDelay is the pre-jitter half of SPEC §13's schedule: min(base<<
+// retries, cap). base<<retries overflows time.Duration's int64 range well
+// before max-retries lets an operator's budget reach that many retries, so
+// the shift saturates instead: base > cap>>retries is the same comparison as
+// base<<retries > cap but computed with a right shift, which cannot
+// overflow, so retries never drives the left shift itself out of range.
+func backoffDelay(base, cap time.Duration, retries int) time.Duration {
+	if retries <= 0 {
+		return min(base, cap)
+	}
+	if base > cap>>retries {
+		return cap
+	}
+	return min(base<<retries, cap)
+}
+
 // retry schedules an infra_error retry with exponential backoff and jitter;
 // after MaxRetries the submission becomes terminal (retry_at NULL).
 func (q *Queue) retry(sub store.Submission, cause error) {
@@ -484,7 +500,7 @@ func (q *Queue) retry(sub store.Submission, cause error) {
 		q.scheduleRetry(sub, nil, note+exhausted, student)
 		return
 	}
-	delay := min(q.BackoffBase<<sub.Retries, q.BackoffCap)
+	delay := backoffDelay(q.BackoffBase, q.BackoffCap, sub.Retries)
 	// ±10% jitter avoids a thundering herd on a shared cause (docker down).
 	delay += time.Duration((rand.Float64() - 0.5) * 0.2 * float64(delay))
 	at := time.Now().Add(delay)
