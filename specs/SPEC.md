@@ -438,7 +438,7 @@ Student pages:
 Teacher pages (a TA reaches the reviewing ones; see the table in §8):
 
 - matrix: students × tasks with scores and statuses, filters, click-through to any submission and its code (view of the submitted commit);
-- student page: all submissions, token/key management, deactivate - the account controls are drawn for teachers only, so a TA is never offered a button that refuses them;
+- student page: all submissions, token/key management, deactivate, and - for teachers - the account's recent audit rows - both the controls and the rows are drawn for teachers only, so a TA is never offered a button that refuses them, nor a record of one;
 - score adjustment with comment (teacher only);
 - CSV export of the score matrix;
 - queue view: pending/running checks, cancel, recheck;
