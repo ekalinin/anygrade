@@ -6,8 +6,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/ekalinin/anygrade/internal/i18n"
 	"github.com/ekalinin/anygrade/internal/testreport"
@@ -511,11 +513,35 @@ func validateHidden(t *ResolvedTask, add func(Severity, string, string, string, 
 		switch {
 		case h.URL == "":
 			add(SevError, f, "hidden_tests.url", "url is required when source is git")
+		case strings.HasPrefix(h.URL, "-"):
+			// Both url and ref reach git's fetch argv (hidden.Cache); a value
+			// starting with "-" would be read as an option rather than an
+			// address. The diagnostic must not echo the URL: it is reported
+			// back in the teacher's push output.
+			add(SevError, f, "hidden_tests.url", "must not start with '-': git would read it as an option")
 		case urlHasCredentials(h.URL):
 			// The URL reaches git's argv and the server log, so an embedded
 			// token would leak (SPEC §11, §14). The diagnostic must not echo
 			// the URL: it is reported back in the teacher's push output.
 			add(SevError, f, "hidden_tests.url", "must not embed credentials; hidden-tests credentials come from the environment (ANYGRADE_HIDDEN_GIT_TOKEN)")
+		case hasSpaceOrControl(h.URL):
+			// Stays one argv element either way, so not an injection on its
+			// own, but the value also reaches the server log verbatim (SPEC
+			// §14). The diagnostic must not echo it for the same reason.
+			add(SevError, f, "hidden_tests.url", "must not contain whitespace or control characters")
+		case !validHiddenGitURL(h.URL):
+			add(SevError, f, "hidden_tests.url", "must be an https, http, ssh, git, or file url, an absolute local path, or the [user@]host:path form")
+		}
+		if ref := h.Ref; ref != "" {
+			switch {
+			case strings.HasPrefix(ref, "-"):
+				add(SevError, f, "hidden_tests.ref", "must not start with '-': git would read it as an option")
+			case hasSpaceOrControl(ref):
+				// The diagnostic must not echo ref: a control character in it
+				// (what the rule refuses) would otherwise reach the teacher's
+				// terminal verbatim.
+				add(SevError, f, "hidden_tests.ref", "must not contain whitespace or control characters")
+			}
 		}
 	}
 	if h.Source == "local" {
@@ -582,6 +608,41 @@ func urlHasCredentials(raw string) bool {
 		return true
 	}
 	return u.Scheme == "http" || u.Scheme == "https"
+}
+
+// hiddenGitURLSchemes lists the transports hidden_tests.url may name with
+// source: git: the ones git treats as an actual remote, not as an option (a
+// leading "-", refused separately) or a transport helper such as ext:: - git
+// itself already refuses that one (protocol.ext.allow defaults to disabled),
+// but keeping it out of validated metadata too costs nothing.
+var hiddenGitURLSchemes = map[string]bool{
+	"https": true, "http": true, "ssh": true, "git": true, "file": true,
+}
+
+// scpLikeGitURL matches git's ssh shorthand, [user@]host:path
+// (git@github.com:org/repo.git). The host atom cannot start with "-": a
+// leading "-" there would end up passed to ssh as a hostname-shaped argument,
+// which is refused rather than trusted to be caught downstream. The character
+// right after the host's colon must not itself be a colon, so a "scheme::"
+// transport helper (ext::...) is never mistaken for it.
+var scpLikeGitURL = regexp.MustCompile(`^(?:[\w.-]+@)?[\w.][\w.-]*:[^:].*$`)
+
+// hasSpaceOrControl reports whether s contains whitespace or a control
+// character. Embedded in one argv element this is not an injection by
+// itself, but hidden_tests.url and .ref both reach the server log verbatim
+// (SPEC §14), so a value shaped to inject there is refused too.
+func hasSpaceOrControl(s string) bool {
+	return strings.ContainsFunc(s, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
+}
+
+// validHiddenGitURL reports whether url is a form git reads as a remote
+// address rather than as an option or a transport helper: a known scheme, an
+// absolute local path, or the scp-like shorthand.
+func validHiddenGitURL(raw string) bool {
+	if i := strings.Index(raw, "://"); i >= 0 {
+		return hiddenGitURLSchemes[raw[:i]]
+	}
+	return filepath.IsAbs(raw) || scpLikeGitURL.MatchString(raw)
 }
 
 func validatePenaltyWarnings(t *ResolvedTask, add func(Severity, string, string, string, ...any)) {

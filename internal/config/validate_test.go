@@ -556,6 +556,100 @@ func TestValidateHiddenGitURLCredentials(t *testing.T) {
 	}
 }
 
+// TestValidateHiddenGitURLForm covers the hidden_tests.url form rule: the
+// value reaches git's argv (SPEC §11), so it must be a form git reads as a
+// remote address, not an option or an unlisted transport helper.
+func TestValidateHiddenGitURLForm(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	build := func(url string) []Diagnostic {
+		return validateOneTask(&Task{
+			Dir: dir, ID: "w", Name: "W", Score: 100,
+			SolutionFiles: []string{"main.go"},
+			Runner:        RunnerSpec{Type: new("local")},
+			HiddenTests:   &HiddenTests{Source: "git", URL: url, Ref: "main"},
+			Checks:        []Check{{Name: "test", Weight: 100, Run: "go test ./..."}},
+		})
+	}
+
+	cases := []struct {
+		url     string
+		wantErr bool
+	}{
+		{"https://example.com/org/hidden.git", false},
+		{"http://example.com/org/hidden.git", false},
+		{"ssh://git@example.com/org/hidden.git", false},
+		{"git://example.com/org/hidden.git", false},
+		{"file:///srv/hidden.git", false},
+		{"/srv/hidden.git", false},               // absolute local path
+		{"git@github.com:org/hidden.git", false}, // scp-like [user@]host:path
+		{"--upload-pack=touch /tmp/pwned", true},
+		{"-oProxyCommand=touch /tmp/pwned", true},
+		{"ext::sh -c touch%20/tmp/pwned", true}, // transport helper, not a remote
+		{"not a url at all", true},
+		{"user@-x:path", true},                                          // host atom starts with '-'
+		{"https://example.com/x\n--upload-pack=touch /tmp/pwned", true}, // embedded newline
+		{"/srv/x\n--upload-pack=touch /tmp/pwned", true},                // embedded newline
+	}
+	for _, tc := range cases {
+		diags := build(tc.url)
+		got := hasFieldError(diags, "hidden_tests.url")
+		if got != tc.wantErr {
+			t.Errorf("url %q: error=%v, want %v; diagnostics:\n%s", tc.url, got, tc.wantErr, strings.Join(diagStrings(diags), "\n"))
+		}
+		// The diagnostic travels back in the teacher's push output; it must
+		// not repeat the value it complains about.
+		if joined := strings.Join(diagStrings(diags), "\n"); strings.Contains(joined, "pwned") {
+			t.Errorf("url %q: diagnostic echoes the value:\n%s", tc.url, joined)
+		}
+	}
+}
+
+// TestValidateHiddenGitRef covers the hidden_tests.ref rule: like the url, it
+// reaches git's argv (SPEC §11), so an option-shaped or malformed ref is
+// refused before it can reach a fetch. An absent ref keeps meaning HEAD.
+func TestValidateHiddenGitRef(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	build := func(ref string) []Diagnostic {
+		return validateOneTask(&Task{
+			Dir: dir, ID: "w", Name: "W", Score: 100,
+			SolutionFiles: []string{"main.go"},
+			Runner:        RunnerSpec{Type: new("local")},
+			HiddenTests:   &HiddenTests{Source: "git", URL: "https://example.com/org/hidden.git", Ref: ref},
+			Checks:        []Check{{Name: "test", Weight: 100, Run: "go test ./..."}},
+		})
+	}
+
+	cases := []struct {
+		ref     string
+		wantErr bool
+	}{
+		{"", false}, // absent: keeps its current meaning (HEAD)
+		{"main", false},
+		{"v1.0", false},
+		{"--upload-pack=touch /tmp/pwned", true},
+		{"refs/heads/a b", true},  // whitespace
+		{"refs/heads/a\tb", true}, // control character
+	}
+	for _, tc := range cases {
+		diags := build(tc.ref)
+		got := hasFieldError(diags, "hidden_tests.ref")
+		if got != tc.wantErr {
+			t.Errorf("ref %q: error=%v, want %v; diagnostics:\n%s", tc.ref, got, tc.wantErr, strings.Join(diagStrings(diags), "\n"))
+		}
+		// The diagnostic travels back in the teacher's push output; it must
+		// not repeat the value it complains about.
+		if joined := strings.Join(diagStrings(diags), "\n"); strings.Contains(joined, "pwned") {
+			t.Errorf("ref %q: diagnostic echoes the value:\n%s", tc.ref, joined)
+		}
+	}
+}
+
 // validateOneTask validates a single task inside an otherwise valid course.
 func validateOneTask(task *Task) []Diagnostic {
 	rt := Resolve(&Course{}, task)

@@ -122,19 +122,21 @@ func (s *SSHServer) newServer(signer gossh.Signer) *ssh.Server {
 				return false
 			}
 			ctx.SetValue(identityKey, id)
-			// A registered key is the point where the peer stops being a cost
-			// with no name: give the handshake slot back before the transfer,
-			// which is the long part, even starts.
-			established(ctx)
+			// Deliberately no established(ctx) here. x/crypto runs this
+			// callback on the client's *query* packet - an offer of a public
+			// key, with no signature yet - and caches the answer, so returning
+			// true says only that the key is registered, not that the peer
+			// holds it. A public key is public data; releasing the slot and the
+			// grace period here would hand the budgets to anyone who knows one.
 			return true
 		}
 	}
 	return srv
 }
 
-// established releases the handshake budget once the connection has an identity
-// - or, under --local, where there is no publickey callback at all, once it
-// reaches a session, which cannot happen before the handshake is done.
+// established releases the handshake budget once the connection reaches a
+// session, which cannot happen before the handshake is done - under --local
+// too, where there is no publickey callback at all.
 func established(ctx ssh.Context) {
 	if c, ok := ctx.Value(connKey).(*handshakeConn); ok {
 		c.established()
@@ -143,6 +145,10 @@ func established(ctx ssh.Context) {
 
 // handle runs one exec session: parse the git command, authorize, pipe stdio.
 func (s *SSHServer) handle(sess ssh.Session) {
+	// The one place the handshake budget is released (SPEC §14): a session is
+	// opened only after a signature has been verified, and before the transfer,
+	// which is the long part, starts. A peer that authenticates and then opens
+	// nothing keeps its slot until the grace period cuts it, which is the point.
 	established(sess.Context())
 	if _, _, isPty := sess.Pty(); isPty {
 		fmt.Fprintln(sess.Stderr(), "anygrade: interactive sessions are not allowed")

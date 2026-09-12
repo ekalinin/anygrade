@@ -242,6 +242,24 @@ func TestForcePushPicksNewCommit(t *testing.T) {
 	}
 }
 
+// TestFetchRefusesOptionInjection: task.yaml's hidden_tests.ref is
+// teacher-controlled metadata, not administrator input (SPEC §11), and a value
+// shaped like a git option must be refused by git rather than executed as one -
+// `--upload-pack=<cmd>` runs an arbitrary command for a local or file:// remote.
+func TestFetchRefusesOptionInjection(t *testing.T) {
+	url, _ := newRemote(t)
+	c := newCache(t)
+	marker := filepath.Join(t.TempDir(), "pwned")
+	ref := "--upload-pack=touch " + marker + "; exit 1"
+
+	if _, err := c.Source(t.Context(), spec(url, ref, "")); err == nil {
+		t.Fatal("expected the fetch to fail on a malformed ref")
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("git ran the injected command instead of refusing the ref")
+	}
+}
+
 // TestConcurrentSameURL: the worker pool shape - N goroutines, one URL.
 func TestConcurrentSameURL(t *testing.T) {
 	url, _ := newRemote(t)

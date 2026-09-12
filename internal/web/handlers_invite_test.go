@@ -103,3 +103,166 @@ func TestInviteIgnoresPostedKey(t *testing.T) {
 		t.Errorf("the token page does not point at settings:\n%s", rec.Body.String())
 	}
 }
+
+// TestInviteRefusedForActivatedAccount: a link whose account already holds a
+// personal token is dead. Activating again issues a new token - revoking the
+// one its owner is using - and logs whoever opened the link in as them, so the
+// link renders the neutral invalid page on GET and on POST and changes nothing
+// (SPEC §8). The page must stay neutral: naming the account would make the
+// link an oracle for which accounts are live.
+func TestInviteRefusedForActivatedAccount(t *testing.T) {
+	h, _ := newTestSite(t)
+	target, err := h.DB.CreateUser(t.Context(), "bob", "Bob", "student")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	// The shape this backstops: the link was issued while the account had no
+	// token, and `user reset-token` gave it one before the link was opened.
+	if err := h.DB.CreateInvite(t.Context(), target.ID, "inv-tok", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("create invite: %v", err)
+	}
+	held, err := h.DB.IssueToken(t.Context(), target.ID)
+	if err != nil {
+		t.Fatalf("issue token: %v", err)
+	}
+
+	site := New(h)
+	rec := httptest.NewRecorder()
+	site.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/invite/inv-tok", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "invalid, expired, or already used") {
+		t.Fatalf("GET: status %d, body:\n%s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "bob") {
+		t.Errorf("the page names the account behind the link:\n%s", rec.Body.String())
+	}
+	if _, ok, verr := h.DB.VerifyInvite(t.Context(), "inv-tok"); verr != nil || ok {
+		t.Fatalf("the refused link is still live after the GET: ok=%v err=%v", ok, verr)
+	}
+
+	// The same again on POST, against a link the GET has not already spent.
+	if err := h.DB.CreateInvite(t.Context(), target.ID, "inv-again", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("re-create invite: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	site.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/invite/inv-again", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "invalid, expired, or already used") {
+		t.Fatalf("POST: status %d, body:\n%s", rec.Code, rec.Body.String())
+	}
+	if tok := tokenRE.FindString(rec.Body.String()); tok != "" {
+		t.Errorf("the refused activation issued a token: %s", tok)
+	}
+	if cookies := rec.Result().Cookies(); len(cookies) != 0 {
+		t.Errorf("the refused activation opened a session: %v", cookies)
+	}
+	events, err := h.DB.ListEvents(t.Context(), "user.activate", "", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Errorf("the refused activation was audited as one: %+v", events)
+	}
+	if u, ok, verr := h.DB.VerifyToken(t.Context(), held); verr != nil || !ok || u.Login != target.Login {
+		t.Fatalf("the account's own token stopped working: ok=%v err=%v", ok, verr)
+	}
+	if _, ok, verr := h.DB.VerifyInvite(t.Context(), "inv-again"); verr != nil || ok {
+		t.Fatalf("the refused link is still live after the POST: ok=%v err=%v", ok, verr)
+	}
+}
+
+// TestReInviteDoesNotRevokeTheActiveToken replays the report behind the fix: a
+// roster re-run issued a second link for an account that had already been
+// activated, and whoever opened that link was logged in as the student while
+// the student's own token stopped working (SPEC §8).
+func TestReInviteDoesNotRevokeTheActiveToken(t *testing.T) {
+	h, _ := newTestSite(t)
+	target, err := h.DB.CreateUser(t.Context(), "bob", "Bob", "student")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := h.DB.CreateInvite(t.Context(), target.ID, "inv-first", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("create invite: %v", err)
+	}
+
+	site := New(h)
+	rec := httptest.NewRecorder()
+	site.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/invite/inv-first", nil))
+	first := tokenRE.FindString(rec.Body.String())
+	if rec.Code != http.StatusOK || first == "" {
+		t.Fatalf("activation: status %d, body:\n%s", rec.Code, rec.Body.String())
+	}
+
+	// The teacher re-runs the roster and the account is on it again.
+	if err := h.DB.CreateInvite(t.Context(), target.ID, "inv-second", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("second invite: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	site.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/invite/inv-second", nil))
+	if !strings.Contains(rec.Body.String(), "invalid, expired, or already used") {
+		t.Errorf("the second link did not render the neutral page:\n%s", rec.Body.String())
+	}
+	if tok := tokenRE.FindString(rec.Body.String()); tok != "" {
+		t.Errorf("the second link activated the account again: %s", tok)
+	}
+	if cookies := rec.Result().Cookies(); len(cookies) != 0 {
+		t.Errorf("the second link logged its opener in: %v", cookies)
+	}
+	events, err := h.DB.ListEvents(t.Context(), "user.activate", "", 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Errorf("%d user.activate events, want only the student's own", len(events))
+	}
+	if u, ok, verr := h.DB.VerifyToken(t.Context(), first); verr != nil || !ok || u.Login != target.Login {
+		t.Fatalf("the second link revoked the student's token: ok=%v err=%v", ok, verr)
+	}
+}
+
+// TestInviteRefusedForOIDCBoundAccount: an account that signs in through the
+// identity provider holds no personal token - it takes its first from the
+// settings page (SPEC §8) - so a check for a token alone would leave every
+// such student invitable, and the link would issue that first token to
+// whoever opened it and log them in as the student.
+func TestInviteRefusedForOIDCBoundAccount(t *testing.T) {
+	h, _ := newTestSite(t)
+	target, err := h.DB.CreateUser(t.Context(), "bob", "Bob", "student")
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := h.DB.CreateInvite(t.Context(), target.ID, "inv-tok", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("create invite: %v", err)
+	}
+	if bound, berr := h.DB.BindOIDC(t.Context(), target.ID, "https://idp.example", "sub-1"); berr != nil || !bound {
+		t.Fatalf("bind: bound=%v err=%v", bound, berr)
+	}
+
+	site := New(h)
+	rec := httptest.NewRecorder()
+	site.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/invite/inv-tok", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "invalid, expired, or already used") {
+		t.Fatalf("GET: status %d, body:\n%s", rec.Code, rec.Body.String())
+	}
+
+	if err := h.DB.CreateInvite(t.Context(), target.ID, "inv-again", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("re-create invite: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	site.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/invite/inv-again", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "invalid, expired, or already used") {
+		t.Fatalf("POST: status %d, body:\n%s", rec.Code, rec.Body.String())
+	}
+	if tok := tokenRE.FindString(rec.Body.String()); tok != "" {
+		t.Errorf("the refused activation issued a token: %s", tok)
+	}
+	if cookies := rec.Result().Cookies(); len(cookies) != 0 {
+		t.Errorf("the refused activation opened a session: %v", cookies)
+	}
+	// The account is still exactly as its owner left it: no token was created
+	// behind their back, and the link is spent.
+	if held, herr := h.DB.HasToken(t.Context(), target.ID); herr != nil || held {
+		t.Errorf("the refused activation gave the account a token: held=%v err=%v", held, herr)
+	}
+	if _, ok, verr := h.DB.VerifyInvite(t.Context(), "inv-again"); verr != nil || ok {
+		t.Fatalf("the refused link is still live: ok=%v err=%v", ok, verr)
+	}
+}
