@@ -369,3 +369,45 @@ func TestGitSourceFileLimit(t *testing.T) {
 		t.Fatalf("missing path: ok=%v err=%v", ok, err)
 	}
 }
+
+// TestGitSourceOpenRefusesSymlink: git stores a symlink as a blob holding the
+// link target, so `cat-file -t` answers "blob" for it and the overlay would
+// write that path into the workspace as the student's code. The tree entry's
+// mode is the only thing that tells the two apart, and it makes the submission
+// fail terminally instead (SPEC §6.1).
+func TestGitSourceOpenRefusesSymlink(t *testing.T) {
+	requireGit(t)
+	work, bare, _ := newCourseFixture(t)
+	main := filepath.Join(work, "tasks", "01-intro", "main.go")
+	if err := os.Remove(main); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/etc/passwd", main); err != nil {
+		t.Fatal(err)
+	}
+	// A leading colon is pathspec magic rather than a path, so the lookup has
+	// to disarm it: a pathspec that matches nothing would report no mode and
+	// let the link through.
+	if err := os.Symlink("/etc/passwd", filepath.Join(work, ":top.go")); err != nil {
+		t.Fatal(err)
+	}
+	runSrc(t, work, "add", "-A")
+	runSrc(t, work, "-c", "user.name=s", "-c", "user.email=s@s", "commit", "-m", "link")
+	runSrc(t, work, "push", "-q", bare, "main")
+	gs := GitSource{Dir: bare, Commit: runSrc(t, work, "rev-parse", "HEAD")}
+
+	for _, srcRel := range []string{"tasks/01-intro/main.go", ":top.go"} {
+		rc, ok, err := gs.Open(t.Context(), srcRel)
+		if !errors.Is(err, runner.ErrSymlink) || ok || rc != nil {
+			t.Fatalf("symlink %q: rc=%v ok=%v err=%v, want runner.ErrSymlink", srcRel, rc, ok, err)
+		}
+	}
+	// A regular file in the same commit still opens.
+	rc, ok, err := gs.Open(t.Context(), "tasks/01-intro/main_test.go")
+	if err != nil || !ok {
+		t.Fatalf("regular file: ok=%v err=%v", ok, err)
+	}
+	if err := rc.Close(); err != nil {
+		t.Fatal(err)
+	}
+}

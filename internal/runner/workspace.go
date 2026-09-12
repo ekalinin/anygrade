@@ -26,11 +26,19 @@ type Source interface {
 	// Symlinks are refused: a workspace is a plain tree.
 	Export(ctx context.Context, srcRel, dstAbs string) error
 	// Open returns a reader over one source-relative file; ok=false if the file
-	// does not exist or is not a regular file. It is a stream, not a []byte,
-	// because the content comes from an untrusted commit: the caller bounds how
-	// much of it ever reaches memory or disk.
+	// does not exist or is not a regular file, ErrSymlink if the entry is a
+	// symlink. It is a stream, not a []byte, because the content comes from an
+	// untrusted commit: the caller bounds how much of it ever reaches memory or
+	// disk.
 	Open(ctx context.Context, srcRel string) (rc io.ReadCloser, ok bool, err error)
 }
+
+// ErrSymlink is what a Source reports for an entry that is a symlink instead
+// of a regular file. Git stores one as an ordinary blob holding the link
+// target, so nothing downstream could tell it from a solution file: reading it
+// would overlay a path on the grading host as the student's code. The overlay
+// turns it into a TamperError naming the file (SPEC §6.1).
+var ErrSymlink = errors.New("entry is a symlink")
 
 // WorkingCopySource reads files from a directory tree on disk: a checked-out
 // course repo, or a local hidden-tests directory.
@@ -46,7 +54,13 @@ func (s WorkingCopySource) Export(ctx context.Context, srcRel, dstAbs string) er
 
 // Open implements Source.
 func (s WorkingCopySource) Open(_ context.Context, srcRel string) (io.ReadCloser, bool, error) {
-	f, err := os.Open(filepath.Join(s.Root, filepath.FromSlash(srcRel)))
+	name := filepath.Join(s.Root, filepath.FromSlash(srcRel))
+	// Lstat before the open: os.Open follows the link and would hand back the
+	// target's content as the file, which is what GitSource refuses by mode.
+	if st, err := os.Lstat(name); err == nil && st.Mode()&fs.ModeSymlink != 0 {
+		return nil, false, ErrSymlink
+	}
+	f, err := os.Open(name)
 	if os.IsNotExist(err) {
 		return nil, false, nil
 	}
@@ -242,6 +256,11 @@ func overlayStudent(ctx context.Context, a Assembly) error {
 	for _, sf := range a.Task.SolutionFiles {
 		rel := path.Join(a.TaskRelDir, sf)
 		rc, ok, err := a.Student.Open(ctx, rel)
+		if errors.Is(err, ErrSymlink) {
+			// The submitted entry is a link, so its content is a path on the
+			// grading host rather than a solution to grade.
+			return tamperErr("solution file %q is a symlink in the submitted commit", sf)
+		}
 		if err != nil {
 			return infraErr("workspace", fmt.Errorf("read solution file %q: %w", sf, err))
 		}
