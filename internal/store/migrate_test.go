@@ -244,6 +244,61 @@ func TestMigrateKeepsSessionsAndAddsTheOIDCBinding(t *testing.T) {
 	}
 }
 
+// TestMigrateKeepsTheNewestInvite: 0014 holds an account to one invite. A
+// database written before it can carry several - `user invite` re-run over a
+// roster issued a fresh link every time - and the upgrade has to leave exactly
+// the newest, which is the one the teacher last handed out.
+func TestMigrateKeepsTheNewestInvite(t *testing.T) {
+	dir := t.TempDir()
+	seedPre0014DB(t, dir)
+
+	db, err := Open(t.Context(), dir)
+	if err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if _, ok, err := db.VerifyInvite(t.Context(), "newer"); err != nil || !ok {
+		t.Fatalf("the newest link did not survive the upgrade: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := db.VerifyInvite(t.Context(), "older"); err != nil || ok {
+		t.Fatalf("an older link survived the upgrade: ok=%v err=%v", ok, err)
+	}
+	// And a re-invite on the upgraded schema replaces that link rather than
+	// failing on the new index.
+	if err := db.CreateInvite(t.Context(), 1, "fresh", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("re-invite after the upgrade: %v", err)
+	}
+	if _, ok, err := db.VerifyInvite(t.Context(), "newer"); err != nil || ok {
+		t.Fatalf("the replaced link still verifies: ok=%v err=%v", ok, err)
+	}
+}
+
+// seedPre0014DB writes a database as the version before 0014 left it: two live
+// invites for one account, what a re-run roster used to leave behind.
+func seedPre0014DB(t *testing.T, dir string) {
+	t.Helper()
+	raw, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "anygrade.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+
+	for _, name := range migrationsBefore(t, 14) {
+		content, cerr := migrationsFS.ReadFile("migrations/" + name)
+		if cerr != nil {
+			t.Fatal(cerr)
+		}
+		exec(t, raw, string(content))
+	}
+	exec(t, raw, `PRAGMA user_version = 13`)
+	exec(t, raw, `INSERT INTO users (id, login, display_name, role, created_at)
+		VALUES (1, 'bob', 'Bob', 'student', '2026-01-01T00:00:00.000000000Z')`)
+	exec(t, raw, `INSERT INTO invites (id, token_hash, user_id, expires_at) VALUES
+		(1, '`+hashToken("older")+`', 1, '2099-01-01T00:00:00.000000000Z'),
+		(2, '`+hashToken("newer")+`', 1, '2099-01-02T00:00:00.000000000Z')`)
+}
+
 // seedPre0013DB writes a database as the version before 0013 left it, with one
 // live token-bound session, and returns that session's cookie value.
 func seedPre0013DB(t *testing.T, dir string) string {

@@ -214,6 +214,51 @@ func TestInviteLifecycle(t *testing.T) {
 	}
 }
 
+// TestCreateInviteIsOnePerAccount: an account holds at most one live invite,
+// so re-inviting replaces the outstanding link instead of adding a second one.
+// Two live links for one account is what let a re-run roster hand out a
+// working activation for an account somebody was already using (SPEC §8).
+func TestCreateInviteIsOnePerAccount(t *testing.T) {
+	db := openTestDB(t)
+	u := testUser(t, db)
+
+	if err := db.CreateInvite(t.Context(), u.ID, "first", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateInvite(t.Context(), u.ID, "second", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	if err := db.db.QueryRowContext(t.Context(),
+		`SELECT COUNT(*) FROM invites WHERE user_id = ?`, u.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("%d invite rows for one account, want 1", n)
+	}
+	inv, ok, err := db.VerifyInvite(t.Context(), "second")
+	if err != nil || !ok {
+		t.Fatalf("the newest link does not verify: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := db.VerifyInvite(t.Context(), "first"); err != nil || ok {
+		t.Fatalf("the replaced link still verifies: ok=%v err=%v", ok, err)
+	}
+
+	// A spent link is replaced too: an account whose activation failed is
+	// re-invited, and the upsert has to clear used_at or the new link is born
+	// consumed.
+	if used, cerr := db.ConsumeInvite(t.Context(), inv.ID, time.Now()); cerr != nil || !used {
+		t.Fatalf("consume: used=%v err=%v", used, cerr)
+	}
+	if err := db.CreateInvite(t.Context(), u.ID, "third", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := db.VerifyInvite(t.Context(), "third"); err != nil || !ok {
+		t.Fatalf("the re-invite of a spent link does not verify: ok=%v err=%v", ok, err)
+	}
+}
+
 // TestDeleteSSHKeyScoped: deletion is scoped to the key's owner.
 func TestDeleteSSHKeyScoped(t *testing.T) {
 	db := openTestDB(t)

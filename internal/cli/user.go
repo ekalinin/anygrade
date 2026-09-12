@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/csv"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -379,20 +380,53 @@ func userInvite(args []string) error {
 	defer db.Close()
 
 	expiresAt := time.Now().Add(*expires)
+	skipped := 0
 	for _, e := range roster {
-		if err := inviteOne(ctx, db, e.Login, e.Name, *role, expiresAt, *baseURL); err != nil {
+		err := inviteOne(ctx, db, e.Login, e.Name, *role, expiresAt, *baseURL)
+		if err == nil {
+			continue
+		}
+		// A roster is re-run to add a few names to a group already invited, so
+		// a login that cannot be invited is the ordinary case there: report it
+		// and carry on, so the rest still get their links. A single --login
+		// has nothing to carry on with.
+		if _, ok := errors.AsType[errRefused](err); !ok || *csvPath == "" {
 			return err
 		}
+		fmt.Fprintf(os.Stderr, "skipped: %v\n", err)
+		skipped++
 	}
 
-	fmt.Printf("expires: %s\n", expiresAt.Format(time.RFC3339))
-	fmt.Println("the link is one-shot; it lets the student set up a token")
-	fmt.Println("SSH keys are added afterwards in settings, against a signed challenge")
+	if skipped < len(roster) {
+		fmt.Printf("expires: %s\n", expiresAt.Format(time.RFC3339))
+		fmt.Println("the link is one-shot; it lets the student set up a token")
+		fmt.Println("SSH keys are added afterwards in settings, against a signed challenge")
+	}
+	if skipped > 0 {
+		return fmt.Errorf("%d of %d logins skipped", skipped, len(roster))
+	}
 	return nil
 }
 
+// errRefused is a login `user invite` will not issue a link for. It is its own
+// type because a roster skips such a login and goes on with the rest, while
+// any other failure stops the command.
+type errRefused struct{ msg string }
+
+func (e errRefused) Error() string { return e.msg }
+
 // inviteOne creates (or re-invites) a single user and prints its activation
 // link; shared by the single-user and CSV roster paths of `user invite`.
+//
+// An account already in use is refused: activating it again issues a token
+// over the credential its owner is using and logs whoever opened the link in
+// as them (SPEC §8). That is a token or a provider binding - an account that
+// only ever signed in through the identity provider holds no token yet, and
+// asking about the token alone would leave every such student invitable. A
+// disabled one is refused for the reason the activation page refuses it - it
+// can never be activated. An account that exists but was never activated is
+// still re-invited: that is a first link that expired or was lost, and the
+// store replaces it.
 func inviteOne(ctx context.Context, db store.Store, login, name, role string, expiresAt time.Time, baseURL string) error {
 	u, err := db.CreateUser(ctx, login, name, role)
 	if err != nil {
@@ -403,6 +437,32 @@ func inviteOne(ctx context.Context, db store.Store, login, name, role string, ex
 		u, err = db.GetUserByLogin(ctx, login)
 		if err != nil {
 			return err
+		}
+		if u.State != "active" {
+			return errRefused{fmt.Sprintf("%s is disabled and cannot activate; "+
+				"`anygrade user reactivate --login %s` first", u.Login, u.Login)}
+		}
+		active, aerr := db.Activated(ctx, u.ID)
+		if aerr != nil {
+			return aerr
+		}
+		if active {
+			// Which remedy to name depends on how the account is in use: a
+			// token is rotated from here, while one that signs in through the
+			// provider has no token to rotate and takes its first from its own
+			// settings page.
+			held, herr := db.HasToken(ctx, u.ID)
+			if herr != nil {
+				return herr
+			}
+			if held {
+				return errRefused{fmt.Sprintf("%s is already activated; a link would hand the account to "+
+					"whoever opens it - use `anygrade user reset-token --login %s` to rotate its token",
+					u.Login, u.Login)}
+			}
+			return errRefused{fmt.Sprintf("%s is already linked to the identity provider; a link would hand "+
+				"the account to whoever opens it - it takes a personal token from its own settings page",
+				u.Login)}
 		}
 	}
 

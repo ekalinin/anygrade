@@ -510,7 +510,7 @@ Everything lives in one directory, `./.anygrade` by default (`--data-dir` to ove
 
 Backup = copy the data dir, `leaderboard.key` included: it is what makes the anonymized leaderboard aliases stable. A missing key is regenerated and reshuffles every alias; a corrupt one stops the server with `not a hex-encoded secret; remove it to regenerate`. On restart, submissions that were running are re-queued and re-run from scratch.
 
-Upgrading migrates the database in place, and one migration is not invisible: session rows cannot be converted to the hashed form they are now stored in, so they are dropped and everyone is signed out once. Accounts that carried more than one personal token keep the newest.
+Upgrading migrates the database in place, and one migration is not invisible: session rows cannot be converted to the hashed form they are now stored in, so they are dropped and everyone is signed out once. Accounts that carried more than one personal token keep the newest, and an account that carried more than one live invite link keeps the newest of those too - the older links stop working.
 
 ## Development
 
