@@ -72,6 +72,9 @@ func parseReport(ctx context.Context, job Job, c config.Check, logPath string, e
 // validation already refuses one that escapes; this refuses it again, because
 // the value reaches a file open and a container path.
 func reportPath(taskRelDir, file string) (string, error) {
+	if !filepath.IsLocal(filepath.FromSlash(file)) {
+		return "", fmt.Errorf("parser_file %q escapes the workspace", file)
+	}
 	rel := path.Join(taskRelDir, filepath.ToSlash(file))
 	if !filepath.IsLocal(filepath.FromSlash(rel)) {
 		return "", fmt.Errorf("parser_file %q escapes the workspace", file)

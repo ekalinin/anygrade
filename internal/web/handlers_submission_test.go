@@ -521,3 +521,73 @@ func TestSubmissionPageExplainsAnUnreadableReport(t *testing.T) {
 		}
 	}
 }
+
+// TestSubmissionPageLatePenaltyLine: the worker always stores a
+// PenaltyPercent, 0 for an on-time submission, and a non-nil *float64 is
+// truthy in html/template no matter what it points to - so the late-penalty
+// clause must key off the value, not off the pointer being set.
+func TestSubmissionPageLatePenaltyLine(t *testing.T) {
+	tests := []struct {
+		name    string
+		penalty float64
+		wantHas bool
+	}{
+		{"on time", 0, false},
+		{"late", 20, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := newTestSite(t)
+			h.DataDir = t.TempDir()
+			student, err := h.DB.CreateUser(t.Context(), "bob", "Student", "student")
+			if err != nil {
+				t.Fatalf("create user: %v", err)
+			}
+			sub, err := h.DB.Enqueue(t.Context(), store.NewSubmission{
+				UserID: student.ID, TaskID: "t1", CommitSHA: "deadbeef",
+				ReceivedAt: time.Now(), Counts: true,
+			})
+			if err != nil {
+				t.Fatalf("enqueue: %v", err)
+			}
+			if _, ok, err := h.DB.ClaimNext(t.Context(), time.Now()); err != nil || !ok {
+				t.Fatalf("claim: ok=%v err=%v", ok, err)
+			}
+			rows := []store.CheckRow{{Name: "unit", Passed: true, Weight: 1}}
+			if err := h.DB.FinishSubmission(t.Context(), sub.ID, store.SubmissionResult{
+				Status: store.StatusDone, Raw: 100, Penalty: tc.penalty,
+				Final: 100 - tc.penalty, Checks: rows,
+			}); err != nil {
+				t.Fatalf("finish: %v", err)
+			}
+			h.Local = &student
+
+			body := pageBody(t, h, "/submissions/"+itoa(sub.ID))
+			want := i18n.For("en").T("sub.late_penalty")
+			if got := strings.Contains(body, want); got != tc.wantHas {
+				t.Errorf("late penalty text present=%v, want %v:\n%s", got, tc.wantHas, body)
+			}
+		})
+	}
+}
+
+// TestSubmissionPageShowsExcerptForPassingCheck: SPEC §14 promises the stored
+// excerpt to the student "as produced by their tests" - which does not stop
+// being true once a check passes, and the excerpt is otherwise unreachable
+// once the live pane closes.
+func TestSubmissionPageShowsExcerptForPassingCheck(t *testing.T) {
+	h, _ := newTestSite(t)
+	h.DataDir = t.TempDir()
+	student, sub := finishedWithRows(t, h, store.CheckRow{
+		Name: "unit", Weight: 1, Passed: true, LogExcerpt: "ok 1 - it works\n",
+	})
+	h.Local = &student
+
+	body := pageBody(t, h, "/submissions/"+itoa(sub.ID))
+	if !strings.Contains(body, "ok 1 - it works") {
+		t.Errorf("the stored excerpt of a passing check is missing:\n%s", body)
+	}
+	if !strings.Contains(body, `<details class="pane">`) {
+		t.Errorf("the excerpt is not offered inside a collapsed details pane:\n%s", body)
+	}
+}

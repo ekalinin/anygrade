@@ -43,6 +43,11 @@ type submissionData struct {
 	Note     string
 	Running  bool
 	Rejected bool
+	// Late reports whether the penalty actually reduced the score. The worker
+	// always stores a PenaltyPercent, 0 for an on-time submission, and a
+	// non-nil *float64 is truthy in html/template regardless of the value it
+	// points to - so the template cannot decide this by comparing the pointer.
+	Late bool
 	// Flash carries a recheck warning from the redirect that landed here
 	// (submissionURL); the fragment renderer leaves it empty.
 	Flash string
@@ -87,6 +92,7 @@ func (h *Handler) submissionData(sub store.Submission, checks []store.CheckRow, 
 		Note:            sub.StudentNote,
 		Running:         !terminalSubmission(sub),
 		Rejected:        sub.Status == store.StatusRejectedDeadline || sub.Status == store.StatusRejectedLimit,
+		Late:            sub.PenaltyPercent != nil && *sub.PenaltyPercent > 0,
 	}
 	if viewer.CanReview() {
 		data.Note = sub.WorkerNote
