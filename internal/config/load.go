@@ -98,6 +98,25 @@ func LoadAll(repoDir string) (*Resolved, []Diagnostic, error) {
 	if tasksDir == "" {
 		tasksDir = "tasks"
 	}
+	// A task is a directory under the tasks root (SPEC §4.1), and metadata is
+	// always read from the course repo (SPEC §12): tasks_dir must stay inside
+	// it. Refused up front, before the join, so an escaping value never turns
+	// into a walk - on the server the course is loaded from a temp export, so
+	// an unchecked join would read (and, for a deep enough "..", walk) an
+	// arbitrary part of the filesystem on every teacher push and at startup.
+	if !filepath.IsLocal(filepath.Clean(tasksDir)) {
+		diags = append(diags, Diagnostic{
+			Severity: SevError,
+			File:     courseFile,
+			Field:    "tasks_dir",
+			Message:  fmt.Sprintf("must be a relative path inside the repo, got %q", tasksDir),
+		})
+		resolved := &Resolved{
+			Course:    resolveCourse(rawCourse),
+			rawCourse: rawCourse,
+		}
+		return resolved, diags, nil
+	}
 	tasksRoot := filepath.Join(repoDir, tasksDir)
 
 	var tasks []ResolvedTask
