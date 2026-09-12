@@ -190,7 +190,7 @@ export ANYGRADE_OIDC_NAME="University SSO"    # the login button's label
 anygrade serve --base-url https://grade.uni.example
 ```
 
-Register `<base-url>/oidc/callback` as the redirect URI at the provider; it is derived from `--base-url` and is not separately configurable. Two optional knobs: `ANYGRADE_OIDC_SCOPES` (default `openid profile email`) and `ANYGRADE_OIDC_LOGIN_CLAIM` (default `preferred_username`) - the ID token claim matched against an anygrade login. With `email` the provider must also mark the address verified.
+Register `<base-url>/oidc/callback` as the redirect URI at the provider; it is derived from `--base-url` and is not separately configurable. Two optional knobs: `ANYGRADE_OIDC_SCOPES` (default `openid profile email`) and `ANYGRADE_OIDC_LOGIN_CLAIM` (default `preferred_username`) - the ID token claim matched against an anygrade login. With `email` the provider must also mark the address verified, and the account is matched by its local part (`Alice@Uni.example` matches the login `alice`). Only enable it for an issuer that serves a single domain the course owns: the domain is not compared, so against a public multi-tenant provider such as Google - which marks every `gmail.com` address verified - whoever registers `<login>@gmail.com` would be matched to that login here.
 
 Three things are worth knowing before turning it on:
 

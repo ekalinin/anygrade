@@ -17,6 +17,13 @@ import (
 // newOIDCSite is newTestSite with an identity provider wired to a fake issuer.
 func newOIDCSite(t *testing.T) (*Handler, *oidctest.Issuer) {
 	t.Helper()
+	return newOIDCSiteClaim(t, "")
+}
+
+// newOIDCSiteClaim is newOIDCSite with the login claim the operator configured
+// (empty = the default one).
+func newOIDCSiteClaim(t *testing.T, claim string) (*Handler, *oidctest.Issuer) {
+	t.Helper()
 	h, _ := newTestSite(t)
 	is, err := oidctest.New()
 	if err != nil {
@@ -28,6 +35,7 @@ func newOIDCSite(t *testing.T) (*Handler, *oidctest.Issuer) {
 		ClientID:     oidctest.ClientID,
 		ClientSecret: oidctest.ClientSecret,
 		RedirectURL:  "https://grade.example.org" + oidc.CallbackPath,
+		LoginClaim:   claim,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -209,6 +217,85 @@ func TestOIDCRejectsAnUnusableLoginClaim(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestOIDCEmailClaimMatchesTheLocalPart: with `email` as the login claim the
+// value is an address, and no account can be named one (internal/ident), so the
+// local part is what an account is matched by. The domain is not compared - the
+// issuer is the one the operator configured and it owns the addresses it marks
+// verified, which is what makes the local part as trustworthy as
+// `preferred_username` from the same issuer.
+func TestOIDCEmailClaimMatchesTheLocalPart(t *testing.T) {
+	verified := true
+	for _, tc := range []struct {
+		name    string
+		token   oidctest.Token
+		session bool
+	}{
+		{"verified address", oidctest.Token{Subject: "sub-42", Email: "alice@uni.example", EmailVerified: &verified}, true},
+		{"the address is normalized", oidctest.Token{Subject: "sub-42", Email: "Alice@Uni.example", EmailVerified: &verified}, true},
+		{"not verified by the issuer", oidctest.Token{Subject: "sub-42", Email: "alice@uni.example"}, false},
+		{"local part cannot be a login", oidctest.Token{Subject: "sub-42", Email: "a b@x", EmailVerified: &verified}, false},
+		{"local part is not one a login may start with", oidctest.Token{Subject: "sub-42", Email: "-x@x", EmailVerified: &verified}, false},
+		{"a second @ stays in the local part", oidctest.Token{Subject: "sub-42", Email: "a@b@c", EmailVerified: &verified}, false},
+		{"no local part at all", oidctest.Token{Subject: "sub-42", Email: "@x", EmailVerified: &verified}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, is := newOIDCSiteClaim(t, "email")
+			alice, err := h.DB.CreateUser(t.Context(), "alice", "Alice", "student")
+			if err != nil {
+				t.Fatal(err)
+			}
+			rec := signIn(t, h, is, tc.token)
+			if !tc.session {
+				mustNoSession(t, rec, tc.name)
+				// The refusal is before the lookup, so the address never
+				// reaches the audit log - not even as a refused identity.
+				events, err := h.DB.ListEvents(t.Context(), "", "", 50, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, e := range events {
+					if e.Kind == oidcBindEvent || e.Kind == oidcRefusedEvent {
+						t.Errorf("a refused address reached the audit log: %+v", e)
+					}
+				}
+				return
+			}
+			if rec.Code != http.StatusFound {
+				t.Fatalf("callback: status %d, want 302 (body %q)", rec.Code, rec.Body.String())
+			}
+			c := sessionOf(rec)
+			if c == nil {
+				t.Fatal("callback issued no session cookie")
+			}
+			u, ok, err := h.DB.LookupSession(t.Context(), c.Value)
+			if err != nil || !ok || u.ID != alice.ID {
+				t.Fatalf("session resolves to %+v (ok=%v err=%v), want alice", u, ok, err)
+			}
+			bound, ok, err := h.DB.UserByOIDC(t.Context(), is.URL(), "sub-42")
+			if err != nil || !ok || bound.ID != alice.ID {
+				t.Fatalf("UserByOIDC = %+v (ok=%v err=%v), want alice", bound, ok, err)
+			}
+		})
+	}
+}
+
+// TestOIDCDefaultClaimDoesNotSplitAnAddress: splitting belongs to the `email`
+// claim alone, where the issuer had to mark the address verified. Under the
+// default claim the value is a username, and one shaped like an address names
+// no account here.
+func TestOIDCDefaultClaimDoesNotSplitAnAddress(t *testing.T) {
+	h, is := newOIDCSite(t)
+	if _, err := h.DB.CreateUser(t.Context(), "alice", "Alice", "student"); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := signIn(t, h, is, oidctest.Token{Subject: "sub-42", Login: "alice@uni.example"})
+	mustNoSession(t, rec, "an email-shaped preferred_username")
+	if _, ok, _ := h.DB.UserByOIDC(t.Context(), is.URL(), "sub-42"); ok {
+		t.Error("an address in the default claim was bound to an account")
 	}
 }
 
