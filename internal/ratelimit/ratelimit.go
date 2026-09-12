@@ -32,14 +32,19 @@ func AuthKey(remoteAddr, login string) string {
 // can reach the port name their own bucket and take a fresh budget per request
 // - the exact bypass the per-IP budget exists to close.
 //
-// The rightmost entry is the one our own proxy appended, i.e. the address it
-// actually saw; everything to its left came from the client and is forgeable.
-func ClientAddr(remoteAddr, forwarded string, trustForwarded bool) string {
-	if trustForwarded {
-		if i := strings.LastIndex(forwarded, ","); i >= 0 {
-			forwarded = forwarded[i+1:]
+// forwarded is every X-Forwarded-For field line, in the order the request
+// carried them (net/http's Header.Values, not Header.Get, which silently
+// returns only the first). Only the last line is ours: a proxy that adds its
+// own header appends a new field line rather than editing the client's, so
+// everything before it is forgeable. Within that line, the rightmost entry is
+// the one our own proxy appended, i.e. the address it actually saw.
+func ClientAddr(remoteAddr string, forwarded []string, trustForwarded bool) string {
+	if trustForwarded && len(forwarded) > 0 {
+		line := forwarded[len(forwarded)-1]
+		if i := strings.LastIndex(line, ","); i >= 0 {
+			line = line[i+1:]
 		}
-		if host := strings.TrimSpace(forwarded); host != "" {
+		if host := strings.TrimSpace(line); host != "" {
 			return host
 		}
 	}
