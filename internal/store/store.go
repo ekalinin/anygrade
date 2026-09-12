@@ -354,10 +354,10 @@ type SubmissionStore interface {
 	GetSubmission(ctx context.Context, id int64) (Submission, []CheckRow, error)
 	// NextRetryAt returns the earliest pending retry_at, nil if none.
 	NextRetryAt(ctx context.Context) (*time.Time, error)
-	// CancelSubmission marks a queued/running submission canceled by a
-	// teacher: terminal infra_error, counts=0, canceled_at set (the status
-	// CHECK has no 'canceled'; canceled_at is the display marker). ok=false
-	// when the row is already terminal.
+	// CancelSubmission marks a submission canceled by a teacher: terminal
+	// infra_error, counts=0, canceled_at set (the status CHECK has no
+	// 'canceled'; canceled_at is the display marker). Queued, running and
+	// retrying rows all qualify. ok=false when the row is already terminal.
 	CancelSubmission(ctx context.Context, id int64, now time.Time) (Submission, bool, error)
 	// ListAllSubmissions returns every submission across all users, ordered
 	// by user_id, task_id, received_at (matrix + CSV read model).

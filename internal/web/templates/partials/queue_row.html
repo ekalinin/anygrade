@@ -6,7 +6,7 @@
   <td>{{fmtTime .Sub.ReceivedAt}}</td>
   <td>{{if .Sub.WorkerNote}}{{.Sub.WorkerNote}}{{end}}</td>
   <td>
-    {{if or (eq .Sub.Status "queued") (eq .Sub.Status "running")}}
+    {{if .CanCancel}}
     <form method="post" action="/queue/{{.Sub.ID}}/cancel" class="inline"><button type="submit" class="linklike">{{t "common.cancel"}}</button></form>
     {{end}}
     {{if .CanRecheck}}

@@ -78,6 +78,61 @@ func TestCancelSubmissionRunning(t *testing.T) {
 	}
 }
 
+// TestCancelSubmissionRetrying: a submission parked on an infra-error backoff
+// is still the teacher's to cancel (SPEC §13). While it is armed it holds its
+// attempt slot and blocks the pair's later submissions, so a guard that only
+// knew queued and running rows left the whole retry schedule with no lever.
+func TestCancelSubmissionRetrying(t *testing.T) {
+	db := openTestDB(t)
+	u := testUser(t, db)
+	subs := enqueueN(t, db, u.ID, "t1", 2)
+	if _, ok, err := db.ClaimNext(t.Context(), time.Now()); err != nil || !ok {
+		t.Fatalf("claim failed: ok=%v err=%v", ok, err)
+	}
+	at := time.Now().Add(time.Minute)
+	if ok, err := db.ScheduleRetry(t.Context(), subs[0].ID, &at, "docker unreachable", ""); err != nil || !ok {
+		t.Fatalf("park: ok=%v err=%v", ok, err)
+	}
+	// The armed row blocks the pair's next submission - the state the cancel
+	// has to be able to end.
+	if _, ok, err := db.ClaimNext(t.Context(), time.Now()); err != nil || ok {
+		t.Fatalf("claim behind the armed retry: ok=%v err=%v, want false/nil", ok, err)
+	}
+
+	got, ok, err := db.CancelSubmission(t.Context(), subs[0].ID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("cancel of a retrying submission must succeed")
+	}
+	if got.Status != StatusInfraError {
+		t.Errorf("status = %q, want %q", got.Status, StatusInfraError)
+	}
+	if got.RetryAt != nil {
+		t.Errorf("retry_at = %v, want nil", got.RetryAt)
+	}
+	if got.Counts {
+		t.Error("counts must be false after cancel")
+	}
+	if got.CanceledAt == nil {
+		t.Error("canceled_at must be set")
+	}
+	if got.WorkerNote != "canceled by teacher" || got.StudentNote != "canceled by teacher" {
+		t.Errorf("notes = %q / %q, want the cancel note in both", got.WorkerNote, got.StudentNote)
+	}
+
+	// The canceled row is out of the way: it never comes back itself, and the
+	// pair's next submission is finally claimable.
+	claimed, ok, err := db.ClaimNext(t.Context(), time.Now().Add(24*time.Hour))
+	if err != nil || !ok {
+		t.Fatalf("claim after cancel: ok=%v err=%v", ok, err)
+	}
+	if claimed.ID != subs[1].ID {
+		t.Fatalf("claimed #%d, want the pair's next submission #%d", claimed.ID, subs[1].ID)
+	}
+}
+
 // TestCancelSubmissionDone: a terminal (done) submission cannot be canceled.
 func TestCancelSubmissionDone(t *testing.T) {
 	db := openTestDB(t)

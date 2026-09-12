@@ -78,6 +78,22 @@ func subDisplayStatus(s store.Submission) string {
 	return s.Status
 }
 
+// CanCancel reports whether the row should offer the cancel button (SPEC §10).
+//
+// Every display status a submission can still leave by itself qualifies:
+// `queued` and `running` have a claim or a live run to stop, and `retrying` is
+// the same submission waiting out a backoff - it holds the student's attempt
+// slot and blocks the pair until the schedule runs out, which is exactly what
+// the teacher needs a lever for (SPEC §13). The terminal ones - `error`,
+// `canceled`, and every status outside this view - have nothing left to stop.
+func (r queueRow) CanCancel() bool {
+	switch r.Status {
+	case store.StatusQueued, store.StatusRunning, gradebook.StatusRetrying:
+		return true
+	}
+	return false
+}
+
 // CanRecheck reports whether the row should offer the recheck button
 // (SPEC §10: the queue view carries both cancel and recheck).
 //

@@ -396,6 +396,13 @@ func (q *Queue) fail(ctx context.Context, sub store.Submission, cause error) {
 // flips terminal in the DB; a running row additionally gets its execution
 // context canceled (the docker runner kills the live container). ok=false
 // when the submission already finished.
+//
+// A row waiting out a retry backoff needs nothing beyond the DB write either:
+// it is not in q.running, so there is no job to interrupt, and the write
+// clears retry_at, which is the only thing that would have brought it back to
+// ClaimNext. Nothing re-arms it afterwards - a worker that claimed it in the
+// same instant meets the interlock below, and ScheduleRetry refuses any row
+// that already carries a canceled_at (SPEC §13).
 func (q *Queue) Cancel(ctx context.Context, id int64) (bool, error) {
 	q.init()
 	// Mark BEFORE the DB write: if the flip beats a concurrent finish, the

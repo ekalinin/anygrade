@@ -609,6 +609,166 @@ func TestTeacherCancelBeforeJobRegistered(t *testing.T) {
 	}
 }
 
+// TestTeacherCancelRetrying: the submission is not running at all - it waits
+// on an infra-error backoff - and the cancel still has to land (SPEC §13).
+// Nothing is in flight to interrupt, so the whole cancel is the row: the
+// attempt slot goes back to the student, the pair stops being blocked, and the
+// completion sink hears the outcome once.
+func TestTeacherCancelRetrying(t *testing.T) {
+	q, db, u, prep := newTestQueue(t)
+	prep.failErr = &runner.InfraError{Op: "workspace", Err: errors.New("disk on fire")}
+	rec := &recorder{}
+	q.Notify = rec
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = q.Start(ctx) }()
+
+	sub, err := q.Enqueue(ctx, store.NewSubmission{
+		UserID: u.ID, TaskID: "t1", CommitSHA: "abc", ReceivedAt: time.Now(), Counts: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parked := waitStatus(t, db, sub.ID, store.StatusInfraError)
+	if parked.RetryAt == nil {
+		t.Fatalf("the submission is not waiting on a backoff: %+v", parked)
+	}
+	// Stop the pool: from here the row's only mover is the teacher, and the
+	// default backoff is far longer than the rest of the test.
+	cancel()
+	<-done
+
+	if n := CountAttempts(attemptHistory(t, db, u.ID, "t1")); n != 1 {
+		t.Fatalf("CountAttempts = %d, want 1 while the retry is armed", n)
+	}
+
+	ok, err := q.Cancel(t.Context(), sub.ID)
+	if err != nil || !ok {
+		t.Fatalf("Cancel: ok=%v err=%v", ok, err)
+	}
+	got, _, err := db.GetSubmission(t.Context(), sub.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != store.StatusInfraError || got.CanceledAt == nil ||
+		got.RetryAt != nil || got.Counts {
+		t.Fatalf("canceled row: %+v", got)
+	}
+	if got.WorkerNote != "canceled by teacher" || got.StudentNote != "canceled by teacher" {
+		t.Errorf("notes = %q / %q, want the cancel note in both", got.WorkerNote, got.StudentNote)
+	}
+	// A canceled submission never ran, so it consumes no attempt.
+	if n := CountAttempts(attemptHistory(t, db, u.ID, "t1")); n != 0 {
+		t.Fatalf("CountAttempts = %d, want 0 after the cancel", n)
+	}
+	// The armed retry published nothing terminal; the cancel is the row's one
+	// and only outcome, reported under the status the row actually carries.
+	completions := rec.all()
+	want := Completion{SubID: sub.ID, UserID: u.ID, TaskID: "t1", Status: store.StatusInfraError}
+	if len(completions) != 1 || completions[0] != want {
+		t.Fatalf("completions = %+v, want exactly one %+v", completions, want)
+	}
+
+	// And the pair is unblocked: the student's next push is claimable again.
+	next, err := db.Enqueue(t.Context(), store.NewSubmission{
+		UserID: u.ID, TaskID: "t1", CommitSHA: "def", ReceivedAt: time.Now(), Counts: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok, err := db.ClaimNext(t.Context(), time.Now())
+	if err != nil || !ok || claimed.ID != next.ID {
+		t.Fatalf("claim after cancel: #%d ok=%v err=%v, want #%d", claimed.ID, ok, err, next.ID)
+	}
+}
+
+// attemptHistory reads one pair's submissions, the input the attempt policy
+// is asked about.
+func attemptHistory(t *testing.T, db *store.DB, userID int64, taskID string) []store.Submission {
+	t.Helper()
+	history, err := db.ListByUserTask(t.Context(), userID, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return history
+}
+
+// TestTeacherCancelRacesFiringRetry: the cancel arrives at the same instant the
+// backoff expires, so it meets the row in one of two shapes - still parked, or
+// already claimed back into running - and the store guard has to cover both.
+// Whichever way the two writes fall, the row ends canceled and terminal: a
+// re-armed retry_at would hand the canceled submission straight back to
+// ClaimNext, which is the one outcome SPEC §13 rules out.
+func TestTeacherCancelRacesFiringRetry(t *testing.T) {
+	q, db, u, prep := newTestQueue(t)
+	prep.failErr = &runner.InfraError{Op: "workspace", Err: errors.New("disk on fire")}
+	rec := &recorder{}
+	q.Notify = rec
+
+	// No worker pool: the claim loop's one step is played by hand, so the only
+	// concurrency here is the race the test is about.
+	const rounds = 32
+	for range rounds {
+		sub, err := q.Enqueue(t.Context(), store.NewSubmission{
+			UserID: u.ID, TaskID: "t1", CommitSHA: "abc", ReceivedAt: time.Now(), Counts: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok, err := db.ClaimNext(t.Context(), time.Now()); err != nil || !ok {
+			t.Fatalf("claim: ok=%v err=%v", ok, err)
+		}
+		fired := time.Now().Add(-time.Second) // the backoff is already over
+		if ok, err := db.ScheduleRetry(t.Context(), sub.ID, &fired, "disk on fire", ""); err != nil || !ok {
+			t.Fatalf("park: ok=%v err=%v", ok, err)
+		}
+
+		var (
+			wg       sync.WaitGroup
+			start    = make(chan struct{})
+			canceled bool
+		)
+		wg.Go(func() {
+			<-start
+			canceled, _ = q.Cancel(t.Context(), sub.ID)
+		})
+		wg.Go(func() {
+			<-start
+			claimed, ok, err := db.ClaimNext(t.Context(), time.Now())
+			if err != nil || !ok {
+				return // the cancel got there first: nothing left to claim
+			}
+			q.process(t.Context(), claimed)
+		})
+		close(start) // release both at once
+		wg.Wait()
+
+		if !canceled {
+			t.Fatalf("#%d: Cancel refused a submission that was still on its way back", sub.ID)
+		}
+		got, _, err := db.GetSubmission(t.Context(), sub.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != store.StatusInfraError || got.CanceledAt == nil ||
+			got.RetryAt != nil || got.Counts {
+			t.Fatalf("#%d: the race left the row re-armed or uncanceled: %+v", sub.ID, got)
+		}
+	}
+	// One submission, one terminal outcome, whichever side of the race wrote
+	// it: a retry that lost the race publishes no completion of its own.
+	completions := rec.all()
+	if len(completions) != rounds {
+		t.Fatalf("got %d completions, want %d", len(completions), rounds)
+	}
+	for _, c := range completions {
+		if c.Status != store.StatusInfraError {
+			t.Errorf("completion %+v: status must be the row's own", c)
+		}
+	}
+}
+
 // TestGracefulShutdownRequeues: cancel during a long check → the submission
 // returns to queued with no retry counted.
 func TestGracefulShutdownRequeues(t *testing.T) {
