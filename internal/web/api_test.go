@@ -655,3 +655,45 @@ func TestAPIResponseShapes(t *testing.T) {
 		}
 	})
 }
+
+// TestAPIRefusalsStayInTheEnvelope: everything under /api/v1/ answers in the
+// failure envelope, including the two refusals the mux used to write itself
+// (SPEC §10.2). A client that always decodes JSON must never meet net/http's
+// plain text.
+func TestAPIRefusalsStayInTheEnvelope(t *testing.T) {
+	h, _ := newTestSite(t)
+	setCourse(h)
+	_, tok := newAPIUser(t, h, "alice", "student")
+
+	for _, tc := range []struct {
+		name, method, target, code, allow string
+		status                            int
+	}{
+		{"a write on a known route", http.MethodPost, "/api/v1/me",
+			codeMethodNotAllowed, http.MethodGet, http.StatusMethodNotAllowed},
+		{"an unknown path", http.MethodGet, "/api/v1/nope",
+			codeNotFound, "", http.StatusNotFound},
+		{"a write on an unknown path", http.MethodPost, "/api/v1/nope",
+			codeNotFound, "", http.StatusNotFound},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.target, nil)
+			req.Header.Set("Authorization", "Bearer "+tok)
+			rec := httptest.NewRecorder()
+			New(h).ServeHTTP(rec, req)
+
+			if rec.Code != tc.status {
+				t.Fatalf("%s %s: status %d, want %d\n%s",
+					tc.method, tc.target, rec.Code, tc.status, rec.Body.String())
+			}
+			if got := apiErrCode(t, rec); got != tc.code {
+				t.Errorf("%s %s: error code %q, want %q", tc.method, tc.target, got, tc.code)
+			}
+			// The Allow header is the machine-readable half of a 405: it names
+			// the one verb v1 has.
+			if got := rec.Header().Get("Allow"); got != tc.allow {
+				t.Errorf("%s %s: Allow %q, want %q", tc.method, tc.target, got, tc.allow)
+			}
+		})
+	}
+}

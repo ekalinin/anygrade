@@ -1,11 +1,16 @@
 package web
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/ekalinin/anygrade/internal/ident"
@@ -51,6 +56,43 @@ type oidcFlow struct {
 	Nonce    string `json:"n"`
 	Verifier string `json:"v"`
 	Next     string `json:"r"`
+	IssuedAt int64  `json:"t"` // unix seconds; see takeOIDCFlow
+}
+
+// initOIDCKey generates the key the flow cookie is signed with. New calls it
+// while registering the provider's routes, and it keeps a key it already has:
+// the site is built more than once in tests, and a second key would refuse the
+// cookies the first one wrote.
+func (h *Handler) initOIDCKey() {
+	if len(h.oidcKey) > 0 {
+		return
+	}
+	h.oidcKey = make([]byte, 32)
+	_, _ = rand.Read(h.oidcKey) // never fails: crypto/rand dies rather than hand back weak bytes
+}
+
+// signOIDCFlow encodes one flow and appends a tag over the encoded payload.
+// The cookie is server state parked in a browser and the callback trusts every
+// field in it, so what comes back has to be provably this server's (SPEC §14).
+func (h *Handler) signOIDCFlow(f oidcFlow) (string, error) {
+	if len(h.oidcKey) == 0 {
+		return "", errors.New("oidc: the flow key is not initialized")
+	}
+	payload, err := json.Marshal(f)
+	if err != nil {
+		return "", err
+	}
+	body := base64.RawURLEncoding.EncodeToString(payload)
+	return body + "." + h.oidcMAC(body), nil
+}
+
+// oidcMAC is the tag over one encoded payload under this process's key. Both
+// callers refuse an empty key before reaching it: HMAC under one is HMAC under
+// a key anybody has, which would make the tag decorative.
+func (h *Handler) oidcMAC(body string) string {
+	mac := hmac.New(sha256.New, h.oidcKey)
+	mac.Write([]byte(body))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 // oidcStart sends the browser to the provider. The route exists only when a
@@ -70,9 +112,9 @@ func (h *Handler) oidcStart(w http.ResponseWriter, r *http.Request) {
 		h.oidcRefuse(w, r, "oidc_unavailable", http.StatusServiceUnavailable, "building the authorization url failed", err)
 		return
 	}
-	payload, err := json.Marshal(oidcFlow{
+	value, err := h.signOIDCFlow(oidcFlow{
 		State: flow.State, Nonce: flow.Nonce, Verifier: flow.Verifier,
-		Next: safeNext(r.FormValue("next")),
+		Next: safeNext(r.FormValue("next")), IssuedAt: time.Now().Unix(),
 	})
 	if err != nil {
 		h.oidcRefuse(w, r, "oidc_failed", http.StatusInternalServerError, "encoding the login state failed", err)
@@ -80,7 +122,7 @@ func (h *Handler) oidcStart(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     oidcCookie,
-		Value:    base64.RawURLEncoding.EncodeToString(payload),
+		Value:    value,
 		Path:     "/oidc",
 		MaxAge:   int(oidcFlowTTL.Seconds()),
 		HttpOnly: true,
@@ -257,7 +299,12 @@ func (h *Handler) takeOIDCFlow(w http.ResponseWriter, r *http.Request) (oidcFlow
 	if err != nil || c.Value == "" {
 		return oidcFlow{}, false
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(c.Value)
+	// The tag first: everything below reads a payload a browser handed back.
+	body, tag, ok := strings.Cut(c.Value, ".")
+	if !ok || len(h.oidcKey) == 0 || !hmac.Equal([]byte(tag), []byte(h.oidcMAC(body))) {
+		return oidcFlow{}, false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(body)
 	if err != nil {
 		return oidcFlow{}, false
 	}
@@ -266,6 +313,12 @@ func (h *Handler) takeOIDCFlow(w http.ResponseWriter, r *http.Request) (oidcFlow
 		return oidcFlow{}, false
 	}
 	if f.State == "" || f.Nonce == "" || f.Verifier == "" {
+		return oidcFlow{}, false
+	}
+	// The deadline the payload carries itself. MaxAge only asks the browser to
+	// forget the cookie; a client that keeps it would otherwise be able to
+	// finish the flow whenever the provider's code is still redeemable.
+	if time.Since(time.Unix(f.IssuedAt, 0)) > oidcFlowTTL {
 		return oidcFlow{}, false
 	}
 	return f, true

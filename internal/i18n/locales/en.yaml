@@ -143,6 +143,7 @@ task.no_readme: "No README.md in the task directory."
 # submission.html
 submission.title: "Submission"
 submission.crumb: "submission"
+submission.student: "student"
 submission.received: "received"
 submission.attempt: "attempt"
 submission.live_output: "Live output"

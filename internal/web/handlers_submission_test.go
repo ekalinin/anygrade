@@ -521,3 +521,44 @@ func TestSubmissionPageExplainsAnUnreadableReport(t *testing.T) {
 		}
 	}
 }
+
+// TestSubmissionPageNamesTheOwnerForAReviewer: a reviewer who lands here from
+// a matrix cell has to be able to tell whose work it is and to open the code
+// (SPEC §10), and the breadcrumb has to lead back to that student's task
+// rather than to the reviewer's own. The owner's own page keeps the task
+// breadcrumb it always had and is offered no staff route (SPEC §14).
+func TestSubmissionPageNamesTheOwnerForAReviewer(t *testing.T) {
+	h, _ := newTestSite(t)
+	h.DataDir = t.TempDir()
+	setCourse(h)
+	student, sub := finishedWithChecks(t, h, "unit")
+	id := itoa(sub.ID)
+
+	teacher, err := h.DB.GetUserByLogin(t.Context(), "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.Local = &teacher
+	body := pageBody(t, h, "/submissions/"+id)
+	for _, want := range []string{
+		`href="/students/bob"`,
+		`href="/students/bob/submissions/` + id + `/code"`,
+		`href="/students/bob?task=t1"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the reviewer's submission page has no %s:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, `href="/tasks/t1"`) {
+		t.Errorf("the reviewer's breadcrumb still points at their own task page:\n%s", body)
+	}
+
+	h.Local = &student
+	body = pageBody(t, h, "/submissions/"+id)
+	if !strings.Contains(body, `href="/tasks/t1"`) {
+		t.Errorf("the owner's breadcrumb no longer points at their task page:\n%s", body)
+	}
+	if strings.Contains(body, "/students/") {
+		t.Errorf("the owner's page offers a staff-only link:\n%s", body)
+	}
+}

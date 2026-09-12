@@ -3,6 +3,7 @@ package web
 import (
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -239,4 +240,50 @@ func TestFilterRows(t *testing.T) {
 			t.Fatalf("got %d rows, want 2 (unknown task falls back to any-cell match)", len(got))
 		}
 	})
+}
+
+// TestMatrixFilterListsEveryDerivedStatus: the filter is only useful if it
+// offers what a cell can actually hold, and gradebook.DeriveStatus is the one
+// place that decides that. A teacher who cannot ask for the queued, running or
+// hand-scored work has to read the whole board for it.
+func TestMatrixFilterListsEveryDerivedStatus(t *testing.T) {
+	derived := []string{
+		gradebook.StatusNotStarted, store.StatusQueued, store.StatusRunning,
+		gradebook.StatusRetrying, gradebook.StatusError, gradebook.StatusCanceled,
+		gradebook.StatusRejected, gradebook.StatusPassed, gradebook.StatusPartial,
+		gradebook.StatusFailed, gradebook.StatusOverridden,
+	}
+	for _, s := range derived {
+		if !slices.Contains(matrixStatuses, s) {
+			t.Errorf("the filter does not offer %q, which a cell can hold", s)
+		}
+	}
+	for _, s := range matrixStatuses {
+		if !slices.Contains(derived, s) {
+			t.Errorf("the filter offers %q, which no cell ever holds", s)
+		}
+	}
+}
+
+// TestMatrixFilterSelectsAQueuedRow is the list above as the page keeps it:
+// the option is rendered and filtering on it selects the row whose cell holds
+// that status.
+func TestMatrixFilterSelectsAQueuedRow(t *testing.T) {
+	h, _ := newTestSite(t)
+	setCourse(h)
+	alice, _ := newSession(t, h, "alice", store.RoleStudent)
+	newSession(t, h, "bob", store.RoleStudent)
+	_, session := newSession(t, h, "prof", store.RoleTeacher)
+	enqueue(t, h, alice.ID, "t1", time.Now())
+
+	body := do(h, http.MethodGet, "/matrix?status="+store.StatusQueued, session).Body.String()
+	if want := `value="` + store.StatusQueued + `"`; !strings.Contains(body, want) {
+		t.Errorf("the status filter has no %s option:\n%s", store.StatusQueued, body)
+	}
+	if !strings.Contains(body, ">alice<") {
+		t.Errorf("filtering on %s dropped the queued row:\n%s", store.StatusQueued, body)
+	}
+	if strings.Contains(body, ">bob<") {
+		t.Errorf("filtering on %s kept a row with nothing queued:\n%s", store.StatusQueued, body)
+	}
 }
