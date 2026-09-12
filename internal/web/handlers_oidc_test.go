@@ -447,6 +447,11 @@ func TestOIDCCallbackChargesTheFailureBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Started while the budget is still fresh, so authURL and flow are a
+	// legitimate in-flight login - not the garbage the loop below spends the
+	// budget with.
+	authURL, flow := startOIDC(t, h, "")
+
 	for i := range max {
 		if rec := callbackOIDC(h, nil, "nope", "nope"); rec.Code != http.StatusForbidden {
 			t.Fatalf("attempt %d: status %d, want 403", i, rec.Code)
@@ -455,10 +460,62 @@ func TestOIDCCallbackChargesTheFailureBudget(t *testing.T) {
 	if rec := callbackOIDC(h, nil, "nope", "nope"); rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("status %d, want 429 once the budget is spent", rec.Code)
 	}
-	// A valid login clears it again, so a student who fumbled their password at
-	// the provider a few times is not locked out afterwards.
-	if rec := signIn(t, h, is, oidctest.Token{Subject: "sub-42", Login: "alice"}); rec.Code != http.StatusTooManyRequests {
+	// A valid exchange cannot buy its way past a spent budget either: the
+	// reservation is refused before the code or the ID token are ever looked
+	// at, even though this code and state would otherwise redeem for a real
+	// account.
+	code, state, err := is.AuthCode(authURL, oidctest.Token{Subject: "sub-42", Login: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := callbackOIDC(h, flow, code, state); rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("status %d, want 429: the budget must not be bypassable", rec.Code)
+	}
+	// The budget is shared with /oidc/start, so a spent budget refuses even a
+	// fresh attempt to begin a new login - there is no route back in until the
+	// window passes.
+	rec := httptest.NewRecorder()
+	New(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/oidc/start", nil))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status %d, want 429: the budget must not be bypassable", rec.Code)
+	}
+}
+
+// TestOIDCStartChargesTheFailureBudget: a start is the other unauthenticated
+// route that dials the issuer (building the authorization url triggers
+// discovery when it is not cached), so it must share the callback's budget
+// instead of running unthrottled against a down provider.
+func TestOIDCStartChargesTheFailureBudget(t *testing.T) {
+	const max = 3
+	h, is := newOIDCSite(t)
+	h.Limit = ratelimit.New(max, time.Minute)
+	is.Close() // unreachable: discovery fails on every start
+
+	get := func() *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		New(h).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/oidc/start", nil))
+		return rec
+	}
+	for i := range max {
+		if rec := get(); rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("attempt %d: status %d, want 503 (provider unreachable)", i, rec.Code)
+		}
+	}
+	if rec := get(); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status %d, want 429 once the budget is spent", rec.Code)
+	}
+}
+
+// TestOIDCStartNotThrottledWhenProviderWorks: a start that reaches the
+// provider must not spend the budget it shares with the callback, or a
+// classroom of students starting logins in a burst would lock each other out.
+func TestOIDCStartNotThrottledWhenProviderWorks(t *testing.T) {
+	const max = 3
+	h, _ := newOIDCSite(t)
+	h.Limit = ratelimit.New(max, time.Minute)
+
+	for range max * 2 {
+		startOIDC(t, h, "")
 	}
 }
 

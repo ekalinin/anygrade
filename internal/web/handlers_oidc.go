@@ -56,9 +56,23 @@ type oidcFlow struct {
 // oidcStart sends the browser to the provider. The route exists only when a
 // provider is configured (see New), so with no configuration this is a 404 and
 // the login page shows no button.
+//
+// It is on the same failure budget as the callback (SPEC §14): building the
+// authorization url dials the issuer for discovery whenever the cache is
+// stale or empty, so a start is exactly as capable of extracting outbound
+// requests from the server as a failing callback is.
 func (h *Handler) oidcStart(w http.ResponseWriter, r *http.Request) {
+	rv, allowed := h.Limit.Reserve(ratelimit.AuthKey(h.clientAddr(r), oidcLimitKey))
+	if !allowed {
+		w.WriteHeader(http.StatusTooManyRequests)
+		h.renderPage(w, r, "login", h.loginData(r, "too_many_attempts"))
+		return
+	}
+	defer rv.Release() // no-op once the outcome below is reported
+
 	flow, err := oidc.NewFlow()
 	if err != nil {
+		rv.Fail()
 		h.oidcRefuse(w, r, "oidc_failed", http.StatusInternalServerError, "generating the login state failed", err)
 		return
 	}
@@ -67,6 +81,7 @@ func (h *Handler) oidcStart(w http.ResponseWriter, r *http.Request) {
 		// Discovery is the usual failure here, i.e. the provider is down. The
 		// student is told the provider could not be reached and can still use
 		// the token form on the same page.
+		rv.Fail()
 		h.oidcRefuse(w, r, "oidc_unavailable", http.StatusServiceUnavailable, "building the authorization url failed", err)
 		return
 	}
@@ -75,9 +90,11 @@ func (h *Handler) oidcStart(w http.ResponseWriter, r *http.Request) {
 		Next: safeNext(r.FormValue("next")),
 	})
 	if err != nil {
+		rv.Fail()
 		h.oidcRefuse(w, r, "oidc_failed", http.StatusInternalServerError, "encoding the login state failed", err)
 		return
 	}
+	rv.Success()
 	http.SetCookie(w, &http.Cookie{
 		Name:     oidcCookie,
 		Value:    base64.RawURLEncoding.EncodeToString(payload),
