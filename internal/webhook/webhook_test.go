@@ -427,6 +427,34 @@ func TestPrivateTargetIsRefused(t *testing.T) {
 	waitFor(t, "the allowed delivery", func() bool { return rec2.count() == 1 })
 }
 
+// TestBadTargetIsRefusedOnce: CheckURL's policy - scheme allowlist, no
+// userinfo - is enforced by validate and again at delivery (SPEC §6.2), but
+// only the address half of that lived on the delivery path; the scheme and
+// userinfo checks lived only in CheckURL, which nothing here called. A target
+// that fails it must be refused once, with the reason, rather than treated as
+// an ordinary transport failure and retried to the cap.
+func TestBadTargetIsRefusedOnce(t *testing.T) {
+	for _, url := range []string{
+		"file:///etc/passwd",
+		"http://alice:s3cret@example.invalid/hook",
+	} {
+		t.Run(url, func(t *testing.T) {
+			s, lb := newSink(t, url, nil)
+			s.Send(sampleEvent())
+			waitFor(t, "the refusal", func() bool {
+				return strings.Contains(lb.String(), "webhook target refused")
+			})
+			settle()
+			if n := strings.Count(lb.String(), "webhook target refused"); n != 1 {
+				t.Fatalf("logged %d times, want 1 (no retry):\n%s", n, lb.String())
+			}
+			if strings.Contains(lb.String(), "s3cret") {
+				t.Fatalf("credentials reached the log:\n%s", lb.String())
+			}
+		})
+	}
+}
+
 // TestRedirectIsNotFollowed: a redirect is how a target that passes the address
 // policy hops to one that would not, so it is not followed at all - it is
 // reported as the failed delivery it is.
