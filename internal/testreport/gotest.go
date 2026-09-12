@@ -88,10 +88,13 @@ func finished(cases []Case) []Case {
 	return out
 }
 
-// dropParents removes a test that is only the parent of its subtests. `go test
-// -json` reports TestFoo and TestFoo/case-1 alike, so counting both would make
-// a test with three subtests worth four cases and would charge one failing
-// subtest twice - to itself and to the parent it fails.
+// dropParents removes a test that is only the redundant parent of its
+// subtests. `go test -json` reports TestFoo and TestFoo/case-1 alike, so
+// counting both would make a test with three subtests worth four cases and
+// would charge one failing subtest twice - to itself and to the parent it
+// fails. A parent that fails for its own reason after every subtest passed -
+// a post-loop assertion, a t.Cleanup check, an invariant the subtests do not
+// cover - is not redundant and is kept (#122).
 func dropParents(cases []Case) []Case {
 	parents := make(map[string]bool, len(cases))
 	for _, c := range cases {
@@ -105,11 +108,30 @@ func dropParents(cases []Case) []Case {
 			i += 1 + j
 		}
 	}
+	failed := make(map[string]bool, len(cases))
+	for _, c := range cases {
+		if c.Status == Fail {
+			failed[c.Name] = true
+		}
+	}
+	// descendantFailed reports whether any subtest of name (at any depth)
+	// failed - that failure already explains the parent's own, so the parent
+	// stays redundant.
+	descendantFailed := func(name string) bool {
+		prefix := name + "/"
+		for failedName := range failed {
+			if strings.HasPrefix(failedName, prefix) {
+				return true
+			}
+		}
+		return false
+	}
 	out := cases[:0]
 	for _, c := range cases {
-		if !parents[c.Name] {
-			out = append(out, c)
+		if parents[c.Name] && (c.Status != Fail || descendantFailed(c.Name)) {
+			continue
 		}
+		out = append(out, c)
 	}
 	return out
 }
