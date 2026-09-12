@@ -190,6 +190,24 @@ func TestRegisterWindowIsCheckedBeforeTheCourseCode(t *testing.T) {
 	mustNotExist(t, h, "alice")
 }
 
+// TestRegisterRefusesCourseLogin: "course" is the sentinel that routes a
+// post-receive hook to the upstream course repo instead of a student's own
+// (SPEC §8), so open self-registration must refuse it exactly like any other
+// invalid login rather than silently swallowing that student's pushes.
+func TestRegisterRefusesCourseLogin(t *testing.T) {
+	h, _ := newTestSite(t)
+	openCourse(h, "s3cret")
+
+	rec := postRegister(h, "course", "s3cret")
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status %d, want 422 (body %q)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "invalid login") {
+		t.Errorf("no invalid-login message on the page:\n%s", rec.Body.String())
+	}
+	mustNotExist(t, h, "course")
+}
+
 // TestRegisterCap: `max_accounts` bounds how many accounts self-registration
 // may ever create. Under, at, and over the cap.
 func TestRegisterCap(t *testing.T) {
