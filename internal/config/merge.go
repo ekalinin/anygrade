@@ -6,7 +6,10 @@ import (
 )
 
 // Built-in fallback defaults, used when course.yaml omits a defaults field
-// entirely. These are the base layer of the merge (SPEC §4.2 example values).
+// entirely. These are the base layer of the merge; most match the example
+// values SPEC §4.2 shows in its defaults: block, but builtinPenalty below
+// does not - the built-in fallback there is no penalty at all, not the
+// 10/24h/50 the example illustrates (SPEC §4.2, §9).
 // DefaultLogExcerpt is the built-in per-check log excerpt size (SPEC §13:
 // "truncated to a configurable excerpt, default 64 KB per check"). It lives
 // here rather than in runner because runner imports config, not the reverse.

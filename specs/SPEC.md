@@ -65,7 +65,7 @@ language: en              # web UI language: en | ru (default en)
 timezone: Europe/Berlin   # IANA name the UI renders times in (default UTC)
 
 registration:
-  mode: invite            # invite | open
+  mode: invite            # invite | open - required, no default
   course_code: "go-2026"  # required when mode: open
   # The three below bound open mode only; all optional, all unset = unbounded.
   opens: 2026-09-01T00:00:00+03:00    # enrolment window, inclusive on both ends
@@ -100,7 +100,7 @@ defaults:                 # inherited by every task.yaml, overridable per task
     max_attempts: 0       # 0 = unlimited
     cooldown: 0s
   deadline:
-    penalty:
+    penalty:               # example values, not the built-in default (see below)
       percent: 10
       per: 24h
       max_percent: 50
@@ -110,6 +110,9 @@ defaults:                 # inherited by every task.yaml, overridable per task
     max_file_size: 10m    # per solution file copied out of the student commit
     max_total_size: 64m   # all solution files of one submission together (64m)
 ```
+
+- `registration.mode` is required: it is the one course-level key with no built-in default, so an absent `registration:` block, or one without `mode:`, fails `validate` and rejects a teacher push.
+- The `defaults:` block above is an example, not the built-in fallback: a course.yaml that omits it, or a field of it, gets a hardcoded value instead of the one shown here. For `deadline.penalty` specifically, the built-in fallback is no penalty at all (`percent: 0`, `per: 24h`, `max_percent: 0`) rather than the `10 / 24h / 50` shown above - so a task with a `soft` deadline and a `penalty.percent` set, but no `max_percent` anywhere in its own metadata, course defaults or here, is never actually penalized. `validate` warns when a task has a soft deadline and a penalty with `percent` above 0 but `max_percent` 0 (§9), since that combination disables the penalty it otherwise looks configured for; the warning does not fail the push.
 
 ### 4.3 task.yaml
 
@@ -200,6 +203,7 @@ Semantics:
 - **A parser changes what a check is worth, never whether it gates.** A `required: true` check is decided by its exit code, whatever its cases say: "partially gated" is not a thing, and the report is written in the same workspace as the solution (§14). It also cannot fail a check on its own - an unreadable report is the parser's fault, not the student's, so the check keeps its exit code and the submission page says the report could not be read. A build phase is never parsed (its output is staff-only), and neither is a check that timed out, which was killed mid-report.
 - What a parser reads is bounded, because a test run of student code chooses how much it prints: a report over 4 MB, or with more than 1000 cases, is refused the same way an unreadable one is. Stored case names are capped at 200 bytes, one message at 512 and all messages of a check at 64 KB.
 - Weights must be `>= 0`. Because they are normalized, a negative one pushes the raw score outside `0..score` - weights 60 and -40 score 300 out of 100 - so `validate` rejects a negative weight on a non-gate check. Weight 0 stays legal and is what gates carry.
+- A task needs at least one non-gate check with weight > 0 - whether it has no non-gate checks at all, or has some but none of them carries a positive weight: normalizing over the non-gate checks (above) would have nothing to divide by, so `validate` rejects the task rather than leave the raw score undefined.
 - `workspace.include` (course defaults and per-task `workspace:` block, unioned) lists extra repo-relative paths - files or directories - exported into the check workspace alongside the task directory. Needed when tasks share build files, e.g. a course-root `go.mod`. Paths must exist and must not escape the repo.
 - `hidden_tests.url` must not embed credentials: they come from the environment (§11). It must also be a form git reads as a remote address - `https://`, `http://`, `ssh://`, `git://`, `file://`, an absolute local path, or the scp-like `[user@]host:path` - and neither it nor `ref` may start with `-` or contain whitespace or control characters: both values reach git's fetch argv and the server log, and a leading `-` would be read as an option rather than an address. An absent `ref` keeps meaning `HEAD`. With `source: local` the `path` is an absolute path on the machine that runs the checks, which is why `validate` only warns - never errors - when it is relative or absent locally: a course repo is usually validated somewhere other than the grading server.
 - `anygrade validate` verifies all metadata (unknown fields, missing files in `solution_files`, symlinked entries in `solution_files`/`workspace.include`, deadline ordering, duplicate task ids, negative check weights, an unknown `parser:` or an escaping `parser_file:`, non-positive size limits, credentials embedded in a hidden-tests url, a hidden-tests url or ref that git would read as an option, an enrolment window that closes before it opens, a negative `registration.max_accounts`) and is also run at server startup; startup fails on invalid metadata. Warnings are reported by `validate` alone; they never fail a startup or a teacher push.
@@ -422,6 +426,7 @@ Rights are asked as two questions - may this account review other people's work,
   - on-time (≤ soft, or no soft): no penalty;
   - late (soft < t ≤ hard): `penalty.percent` per each started `penalty.per` interval after soft, capped at `max_percent`;
   - past hard: submission not graded (`rejected_deadline`).
+- A task whose merged metadata never sets `deadline.penalty` - neither on the task nor in the course `defaults:` - gets the built-in fallback of no penalty at all (`percent: 0`, `per: 24h`, `max_percent: 0`), not the `10 / 24h / 50` shown as an example in §4.2.
 - Final task score: `best` or `latest` submission per `scoring.policy` (course-wide, default `best`). Penalty is computed per submission at its submission time.
 - Teachers can set a manual score override per (student, task) with a comment; overrides win over computed scores and are visible in the audit log.
 
@@ -474,14 +479,17 @@ anygrade serve   [--repo DIR] [--data-dir DIR] [--http-addr :8080]
                  [--allow-local-runner] [--tls-cert FILE --tls-key FILE]
                  [--behind-proxy] [--retry-backoff 10s]
                  [--retry-backoff-cap 5m] [--max-retries 8]
-anygrade check   [--runner local|docker] [--timeout D] [--keep] [-v] [TASK ...]
+anygrade check   [--repo DIR] [--data-dir DIR] [--runner local|docker]
+                 [--timeout D] [--keep] [-v] [TASK ...]
                               # run checks locally in the current working copy,
                               # open tests only, results to the terminal; exit
                               # codes: 0 all passed, 1 checks failed, 2 usage,
                               # 3 infrastructure (docker down etc.)
-anygrade validate             # validate course.yaml and all task.yaml files
-anygrade user    add|list|invite|deactivate|reactivate
+anygrade validate [--repo .]  # validate course.yaml and all task.yaml files
+anygrade user    add|list|invite|deactivate|reactivate|remove
                  reset-token|add-key|unbind-oidc ...
+                 [--data-dir .anygrade] [--name NAME] [--expires 336h]
+                 [--base-url http://localhost:8080] [--key KEY]
                               # add: create an account and issue its token now,
                               #      shown once (first teacher, scripted setup)
                               # invite: create an account and print a one-time
@@ -493,10 +501,13 @@ anygrade user    add|list|invite|deactivate|reactivate
                               #      alias of deactivate, kept for scripts
                               # unbind-oidc: clear the identity provider subject
                               #      stored on an account, so it can link again
-anygrade export  scores --format csv
+anygrade export  scores --format csv [--out PATH] [--repo DIR] [--data-dir DIR]
                  submissions --task ID [--format dir|zip] [--out PATH]
-                             [--all-attempts]
+                             [--all-attempts] [--repo DIR] [--data-dir DIR]
                               # per-task corpus for a similarity checker
+anygrade hook    <pre-receive|post-receive|validate-course>
+                              # the receive hook re-executing the binary (§6)
+anygrade version              # print version, platform and the project URL
 ```
 
 - `check` with no arguments detects tasks changed against upstream/HEAD; with arguments checks the named tasks. It uses the same runner code path as the server (docker or local per metadata) but never fetches hidden tests unless they are locally available - it is the student self-check and course-authoring tool. Build phases run there exactly as they do on the server, boundary included, so a course author gets the real behavior of a two-phase check on the machine they are authoring it on; usually there is simply nothing to remove. Nothing is staff-only locally: both phases print their log paths, since the author owns the whole tree either way.
