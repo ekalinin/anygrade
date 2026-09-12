@@ -422,7 +422,7 @@ Rights are asked as two questions - may this account review other people's work,
   - on-time (≤ soft, or no soft): no penalty;
   - late (soft < t ≤ hard): `penalty.percent` per each started `penalty.per` interval after soft, capped at `max_percent`;
   - past hard: submission not graded (`rejected_deadline`).
-- Final task score: `best` or `latest` submission per `scoring.policy` (course-wide, default `best`). Penalty is computed per submission at its submission time.
+- Final task score: `best` or `latest` submission per `scoring.policy` (course-wide, default `best`). Penalty is computed per submission at its submission time. The task's display status describes that same submission, except that a queued, running, retrying, or rejected latest attempt shows as such regardless of policy.
 - Teachers can set a manual score override per (student, task) with a comment; overrides win over computed scores and are visible in the audit log.
 
 ## 10. Web UI

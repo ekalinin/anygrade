@@ -38,9 +38,10 @@ func (v TaskView) Display() *float64 {
 func buildTaskView(t config.ResolvedTask, history []store.Submission, policy string,
 	override *store.ScoreOverride) TaskView {
 
+	winner := gradebook.Winner(history, policy)
 	v := TaskView{
 		Task:     t,
-		Status:   gradebook.DeriveStatus(history, t.Score, override != nil),
+		Status:   gradebook.DeriveStatus(history, t.Score, override != nil, winner),
 		Score:    gradebook.DisplayScore(history, policy),
 		Override: override,
 		Attempts: queue.CountAttempts(history),
