@@ -39,10 +39,7 @@ func TestCheckLogsAreOwnerOnly(t *testing.T) {
 // but only the marker reaches the file, and the excerpt says so.
 func TestCheckLogCapsFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "build.log")
-	log, err := openCheckLog(path, "build", nil, 64, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
+	log := openCheckLog(path, "build", nil, 64, 100)
 	for range 100 {
 		if n, err := log.Write([]byte(strings.Repeat("x", 100))); err != nil || n != 100 {
 			t.Fatalf("write must always succeed: n=%d err=%v", n, err)
@@ -67,10 +64,7 @@ func TestCheckLogCapsFile(t *testing.T) {
 // TestCheckLogUnderCap: the usual case must stay byte-exact and unmarked.
 func TestCheckLogUnderCap(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "build.log")
-	log, err := openCheckLog(path, "build", nil, 64, 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
+	log := openCheckLog(path, "build", nil, 64, 1<<20)
 	if _, err := log.Write([]byte("hello\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -90,10 +84,7 @@ func TestCheckLogUnderCap(t *testing.T) {
 // successful, the failure surfaces in the excerpt instead.
 func TestCheckLogWriteError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "build.log")
-	log, err := openCheckLog(path, "build", nil, 64, 1<<20)
-	if err != nil {
-		t.Fatal(err)
-	}
+	log := openCheckLog(path, "build", nil, 64, 1<<20)
 	// Closing the file under the writer is the portable stand-in for ENOSPC:
 	// the next write to the descriptor fails.
 	if err := log.file.Close(); err != nil {
@@ -111,6 +102,37 @@ func TestCheckLogWriteError(t *testing.T) {
 	// The check output is still available live and in the excerpt.
 	if !strings.Contains(log.Excerpt(), "output") {
 		t.Errorf("excerpt lost the output: %q", log.Excerpt())
+	}
+}
+
+// TestOpenCheckLogCreateFailure: a log directory the process cannot write
+// into must degrade the check to logless, not fail it as an infra error
+// (SPEC §13) - a create failure is the same case the write-failure path
+// already covers, just earlier.
+func TestOpenCheckLogCreateFailure(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "build.log")
+	log := openCheckLog(path, "build", nil, 64, 1<<20)
+	if n, err := log.Write([]byte("output\n")); err != nil || n != 7 {
+		t.Fatalf("write must not fail the check: n=%d err=%v", n, err)
+	}
+	if err := log.Close(); err != nil {
+		t.Errorf("Close on a logless check must not error: %v", err)
+	}
+	if !strings.Contains(log.Excerpt(), "could not be written") {
+		t.Errorf("excerpt hides the create failure: %q", log.Excerpt())
+	}
+	if !strings.Contains(log.Excerpt(), "output") {
+		t.Errorf("excerpt lost the output: %q", log.Excerpt())
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("no log file should exist in an unwritable dir (err=%v)", err)
 	}
 }
 

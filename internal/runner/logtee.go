@@ -120,14 +120,15 @@ type checkLog struct {
 
 // openCheckLog creates the check's log file, its excerpt tail and its on-disk
 // cap. Non-positive sizes fall back to the built-in defaults, so a Job
-// assembled without a resolved config still behaves.
-func openCheckLog(path, name string, mirror io.Writer, excerpt, logMax int64) (*checkLog, error) {
+// assembled without a resolved config still behaves. A failure to create the
+// file never fails the check (SPEC §13, same as a failed write), so it is not
+// reported as an error at all: capWriter already drops every write once its
+// file is nil, so the check runs logless with the same "could not be
+// written" note a write failure produces.
+func openCheckLog(path, name string, mirror io.Writer, excerpt, logMax int64) *checkLog {
 	// 0600, not os.Create's 0666: a check log is student output the teacher
 	// reads through the UI, not something for every account on the host.
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return nil, err
-	}
 	if excerpt <= 0 {
 		excerpt = DefaultExcerptSize
 	}
@@ -136,13 +137,23 @@ func openCheckLog(path, name string, mirror io.Writer, excerpt, logMax int64) (*
 	}
 	tail := newTailBuffer(int(excerpt))
 	capped := &capWriter{file: f, name: name, max: logMax}
+	if err != nil {
+		capped.err = err
+		slog.Warn("check log create failed, running logless", "check", name, "err", err)
+	}
 	writers := []io.Writer{capped, tail}
 	if mirror != nil {
 		writers = append(writers, mirror)
 	}
-	return &checkLog{file: f, cap: capped, tail: tail, w: io.MultiWriter(writers...)}, nil
+	return &checkLog{file: f, cap: capped, tail: tail, w: io.MultiWriter(writers...)}
 }
 
 func (l *checkLog) Write(p []byte) (int, error) { return l.w.Write(p) }
 func (l *checkLog) Excerpt() string             { return l.tail.String() + l.cap.note() }
-func (l *checkLog) Close() error                { return l.file.Close() }
+
+func (l *checkLog) Close() error {
+	if l.file == nil {
+		return nil
+	}
+	return l.file.Close()
+}

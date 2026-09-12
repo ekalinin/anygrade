@@ -220,6 +220,7 @@ func runTask(ctx context.Context, repo, dataDir string, t config.ResolvedTask, r
 	}
 
 	runID := time.Now().Format("20060102-150405") + "-" + t.ID
+	logDir := filepath.Join(dataDir, "logs", runID)
 	ws, err := runner.Assemble(ctx, runner.Assembly{
 		Dest:          filepath.Join(dataDir, "workspaces", runID),
 		Task:          t,
@@ -262,7 +263,7 @@ func runTask(ctx context.Context, repo, dataDir string, t config.ResolvedTask, r
 		TaskRelDir:   relDir,
 		Spec:         spec,
 		Checks:       t.Checks,
-		LogDir:       filepath.Join(dataDir, "logs", runID),
+		LogDir:       logDir,
 		// Usually empty here - `check` never fetches hidden tests - but a
 		// course author with the local source at hand gets the same boundary
 		// the server applies, which is the point of authoring against it.
@@ -277,12 +278,12 @@ func runTask(ctx context.Context, repo, dataDir string, t config.ResolvedTask, r
 		return false, err
 	}
 
-	printTaskResult(t, spec, outcomes)
+	printTaskResult(t, spec, outcomes, logDir)
 	allPassed := !slices.ContainsFunc(outcomes, func(o runner.Outcome) bool { return !o.Passed })
 	return allPassed, nil
 }
 
-func printTaskResult(t config.ResolvedTask, spec config.ResolvedRunner, outcomes []runner.Outcome) {
+func printTaskResult(t config.ResolvedTask, spec config.ResolvedRunner, outcomes []runner.Outcome, logDir string) {
 	loc := spec.Type
 	if spec.Type == "docker" {
 		loc += " " + spec.Image
@@ -294,24 +295,12 @@ func printTaskResult(t config.ResolvedTask, spec config.ResolvedRunner, outcomes
 	results := make([]scoring.CheckResult, len(outcomes))
 	var unparsed []string
 	for i, o := range outcomes {
-		res := "pass"
-		note := ""
-		switch {
-		case o.Skipped:
-			res = "skip"
-		case o.TimedOut:
-			res = "timeout"
-			note = o.LogPath
-		case !o.Passed:
-			res = "fail"
-			note = o.LogPath
+		hasBuild := t.Checks[i].Build != ""
+		var buildLogPath string
+		if hasBuild {
+			buildLogPath = filepath.Join(runner.BuildLogDir(logDir), runner.LogFileName(o.Name))
 		}
-		if o.BuildFailed {
-			// The run phase never happened, so LogPath is empty: point the
-			// author at the phase that actually failed.
-			res = "build " + res
-			note = o.BuildLogPath
-		}
+		res, note := checkNote(o, hasBuild, buildLogPath)
 		passedCases, scoredCases := testreport.Tally(o.Cases)
 		if scoredCases > 0 {
 			res = fmt.Sprintf("%s %d/%d", res, passedCases, scoredCases)
@@ -336,4 +325,35 @@ func printTaskResult(t config.ResolvedTask, spec config.ResolvedRunner, outcomes
 		fmt.Printf("  %s: no test cases could be read from the report; scored by exit code\n", name)
 	}
 	fmt.Printf("  score: %.0f/%d\n\n", scoring.RawScore(t.Score, results), t.Score)
+}
+
+// checkNote reports the RESULT word and NOTE column for one check's outcome.
+// Nothing is staff-only locally (SPEC §11): a check with a build phase always
+// gets its build log path mentioned, next to the run log path whenever one is
+// also shown; a check without a build phase behaves exactly as before.
+func checkNote(o runner.Outcome, hasBuild bool, buildLogPath string) (res, note string) {
+	res = "pass"
+	switch {
+	case o.Skipped:
+		return "skip", ""
+	case o.TimedOut:
+		res, note = "timeout", o.LogPath
+	case !o.Passed:
+		res, note = "fail", o.LogPath
+	}
+	switch {
+	case o.BuildFailed:
+		// The run phase never happened, so LogPath is empty: point the
+		// author at the phase that actually failed.
+		res, note = "build "+res, o.BuildLogPath
+	case hasBuild:
+		// The build phase stays silent when it succeeds, but its log still
+		// exists and is not staff-only here.
+		if note == "" {
+			note = "build:" + buildLogPath
+		} else {
+			note += "  build:" + buildLogPath
+		}
+	}
+	return res, note
 }

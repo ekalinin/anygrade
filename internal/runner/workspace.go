@@ -460,6 +460,12 @@ func dropHiddenTests(job Job) error {
 // workspace is a plain tree: a link in it is what a later write resolves
 // through, and following one here would copy in whatever the host has at the
 // other end.
+//
+// dst is also refused if the walk finds it nested inside src: a task that is
+// the repo root itself (SPEC §6.1) puts the workspace being assembled under
+// the very tree being exported, and descending into it would copy the
+// workspace into itself without bound. The check is by cleaned absolute path,
+// since dst does not have to exist yet.
 func copyTree(ctx context.Context, src, dst string, readOnly bool) error {
 	info, err := os.Lstat(src)
 	if err != nil {
@@ -472,12 +478,24 @@ func copyTree(ctx context.Context, src, dst string, readOnly bool) error {
 	if !info.IsDir() {
 		return copyFile(src, dst, fileMode(info.Mode(), readOnly))
 	}
+	absDst, err := filepath.Abs(dst)
+	if err != nil {
+		return err
+	}
 	return filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		absP, err := filepath.Abs(p)
+		if err != nil {
+			return err
+		}
+		if absP == absDst {
+			skippedDest(p)
+			return fs.SkipDir
 		}
 		rel, err := filepath.Rel(src, p)
 		if err != nil {
@@ -503,6 +521,13 @@ func copyTree(ctx context.Context, src, dst string, readOnly bool) error {
 // link finds out from the server log rather than from a mystery build failure.
 func skippedSymlink(p string) {
 	slog.Warn("skipped a symlink during workspace assembly: the workspace must be a plain tree",
+		"path", filepath.Base(p))
+}
+
+// skippedDest records that copyTree refused to descend into its own
+// destination, found nested inside the source it is exporting.
+func skippedDest(p string) {
+	slog.Warn("skipped the workspace destination nested inside its own source during assembly",
 		"path", filepath.Base(p))
 }
 
