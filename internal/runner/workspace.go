@@ -419,14 +419,18 @@ func listTree(stage, prefix string) (files, dirs []string, err error) {
 // the execution boundary of SPEC §6.1, applied on the host tree that every
 // runner ultimately reads from.
 //
-// Every removal goes through an os.Root anchored at the workspace, so a
-// symlink planted along one of these paths is refused rather than followed.
+// Every removal goes through an os.Root anchored at the workspace, and each
+// path component is checked with Lstat before it is used (mirroring
+// mkdirAllNoFollow), so a symlink planted along one of these paths is refused
+// rather than followed - whether its target escapes the workspace or stays
+// inside it. os.Root alone only catches the escaping case; a relative link
+// that resolves inside the workspace would still be followed, deleting
+// whatever it points at while leaving the recorded hidden path in place.
 // Nothing should be able to plant one - a build phase is the teacher's command
 // and it is supposed to compile rather than execute - but this runs as the
-// anygrade process over a tree a check has already written to, and following a
-// link out of it would delete somewhere else on the host. A refusal fails the
-// whole run, which is the correct direction: the alternative is executing
-// student code with the hidden sources still in place.
+// anygrade process over a tree a check has already written to. A refusal
+// fails the whole run, which is the correct direction: the alternative is
+// executing student code with the hidden sources still in place.
 func dropHiddenTests(job Job) error {
 	root, err := os.OpenRoot(job.WorkspaceDir)
 	if err != nil {
@@ -434,19 +438,50 @@ func dropHiddenTests(job Job) error {
 	}
 	defer root.Close()
 	for _, rel := range job.HiddenPaths {
+		name := filepath.FromSlash(rel)
+		if err := refuseSymlinkNoFollow(root, name); err != nil {
+			return infraErr("workspace", fmt.Errorf("remove hidden test %q: %w", rel, err))
+		}
 		// RemoveAll, not Remove: a build phase may have replaced the file with
 		// a directory, and it has to go either way. The path is exact, so the
 		// recursion is bounded by what the overlay itself put there.
-		if err := root.RemoveAll(filepath.FromSlash(rel)); err != nil {
+		if err := root.RemoveAll(name); err != nil {
 			return infraErr("workspace", fmt.Errorf("remove hidden test %q: %w", rel, err))
 		}
 	}
-	// Deepest first, so a nested tree collapses in one pass. Failures are
-	// ignored on purpose: a directory that is not empty holds something the
-	// overlay did not write, and the sources - the thing being removed - are
-	// already gone.
+	// Deepest first, so a nested tree collapses in one pass. A symlinked
+	// component fails the whole run just like the files above; any other
+	// failure is ignored on purpose: a directory that is not empty holds
+	// something the overlay did not write, and the sources - the thing being
+	// removed - are already gone.
 	for i := len(job.HiddenDirs) - 1; i >= 0; i-- {
-		_ = root.Remove(filepath.FromSlash(job.HiddenDirs[i]))
+		rel := job.HiddenDirs[i]
+		name := filepath.FromSlash(rel)
+		if err := refuseSymlinkNoFollow(root, name); err != nil {
+			return infraErr("workspace", fmt.Errorf("remove hidden test dir %q: %w", rel, err))
+		}
+		_ = root.Remove(name)
+	}
+	return nil
+}
+
+// refuseSymlinkNoFollow walks name component by component inside root,
+// mirroring mkdirAllNoFollow, and returns an error naming the first component
+// - including name itself - that is a symlink. A missing component means
+// there is nothing left to remove, which RemoveAll already treats as success.
+func refuseSymlinkNoFollow(root *os.Root, name string) error {
+	var walked string
+	for _, part := range strings.Split(name, string(filepath.Separator)) {
+		walked = filepath.Join(walked, part)
+		fi, err := root.Lstat(walked)
+		switch {
+		case os.IsNotExist(err):
+			return nil
+		case err != nil:
+			return err
+		case fi.Mode()&fs.ModeSymlink != 0:
+			return fmt.Errorf("path component %q is a symlink", filepath.ToSlash(walked))
+		}
 	}
 	return nil
 }

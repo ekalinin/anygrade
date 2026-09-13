@@ -451,6 +451,27 @@ func TestDropHiddenTestsRefusesSymlink(t *testing.T) {
 	}
 }
 
+// TestDropHiddenTestsRefusesRelativeSymlink: a symlink whose target stays
+// inside the workspace never escapes the os.Root anchor, so RemoveAll alone
+// would follow it instead of refusing it - the same refusal that
+// TestDropHiddenTestsRefusesSymlink checks for the escaping target has to
+// fire for this one too.
+func TestDropHiddenTestsRefusesRelativeSymlink(t *testing.T) {
+	ws := t.TempDir()
+	writeFiles(t, ws, map[string]string{"real/hidden_test.txt": "secret\n"})
+	if err := os.Symlink("real", filepath.Join(ws, "cases")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	err := dropHiddenTests(Job{WorkspaceDir: ws, HiddenPaths: []string{"cases/hidden_test.txt"}})
+	if _, ok := errors.AsType[*InfraError](err); !ok {
+		t.Fatalf("want an InfraError, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "real", "hidden_test.txt")); err != nil {
+		t.Errorf("the removal followed the in-workspace symlink: %v", err)
+	}
+}
+
 // TestAssembleArtifactsDirIsNotOverwritable: $ANYGRADE_ARTIFACTS is created
 // before the student's overlay, so a solution file claiming that exact path is
 // a terminal tamper error naming it - not an infrastructure failure the queue
