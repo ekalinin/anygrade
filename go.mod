@@ -6,7 +6,7 @@ require (
 	github.com/gliderlabs/ssh v0.3.8
 	github.com/yuin/goldmark v1.8.5
 	golang.org/x/crypto v0.56.0
-	golang.org/x/sys v0.47.0
+	golang.org/x/sys v0.48.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.57.0
 )
