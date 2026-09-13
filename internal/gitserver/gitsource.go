@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/ekalinin/anygrade/internal/runner"
 )
 
 // exportDirMode keeps an exported tree owner-only: it lands in the data dir
@@ -142,7 +144,9 @@ func untarTo(tr *tar.Reader, srcRel, dstAbs string) error {
 // The type probe runs first, and it is what keeps the semantics of File: a
 // missing path and a directory both read as absent, a broken repo or commit is
 // an error. Probing before the stream also means a missing blob can never
-// truncate the authoritative file the overlay is about to replace.
+// truncate the authoritative file the overlay is about to replace. It cannot,
+// however, tell a symlink from a regular file - both are blobs - so the tree
+// entry's mode decides that one.
 func (s GitSource) Open(ctx context.Context, srcRel string) (io.ReadCloser, bool, error) {
 	typ, err := s.output(ctx, "cat-file", "-t", s.Commit+":"+srcRel)
 	if err != nil {
@@ -153,6 +157,13 @@ func (s GitSource) Open(ctx context.Context, srcRel string) (io.ReadCloser, bool
 	}
 	if string(bytes.TrimSpace(typ)) != "blob" {
 		return nil, false, nil
+	}
+	link, err := s.isSymlink(ctx, srcRel)
+	if err != nil {
+		return nil, false, err
+	}
+	if link {
+		return nil, false, runner.ErrSymlink
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -253,6 +264,27 @@ func (s GitSource) blobSize(ctx context.Context, srcRel string) (int64, error) {
 		return 0, err
 	}
 	return strconv.ParseInt(string(bytes.TrimSpace(out)), 10, 64)
+}
+
+// symlinkMode is the tree entry mode git gives a symlink. The object it points
+// at is an ordinary blob holding the link target, which is why the type alone
+// never says "symlink" and the mode has to be read from the tree.
+const symlinkMode = "120000"
+
+// isSymlink reports whether the tree entry at srcRel is a symlink. srcRel is
+// expected to name a blob, so ls-tree yields at most the one line.
+//
+// ":(literal)" because ls-tree takes a pathspec, not a path: `--` disarms a
+// leading dash, but a leading colon is still read as pathspec magic and would
+// match nothing, reporting no mode and letting the link through.
+func (s GitSource) isSymlink(ctx context.Context, srcRel string) (bool, error) {
+	out, err := s.output(ctx, "ls-tree", s.Commit, "--", ":(literal)"+srcRel)
+	if err != nil {
+		return false, err
+	}
+	// "<mode> <type> <sha>\t<path>"
+	mode, _, _ := strings.Cut(strings.TrimSpace(string(out)), " ")
+	return mode == symlinkMode, nil
 }
 
 // output runs one git command in the source repo and returns raw stdout.

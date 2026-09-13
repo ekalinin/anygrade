@@ -1,7 +1,9 @@
 package runner
 
 import (
+	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -255,6 +257,71 @@ func TestAssembleRefusesSymlinkedSolutionPath(t *testing.T) {
 			}
 			if got := readFile(t, filepath.Join(outside, "victim.txt")); got != "host file\n" {
 				t.Errorf("a file outside the workspace was written: %q", got)
+			}
+		})
+	}
+}
+
+// symlinkSource is a Source that reports every file as a symlink, which is
+// what GitSource does for a tree entry with mode 120000.
+type symlinkSource struct{}
+
+func (symlinkSource) Export(context.Context, string, string) error { return nil }
+
+func (symlinkSource) Open(context.Context, string) (io.ReadCloser, bool, error) {
+	return nil, false, ErrSymlink
+}
+
+// TestAssembleRefusesSymlinkedSolutionSource: a solution file submitted as a
+// symlink has the link target as its content, so reading it would grade a path
+// on the host as if it were the student's code. The source reports it and the
+// overlay refuses the submission terminally, writing nothing (SPEC §6.1).
+func TestAssembleRefusesSymlinkedSolutionSource(t *testing.T) {
+	outside := t.TempDir()
+	writeFiles(t, outside, map[string]string{"victim.txt": "host file\n"})
+	student := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(student, "tasks", "01"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(outside, "victim.txt"),
+		filepath.Join(student, "tasks", "01", "main.go")); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		student Source
+	}{
+		{name: "source reports a symlink", student: symlinkSource{}},
+		{name: "working copy holds a symlink", student: WorkingCopySource{Root: student}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			course := t.TempDir()
+			writeFiles(t, course, map[string]string{
+				"tasks/01/task.yaml": "id: 01\n",
+				"tasks/01/main.go":   "package main // template\n",
+			})
+			dest := filepath.Join(t.TempDir(), "ws")
+			ws, err := Assemble(t.Context(), Assembly{
+				Dest:          dest,
+				Task:          config.ResolvedTask{SolutionFiles: []string{"main.go"}},
+				TaskRelDir:    "tasks/01",
+				Authoritative: WorkingCopySource{Root: course},
+				Student:       tc.student,
+				RunAsUID:      -1,
+			})
+			if _, ok := errors.AsType[*TamperError](err); !ok {
+				if ws != nil {
+					ws.Close()
+				}
+				t.Fatalf("want a TamperError, got %v", err)
+			}
+			if !strings.Contains(err.Error(), "main.go") {
+				t.Errorf("the note must name the file: %q", err)
+			}
+			// Nothing was written: the rejected workspace is gone entirely.
+			if _, err := os.Stat(dest); !os.IsNotExist(err) {
+				t.Errorf("workspace left behind (err=%v)", err)
 			}
 		})
 	}
