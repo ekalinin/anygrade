@@ -139,6 +139,7 @@ task.no_readme: "В каталоге задачи нет README.md."
 # submission.html
 submission.title: "Отправка"
 submission.crumb: "отправка"
+submission.student: "студент"
 submission.received: "получено"
 submission.attempt: "попытка"
 submission.live_output: "Живой вывод"

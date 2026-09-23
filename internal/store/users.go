@@ -2,11 +2,22 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"time"
+
+	"github.com/ekalinin/anygrade/internal/ident"
 )
 
 // CreateUser implements UserStore.
+//
+// The login rule is enforced here and not only in the callers, because a login
+// is a path component - students/<login>.git, and the per-login directory
+// `export submissions` writes beside its `_template/` - so it is an invariant
+// of the row rather than of whoever wrote it.
 func (s *DB) CreateUser(ctx context.Context, login, displayName, role string) (User, error) {
+	if !ident.ValidLogin(login) {
+		return User{}, fmt.Errorf("CreateUser: invalid login %q", login)
+	}
 	now := time.Now()
 	row := s.db.QueryRowContext(ctx, `
 		INSERT INTO users (login, display_name, role, created_at)

@@ -1,6 +1,10 @@
 package web
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -571,3 +575,144 @@ func TestTokenSessionsStillDieOnRotation(t *testing.T) {
 
 // reToken matches an issued personal access token on the one-time page.
 var reToken = regexp.MustCompile(`ag_[0-9a-f]{64}`)
+
+// TestOIDCFlowCookieIsSigned: the flow cookie is server state parked in the
+// browser, and the callback trusts every field in it - the state it compares,
+// the nonce and verifier it exchanges with, the page it lands on afterwards.
+// A peer able to write a cookie on the origin must therefore not be able to
+// write one this site will read back: only the payload is edited here, the
+// login at the provider is genuine.
+func TestOIDCFlowCookieIsSigned(t *testing.T) {
+	h, is := newOIDCSite(t)
+	if _, err := h.DB.CreateUser(t.Context(), "alice", "Alice", "student"); err != nil {
+		t.Fatal(err)
+	}
+	// The tag stays the genuine one in every case below: a peer holding the
+	// cookie holds its tag too, so what has to be refused is the payload under
+	// it - a check that merely found a separator would pass all of these.
+	for _, tc := range []struct {
+		name string
+		edit func(*oidcFlow)
+	}{
+		{"another post-login target", func(f *oidcFlow) { f.Next = "/leaderboard" }},
+		{"another state to compare against", func(f *oidcFlow) { f.State = "state-of-my-own" }},
+		{"an issued-at moved forward", func(f *oidcFlow) {
+			f.IssuedAt += int64(oidcFlowTTL.Seconds())
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			flow, code, state := startedFlow(t, h, is)
+			flow.Value = forgeFlowCookie(t, flow.Value, tc.edit)
+			mustNoSession(t, callbackOIDC(h, flow, code, state),
+				"a payload this server did not write, under a tag it did")
+		})
+	}
+
+	// And the cruder forgery the shape invites: the genuine payload with the
+	// tag simply dropped.
+	t.Run("no tag at all", func(t *testing.T) {
+		flow, code, state := startedFlow(t, h, is)
+		flow.Value, _, _ = strings.Cut(flow.Value, ".")
+		mustNoSession(t, callbackOIDC(h, flow, code, state), "an untagged flow cookie")
+	})
+}
+
+// TestOIDCFlowCookieRefusesAnEmptyKey: an empty key is a known key - anybody
+// can compute HMAC-SHA256 under one - so neither half of the cookie may work
+// while the handler has none. New generates it with the provider's routes;
+// this is what keeps a Handler wired any other way from signing and, worse,
+// accepting a cookie its peer could have written.
+func TestOIDCFlowCookieRefusesAnEmptyKey(t *testing.T) {
+	h, _ := newTestSite(t) // no provider, so New never generated a key
+
+	if _, err := h.signOIDCFlow(oidcFlow{State: "s", Nonce: "n", Verifier: "v"}); err == nil {
+		t.Error("signOIDCFlow signed a flow under an empty key")
+	}
+
+	// Exactly the forgery an empty key invites: a payload anybody can tag.
+	payload, err := json.Marshal(oidcFlow{
+		State: "s", Nonce: "n", Verifier: "v", IssuedAt: time.Now().Unix(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := base64.RawURLEncoding.EncodeToString(payload)
+	mac := hmac.New(sha256.New, nil)
+	mac.Write([]byte(body))
+
+	req := httptest.NewRequest(http.MethodGet, oidc.CallbackPath, nil)
+	req.AddCookie(&http.Cookie{
+		Name:  oidcCookie,
+		Value: body + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)),
+	})
+	if _, ok := h.takeOIDCFlow(httptest.NewRecorder(), req); ok {
+		t.Error("takeOIDCFlow accepted a cookie tagged under an empty key")
+	}
+}
+
+// startedFlow begins one login and mints the code the provider would send
+// back, returning the flow cookie the browser is holding.
+func startedFlow(t *testing.T, h *Handler, is *oidctest.Issuer) (*http.Cookie, string, string) {
+	t.Helper()
+	authURL, flow := startOIDC(t, h, "/settings")
+	code, state, err := is.AuthCode(authURL, oidctest.Token{Subject: "sub-42", Login: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return flow, code, state
+}
+
+// TestOIDCFlowCookieExpiresServerSide: "short-lived" (SPEC §14) has to be this
+// server's rule and not the browser's. MaxAge is the client's to honour, so a
+// cookie kept past it would stay redeemable for as long as the provider's code
+// lives; the payload carries the moment it was issued, and the callback
+// refuses one older than the window. The cookie here is genuinely signed - the
+// age is the only thing wrong with it.
+func TestOIDCFlowCookieExpiresServerSide(t *testing.T) {
+	h, is := newOIDCSite(t)
+	if _, err := h.DB.CreateUser(t.Context(), "alice", "Alice", "student"); err != nil {
+		t.Fatal(err)
+	}
+	authURL, flow := startOIDC(t, h, "")
+	code, state, err := is.AuthCode(authURL, oidctest.Token{Subject: "sub-42", Login: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := flowPayload(t, flow.Value)
+	f.IssuedAt = time.Now().Add(-oidcFlowTTL - time.Minute).Unix()
+	if flow.Value, err = h.signOIDCFlow(f); err != nil {
+		t.Fatal(err)
+	}
+
+	mustNoSession(t, callbackOIDC(h, flow, code, state), "a flow cookie past the login window")
+}
+
+// flowPayload decodes the payload half of a flow cookie.
+func flowPayload(t *testing.T, value string) oidcFlow {
+	t.Helper()
+	payload, _, _ := strings.Cut(value, ".")
+	raw, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		t.Fatalf("decode the flow cookie: %v", err)
+	}
+	var f oidcFlow
+	if err := json.Unmarshal(raw, &f); err != nil {
+		t.Fatalf("decode the flow payload: %v", err)
+	}
+	return f
+}
+
+// forgeFlowCookie rewrites one field of a flow cookie the way a peer holding
+// the browser's cookie jar would: decode the payload, edit it, and put it back
+// under the tag the server issued - which that peer has too.
+func forgeFlowCookie(t *testing.T, value string, edit func(*oidcFlow)) string {
+	t.Helper()
+	f := flowPayload(t, value)
+	edit(&f)
+	out, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, tag, _ := strings.Cut(value, ".")
+	return base64.RawURLEncoding.EncodeToString(out) + "." + tag
+}

@@ -73,13 +73,16 @@ var staffRoutes = []staffRoute{
 // TestAPIRoleEndpointMatrix owns the role table for these. What this list is
 // for is the scan below - the API must not be a second place where a route can
 // appear ungated.
+//
+// The patterns carry no verb because the registrations do not either: the API
+// answers a wrong method itself, in the envelope.
 var apiRoutes = []staffRoute{
-	{"GET /api/v1/me", "/api/v1/me", rightAPI},
-	{"GET /api/v1/tasks", "/api/v1/tasks", rightAPI},
-	{"GET /api/v1/submissions/{id}", "/api/v1/submissions/1", rightAPI},
+	{"/api/v1/me", "/api/v1/me", rightAPI},
+	{"/api/v1/tasks", "/api/v1/tasks", rightAPI},
+	{"/api/v1/submissions/{id}", "/api/v1/submissions/1", rightAPI},
 
-	{"GET /api/v1/matrix", "/api/v1/matrix", rightAPIReview},
-	{"GET /api/v1/queue", "/api/v1/queue", rightAPIReview},
+	{"/api/v1/matrix", "/api/v1/matrix", rightAPIReview},
+	{"/api/v1/queue", "/api/v1/queue", rightAPIReview},
 }
 
 // ungatedRoutes are the rest of the mux: public pages and the ones every
@@ -102,6 +105,9 @@ var ungatedRoutes = []string{
 	"GET /leaderboard", "GET /settings", "POST /settings/token",
 	"POST /settings/keys", "POST /settings/keys/verify",
 	"POST /settings/keys/{id}/delete",
+	// The API's catch-all: it authenticates nobody and reveals nothing - an
+	// unknown path under /api/v1/ is a JSON not_found for anyone who asks.
+	"/api/v1/",
 }
 
 // muxRoute reads one registration out of web.go: the pattern, and whatever the

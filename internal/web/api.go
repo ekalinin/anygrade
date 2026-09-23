@@ -32,10 +32,11 @@ const apiLimitKey = "\x00api"
 // those cover what a browser renders (SPEC §10.1), and a script parses the
 // code, not the prose.
 const (
-	codeUnauthorized = "unauthorized"
-	codeNotFound     = "not_found"
-	codeRateLimited  = "rate_limited"
-	codeInternal     = "internal"
+	codeUnauthorized     = "unauthorized"
+	codeNotFound         = "not_found"
+	codeMethodNotAllowed = "method_not_allowed"
+	codeRateLimited      = "rate_limited"
+	codeInternal         = "internal"
 )
 
 // apiErrorBody is the failure envelope: one key, the same shape on every
@@ -69,6 +70,22 @@ func apiNotFound(w http.ResponseWriter) {
 	apiFail(w, http.StatusNotFound, codeNotFound, "not found")
 }
 
+// apiUnknownPath answers everything under /api/v1/ that no endpoint claims.
+// Without it the mux's own plain-text 404 would be the single answer in the API
+// that is not the envelope - and it is the one a client with a path or a
+// version wrong meets first (SPEC §10.2).
+func (h *Handler) apiUnknownPath(w http.ResponseWriter, _ *http.Request) {
+	apiNotFound(w)
+}
+
+// apiMethodNotAllowed refuses a verb v1 does not have. It is one answer for
+// the whole API rather than a per-endpoint decision, because read-only is the
+// version's promise (SPEC §10.2), and Allow names the verb that is left.
+func apiMethodNotAllowed(w http.ResponseWriter) {
+	w.Header().Set("Allow", http.MethodGet)
+	apiFail(w, http.StatusMethodNotAllowed, codeMethodNotAllowed, "method not allowed")
+}
+
 // requireAPI authenticates one request with the personal token as a bearer -
 // the same token that is the git basic-auth password and the web login
 // credential (SPEC §8), so scripts need no second kind of secret.
@@ -78,6 +95,13 @@ func apiNotFound(w http.ResponseWriter) {
 // requireAuth serves, because a script has no form to follow.
 func (h *Handler) requireAPI(next http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The verb is checked here rather than by the mux's patterns: a
+		// method-scoped pattern makes net/http write the refusal itself, in
+		// plain text. HEAD rides along with GET, as those patterns had it.
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			apiMethodNotAllowed(w)
+			return
+		}
 		u, ok := h.apiUser(w, r)
 		if !ok {
 			return

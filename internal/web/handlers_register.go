@@ -168,7 +168,7 @@ func (h *Handler) inviteSubmit(w http.ResponseWriter, r *http.Request) {
 	if sid, serr := h.DB.CreateSession(r.Context(), target.ID, token, sessionTTL); serr == nil {
 		setSessionCookie(w, r, sid, sessionTTL)
 	}
-	h.renderTokenOnce(w, r, target.Login, token, true)
+	h.renderTokenOnce(w, r, target, target.Login, token, true)
 }
 
 // ensureRepo provisions the personal repo as part of activation, so the clone
@@ -328,7 +328,7 @@ func (h *Handler) registerSubmit(w http.ResponseWriter, r *http.Request) {
 	if sid, serr := h.DB.CreateSession(r.Context(), target.ID, token, sessionTTL); serr == nil {
 		setSessionCookie(w, r, sid, sessionTTL)
 	}
-	h.renderTokenOnce(w, r, target.Login, token, true)
+	h.renderTokenOnce(w, r, target, target.Login, token, true)
 }
 
 type tokenOnceData struct {
@@ -343,12 +343,19 @@ type tokenOnceData struct {
 }
 
 // renderTokenOnce is the shared one-time token display (activation,
-// registration, self-service regen, teacher reset).
-func (h *Handler) renderTokenOnce(w http.ResponseWriter, r *http.Request, login, token string, withGit bool) {
-	u, _ := h.currentUser(r)
+// registration, self-service regen, teacher reset). The viewer is passed in
+// rather than read back from the request: the callers that just re-bound the
+// session hold the account, while the request still carries the id of the
+// session they deleted. It is not always the account the token belongs to
+// either - a teacher reset shows a student's token to the teacher.
+func (h *Handler) renderTokenOnce(w http.ResponseWriter, r *http.Request, viewer store.User, login, token string, withGit bool) {
+	// The one page that prints a credential. Every route to it is a POST
+	// response, so this is about the browser's back/forward cache rather than
+	// an intermediary.
+	w.Header().Set("Cache-Control", "no-store")
 	h.renderPage(w, r, "token_once", tokenOnceData{
 		CourseName:   h.Course.Get().Resolved.Course.Name,
-		User:         h.userViewOf(u),
+		User:         h.userViewOf(viewer),
 		Login:        login,
 		Token:        token,
 		WithGitSetup: withGit,

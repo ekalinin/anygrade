@@ -14,6 +14,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 
 	"github.com/ekalinin/anygrade/internal/sshsig"
+	"github.com/ekalinin/anygrade/internal/store"
 )
 
 var (
@@ -627,5 +628,44 @@ func TestPastedKeyIsCanonicalized(t *testing.T) {
 	}
 	if keys[0].PublicKey != key.authorized {
 		t.Errorf("stored public_key = %q, want the canonical line %q", keys[0].PublicKey, key.authorized)
+	}
+}
+
+// TestTokenPageIsNotCached: the one-time page is the only one that prints a
+// credential. Every route to it is a POST response, so what is at stake is the
+// browser's own back/forward cache rather than an intermediary - and no-store
+// is what keeps the token from being redrawn there after the student has moved
+// on.
+func TestTokenPageIsNotCached(t *testing.T) {
+	h, _ := newTestSite(t)
+	_, session := newSession(t, h, "alice", store.RoleStudent)
+
+	rec := doForm(h, "/settings/token", session, url.Values{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /settings/token: status %d (body %q)", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control %q, want no-store", got)
+	}
+	// An ordinary page keeps what it always sent: nothing.
+	if got := do(h, http.MethodGet, "/settings", session).Header().Get("Cache-Control"); got != "" {
+		t.Errorf("the settings page now sends Cache-Control %q", got)
+	}
+}
+
+// TestRegeneratedTokenPageKeepsItsReader: regenerating a token deletes the
+// session and creates a new one, writing the cookie to the response - so the
+// request still carries the id of the session that is already gone. Reading
+// the user back out of it rendered the page for nobody: no navigation, no
+// name, on the one page a student is told to read carefully.
+func TestRegeneratedTokenPageKeepsItsReader(t *testing.T) {
+	h, _ := newTestSite(t)
+	_, session := newSession(t, h, "alice", store.RoleStudent)
+
+	body := doForm(h, "/settings/token", session, url.Values{}).Body.String()
+	for _, want := range []string{`<span class="who">alice</span>`, `href="/leaderboard"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the one-time token page lost %s:\n%s", want, body)
+		}
 	}
 }

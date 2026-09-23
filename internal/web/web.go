@@ -61,6 +61,10 @@ type Handler struct {
 	// no /oidc/ routes at all. It never replaces the personal token, which is
 	// also the git basic-auth password.
 	OIDC *oidc.Provider
+	// oidcKey signs the in-flight login cookie (handlers_oidc.go). New
+	// generates it per process instead of storing it: a restart refuses the
+	// logins still in flight, which is at most the ten minutes one lasts.
+	oidcKey []byte
 	// BehindProxy makes the site trust X-Forwarded-Proto when deciding whether
 	// the browser's connection is encrypted (session cookie Secure flag). Off
 	// by default: the header is forgeable by anyone who reaches the port.
@@ -87,6 +91,7 @@ func New(h *Handler) http.Handler {
 	// as the one route in the site nothing accounts for. TestOIDCCallbackPath
 	// keeps the literal and the constant in agreement.
 	if h.OIDC != nil {
+		h.initOIDCKey()
 		mux.HandleFunc("GET /oidc/start", h.oidcStart)
 		mux.HandleFunc("GET /oidc/callback", h.oidcCallback)
 	}
@@ -142,11 +147,18 @@ func New(h *Handler) http.Handler {
 	// a bearer, no session cookie either way. The version prefix is the
 	// contract - fields may be added inside it, never removed or retyped - so a
 	// route added here is a promise, and the role checks are the page's own.
-	mux.Handle("GET /api/v1/me", h.requireAPI(h.apiMe))
-	mux.Handle("GET /api/v1/tasks", h.requireAPI(h.apiTasks))
-	mux.Handle("GET /api/v1/submissions/{id}", h.requireAPI(h.apiSubmission))
-	mux.Handle("GET /api/v1/matrix", h.requireAPIReview(h.apiMatrix))
-	mux.Handle("GET /api/v1/queue", h.requireAPIReview(h.apiQueue))
+	//
+	// The patterns carry no verb, unlike every other route here: a
+	// method-scoped one leaves the refusal to net/http, which writes plain
+	// text, so requireAPI checks the verb and answers a write in the envelope.
+	// The prefix ends in a catch-all for the same reason - an unknown path
+	// under /api/v1/ is a JSON not_found, never the site's own 404 page.
+	mux.Handle("/api/v1/me", h.requireAPI(h.apiMe))
+	mux.Handle("/api/v1/tasks", h.requireAPI(h.apiTasks))
+	mux.Handle("/api/v1/submissions/{id}", h.requireAPI(h.apiSubmission))
+	mux.Handle("/api/v1/matrix", h.requireAPIReview(h.apiMatrix))
+	mux.Handle("/api/v1/queue", h.requireAPIReview(h.apiQueue))
+	mux.HandleFunc("/api/v1/", h.apiUnknownPath)
 	return h.secureContext(mux)
 }
 

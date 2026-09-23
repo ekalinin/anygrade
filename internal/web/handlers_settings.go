@@ -72,7 +72,7 @@ func (h *Handler) regenToken(w http.ResponseWriter, r *http.Request) {
 	if sid, serr := h.DB.CreateSession(r.Context(), u.ID, token, sessionTTL); serr == nil {
 		setSessionCookie(w, r, sid, sessionTTL)
 	}
-	h.renderTokenOnce(w, r, u.Login, token, false)
+	h.renderTokenOnce(w, r, u, u.Login, token, false)
 }
 
 // keyProofNamespace is the SSHSIG namespace students sign the challenge under.

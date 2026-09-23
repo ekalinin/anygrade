@@ -475,7 +475,7 @@ Errors carry a stable code beside the human message, and are not localized:
 {"error": {"code": "not_found", "message": "not found"}}
 ```
 
-The codes are `unauthorized` (401), `not_found` (404), `rate_limited` (429) and `internal` (500). Asking for something you may not see is `404`, never `403` - the same rule the pages follow, so an id cannot be probed for existence - and a bad bearer draws on the same failure budget as a failed login. An API request never touches the session cookie and is never redirected to the login form.
+The codes are `unauthorized` (401), `not_found` (404), `method_not_allowed` (405), `rate_limited` (429) and `internal` (500). Every refusal under `/api/v1/` has this shape, including an unknown path and a verb other than `GET`, so a client that always decodes JSON never gets plain text instead. Asking for something you may not see is `404`, never `403` - the same rule the pages follow, so an id cannot be probed for existence - and a bad bearer draws on the same failure budget as a failed login. An API request never touches the session cookie and is never redirected to the login form.
 
 "Staff" above means the same rights the pages ask for: the reviewing half, so a TA reads the matrix, the queue and every submission here exactly as they do in the UI. The API asks the predicates, not the role, so the two cannot drift apart into one being a way around the other.
 

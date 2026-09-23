@@ -152,7 +152,7 @@ func (h *Handler) adminResetToken(w http.ResponseWriter, r *http.Request) {
 	_ = h.DB.Log(r.Context(), store.Event{
 		ActorID: &actor.ID, Kind: "token.reset", Target: target.Login, Detail: "by teacher",
 	})
-	h.renderTokenOnce(w, r, target.Login, token, false)
+	h.renderTokenOnce(w, r, actor, target.Login, token, false)
 }
 
 // adminDeleteKey removes one of the student's SSH keys (SPEC §10). The delete
