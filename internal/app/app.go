@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -139,7 +140,7 @@ func Run(ctx context.Context, opts Options) error {
 		if err != nil {
 			return err
 		}
-		localID = &gitserver.Identity{UserID: u.ID, Login: u.Login, Role: u.Role}
+		localID = &gitserver.Identity{UserID: u.ID, Login: u.Login, Role: u.Role, Admin: u.CanAdminister()}
 		localUser = &u
 	}
 
@@ -343,7 +344,7 @@ func (a storeAuth) ByToken(ctx context.Context, login, token string) (gitserver.
 	if err != nil || !ok || u.Login != login {
 		return gitserver.Identity{}, false, err
 	}
-	return gitserver.Identity{UserID: u.ID, Login: u.Login, Role: u.Role}, true, nil
+	return gitserver.Identity{UserID: u.ID, Login: u.Login, Role: u.Role, Admin: u.CanAdminister()}, true, nil
 }
 
 func (a storeAuth) ByFingerprint(ctx context.Context, fingerprint string) (gitserver.Identity, bool, error) {
@@ -351,7 +352,22 @@ func (a storeAuth) ByFingerprint(ctx context.Context, fingerprint string) (gitse
 	if err != nil || !ok {
 		return gitserver.Identity{}, false, err
 	}
-	return gitserver.Identity{UserID: u.ID, Login: u.Login, Role: u.Role}, true, nil
+	return gitserver.Identity{UserID: u.ID, Login: u.Login, Role: u.Role, Admin: u.CanAdminister()}, true, nil
+}
+
+// HasAccount answers the transport's "is this a login at all" (SPEC §7),
+// which is what a teacher's first access to another account's repo turns on.
+// The state is not filtered: a deactivated account keeps its repo, and the
+// teacher is the one who still needs to read it. A DB that cannot be read is
+// not an answer, so it is reported rather than folded into "no such account".
+func (a storeAuth) HasAccount(ctx context.Context, login string) (bool, error) {
+	switch _, err := a.db.GetUserByLogin(ctx, login); {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return true, nil
 }
 
 // ensureLocalUser backs `serve --local`: one implicit teacher-role account

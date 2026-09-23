@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -19,10 +20,12 @@ import (
 	"github.com/ekalinin/anygrade/internal/ratelimit"
 )
 
-// fakeAuth authenticates from a fixed login -> (token, Identity) map.
+// fakeAuth authenticates from a fixed login -> (token, Identity) map, and
+// knows which logins name an account whether or not they carry credentials.
 type fakeAuth struct {
-	tokens map[string]string // login -> token
-	ids    map[string]Identity
+	tokens   map[string]string // login -> token
+	ids      map[string]Identity
+	accounts []string // logins that exist, repo or no repo
 }
 
 func (f fakeAuth) ByToken(_ context.Context, login, token string) (Identity, bool, error) {
@@ -35,6 +38,10 @@ func (f fakeAuth) ByToken(_ context.Context, login, token string) (Identity, boo
 func (f fakeAuth) ByFingerprint(_ context.Context, fp string) (Identity, bool, error) {
 	id, ok := f.ids[fp]
 	return id, ok, nil
+}
+
+func (f fakeAuth) HasAccount(_ context.Context, login string) (bool, error) {
+	return slices.Contains(f.accounts, login), nil
 }
 
 func newHTTPFixture(t *testing.T) (ts *httptest.Server, rm *RepoManager) {
@@ -51,8 +58,10 @@ func newHTTPFixture(t *testing.T) (ts *httptest.Server, rm *RepoManager) {
 			tokens: map[string]string{"alice": "tok-a", "prof": "tok-p"},
 			ids: map[string]Identity{
 				"alice": {UserID: 1, Login: "alice", Role: "student"},
-				"prof":  {UserID: 2, Login: "prof", Role: "teacher"},
+				"prof":  {UserID: 2, Login: "prof", Role: "teacher", Admin: true},
 			},
+			// bob is an account nobody has pushed from yet.
+			accounts: []string{"alice", "prof", "bob"},
 		},
 		Socket: filepath.Join(t.TempDir(), "no.sock"),
 	}
@@ -156,6 +165,39 @@ func TestHTTPAuthz(t *testing.T) {
 	runSrc(t, work, "-c", "user.name=a", "-c", "user.email=a@a", "commit", "-m", "hack")
 	if out, err := runGitCmd(t, work, "push", "origin", "main"); err == nil {
 		t.Errorf("student push to the course repo must fail, got: %s", out)
+	}
+}
+
+// TestHTTPTeacherProvisionsUnvisitedRepo: the first git access creates the
+// repo (SPEC §7), and a teacher's access is a first access too - otherwise the
+// §8 right to reach another account's repo would wait on the student pushing
+// first. A login that is not an account stays a 404 rather than a fresh repo.
+func TestHTTPTeacherProvisionsUnvisitedRepo(t *testing.T) {
+	ts, rm := newHTTPFixture(t)
+
+	work := filepath.Join(t.TempDir(), "wc")
+	if out, err := runGitCmd(t, ".", "clone", authURL(t, ts.URL, "prof", "tok-p", "/git/bob/course.git"), work); err != nil {
+		t.Fatalf("teacher clone of an unvisited repo: %v: %s", err, out)
+	}
+	if _, err := os.Stat(rm.StudentDir("bob")); err != nil {
+		t.Fatal("the teacher's clone did not provision the repo:", err)
+	}
+	// And the write half of the same row: a teacher may push there.
+	if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("from the teacher\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runSrc(t, work, "add", ".")
+	runSrc(t, work, "-c", "user.name=p", "-c", "user.email=p@p", "commit", "-m", "fix")
+	if out, err := runGitCmd(t, work, "push", "origin", "main"); err != nil {
+		t.Fatalf("teacher push to a student repo: %v: %s", err, out)
+	}
+
+	unknown := authURL(t, ts.URL, "prof", "tok-p", "/git/nobody/course.git")
+	if out, err := runGitCmd(t, ".", "clone", unknown, filepath.Join(t.TempDir(), "wc")); err == nil {
+		t.Errorf("clone of a login with no account must fail, got: %s", out)
+	}
+	if _, err := os.Stat(rm.StudentDir("nobody")); err == nil {
+		t.Error("a repo was provisioned for a login with no account")
 	}
 }
 
@@ -273,6 +315,8 @@ func (b blockingAuth) ByFingerprint(context.Context, string) (Identity, bool, er
 	return Identity{}, false, nil
 }
 
+func (b blockingAuth) HasAccount(context.Context, string) (bool, error) { return false, nil }
+
 // TestHTTPAuthRateLimitBurst pins the reason git basic auth reserves its budget
 // slot instead of reading it: with a plain Blocked check, N requests that reach
 // the handler together all see an empty budget and all get their token
@@ -368,23 +412,43 @@ func TestSplitRepoPath(t *testing.T) {
 	}
 }
 
-// TestAuthorize is the pure policy matrix.
+// TestAuthorize is the pure policy matrix: the §8 table row for the git
+// transport, decided by the administer right and never by the role string.
 func TestAuthorize(t *testing.T) {
 	student := Identity{Login: "alice", Role: "student"}
-	teacher := Identity{Login: "prof", Role: "teacher"}
+	ta := Identity{Login: "ta1", Role: "ta"}
+	teacher := Identity{Login: "prof", Role: "teacher", Admin: true}
+	// The role travels to the hooks; it decides nothing here.
+	roleOnly := Identity{Login: "prof", Role: "teacher"}
+	// Every role against every repo, read and write: own, another account's,
+	// and the course repo (owner "").
 	tests := []struct {
 		id    Identity
 		owner string
 		write bool
 		want  bool
 	}{
-		{student, "alice", true, true},
 		{student, "alice", false, true},
+		{student, "alice", true, true},
 		{student, "bob", false, false},
+		{student, "bob", true, false},
 		{student, "", false, true},
 		{student, "", true, false},
-		{teacher, "", true, true},
+		{ta, "ta1", false, true},
+		{ta, "ta1", true, true},
+		{ta, "alice", false, false},
+		{ta, "alice", true, false},
+		{ta, "", false, true},
+		{ta, "", true, false},
+		{teacher, "prof", false, true},
+		{teacher, "prof", true, true},
+		{teacher, "alice", false, true},
 		{teacher, "alice", true, true},
+		{teacher, "", false, true},
+		{teacher, "", true, true},
+		{roleOnly, "alice", false, false},
+		{roleOnly, "alice", true, false},
+		{roleOnly, "", true, false},
 	}
 	for _, tc := range tests {
 		if got := Authorize(tc.id, tc.owner, tc.write); got != tc.want {

@@ -4,10 +4,16 @@ import (
 	"bytes"
 	"crypto/rand"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // commitBigFile puts a file of n bytes into work and commits it. The content is
@@ -69,7 +75,10 @@ func TestMaxPushSizeIsConfigured(t *testing.T) {
 
 // TestHTTPPushOverMaxPushSize: SPEC §13 asks for an explanatory rejection, and
 // git's own is either "unpack-objects abnormal exit" (HTTP swallows the fatal
-// on stderr) or a message that names neither the limit nor a way out.
+// on stderr) or a message that names neither the limit nor a way out. The tail
+// of the output is pinned as well: git reports the ref as failed only when it
+// got to read the answer to its own upload, so "! [remote failure]" is what
+// tells a refusal apart from a connection cut from under the client.
 func TestHTTPPushOverMaxPushSize(t *testing.T) {
 	ts, rm := newHTTPFixture(t)
 	if err := rm.SetMaxInputSize(t.Context(), 64<<10); err != nil {
@@ -87,7 +96,8 @@ func TestHTTPPushOverMaxPushSize(t *testing.T) {
 	if err == nil {
 		t.Fatalf("an oversized push must be rejected, got: %s", out)
 	}
-	for _, want := range []string{"anygrade: push rejected", "max_push_size", "64 KB"} {
+	for _, want := range []string{"anygrade: push rejected", "max_push_size", "64 KB",
+		"! [remote failure]", "failed to push some refs"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("push output %q is missing %q", out, want)
 		}
@@ -112,10 +122,141 @@ func TestHTTPPushOverMaxPushSize(t *testing.T) {
 	}
 }
 
+// trickle is a request body that never ends: one byte at a time until the test
+// lets go of it, which is what a client holding a chunked body open looks like
+// from the server's side.
+type trickle struct {
+	gap  time.Duration
+	stop <-chan struct{}
+}
+
+func (tr *trickle) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	select {
+	case <-tr.stop:
+		return 0, io.EOF
+	case <-time.After(tr.gap):
+		p[0] = 0
+		return 1, nil
+	}
+}
+
+// TestHTTPOversizePushDrainIsBounded: the drain that follows a tripped guard is
+// there so git reads the answer instead of retrying the whole push, but it must
+// not become a way to hold the server. The listener carries no read timeout on
+// purpose (SPEC §14), so the drain brings its own deadline, and a client that
+// keeps its body open past it is let go of rather than waited for.
+func TestHTTPOversizePushDrainIsBounded(t *testing.T) {
+	requireGit(t)
+	const limit = 64 << 10
+	src := newSrcRepo(t)
+	rm := &RepoManager{DataDir: t.TempDir(), HookBin: "/usr/bin/true"}
+	if err := rm.EnsureCourse(t.Context(), src); err != nil {
+		t.Fatal(err)
+	}
+	if err := rm.SetMaxInputSize(t.Context(), limit); err != nil {
+		t.Fatal(err)
+	}
+	h := &HTTPHandler{
+		Repos:  rm,
+		Auth:   fakeAuth{tokens: map[string]string{"alice": "tok"}, ids: map[string]Identity{"alice": {UserID: 1, Login: "alice", Role: "student"}}},
+		Socket: filepath.Join(t.TempDir(), "no.sock"),
+	}
+	// A real oversized push comes first, to keep a real receive-pack request to
+	// replay: the guard has to trip on git's own bytes, not on filler. Only
+	// that push is buffered - the replay must reach the handler as it arrives,
+	// which is the whole point of it.
+	var mu sync.Mutex
+	var captured []byte
+	var capturing atomic.Bool
+	capturing.Store(true)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if capturing.Load() && strings.HasSuffix(r.URL.Path, "/git-receive-pack") {
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Error("reading the request body:", err)
+			}
+			mu.Lock()
+			if len(body) > len(captured) {
+				captured = body
+			}
+			mu.Unlock()
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		h.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
+
+	work := filepath.Join(t.TempDir(), "wc")
+	if out, err := runGitCmd(t, ".", "clone", authURL(t, ts.URL, "alice", "tok", "/git/alice/course.git"), work); err != nil {
+		t.Fatalf("clone: %v: %s", err, out)
+	}
+	commitBigFile(t, work, 2<<20)
+	if out, err := runGitCmd(t, work, "push", "origin", "main"); err == nil {
+		t.Fatalf("an oversized push must be rejected, got: %s", out)
+	}
+	capturing.Store(false)
+	mu.Lock()
+	pack := captured
+	mu.Unlock()
+	if int64(len(pack)) <= limit {
+		t.Fatalf("the captured request is %d bytes, too small to trip the %d-byte cap", len(pack), limit)
+	}
+
+	// The same request again, from a client that never finishes it.
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	body := io.MultiReader(bytes.NewReader(pack), &trickle{gap: 100 * time.Millisecond, stop: stop})
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/git/alice/course.git/git-receive-pack", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.SetBasicAuth("alice", "tok")
+	req.Header.Set("Content-Type", "application/x-git-receive-pack-request")
+	req.ContentLength = -1 // chunked: the client never says how much is coming
+
+	type answer struct {
+		took time.Duration
+		body string
+		err  error
+	}
+	done := make(chan answer, 1)
+	go func() {
+		started := time.Now()
+		got := answer{}
+		resp, err := (&http.Client{}).Do(req)
+		if got.err = err; err == nil {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			got.body = string(b)
+		}
+		got.took = time.Since(started)
+		done <- got
+	}()
+
+	bound := 2 * oversizeDrainTimeout
+	select {
+	case got := <-done:
+		if got.took > bound {
+			t.Errorf("the refused push was held for %v, want at most %v", got.took, bound)
+		}
+		if got.err != nil {
+			t.Fatalf("the refused push got no answer: %v", got.err)
+		}
+		if !strings.Contains(got.body, "anygrade: push rejected") {
+			t.Errorf("the answer to the refused push is missing the rejection: %q", got.body)
+		}
+	case <-time.After(bound):
+		t.Fatalf("the refused push was still being read %v after the guard tripped", bound)
+	}
+}
+
 // TestSSHPushOverMaxPushSize is the same rejection over the other transport;
 // the wording must not depend on how the student is connected.
 func TestSSHPushOverMaxPushSize(t *testing.T) {
-	port, sshCmd, rm := newSSHFixture(t)
+	port, sshCmd, _, rm := newSSHFixture(t)
 	if err := rm.SetMaxInputSize(t.Context(), 64<<10); err != nil {
 		t.Fatal(err)
 	}

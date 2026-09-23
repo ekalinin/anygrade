@@ -174,7 +174,7 @@ func (s *SSHServer) handle(sess ssh.Session) {
 		_ = sess.Exit(1)
 		return
 	}
-	dir, err := s.repoDir(sess.Context(), id, owner)
+	dir, err := repoDir(sess.Context(), s.Repos, s.Auth, id, owner)
 	if err != nil {
 		fmt.Fprintln(sess.Stderr(), "anygrade: repository not found")
 		_ = sess.Exit(1)
@@ -231,21 +231,6 @@ func (s *SSHServer) identity(sess ssh.Session) (Identity, bool) {
 	}
 	id, ok := sess.Context().Value(identityKey).(Identity)
 	return id, ok
-}
-
-// repoDir mirrors HTTPHandler.repoDir: lazy provisioning only for the owner.
-func (s *SSHServer) repoDir(ctx context.Context, id Identity, owner string) (string, error) {
-	if owner == "" {
-		return s.Repos.CourseDir(), nil
-	}
-	if owner == id.Login {
-		return s.Repos.EnsureStudent(ctx, owner)
-	}
-	dir := s.Repos.StudentDir(owner)
-	if _, err := os.Stat(dir); err != nil {
-		return "", err
-	}
-	return dir, nil
 }
 
 // parseGitCommand accepts exactly the two git transport commands, in both the

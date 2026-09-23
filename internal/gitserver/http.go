@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/ekalinin/anygrade/internal/hookproto"
 	"github.com/ekalinin/anygrade/internal/ratelimit"
@@ -19,28 +20,37 @@ import (
 type Identity struct {
 	UserID int64
 	Login  string
-	Role   string // student | ta | teacher
+	Role   string // student | ta | teacher; exported to the hooks, decides nothing here
+	// Admin carries the administer right (store.User.CanAdminister) onto the
+	// transport: may write to any repo and to the course repo. It is the right
+	// and not the role because gitserver never sees the role table (SPEC §15).
+	Admin bool
 }
 
-// Authenticator resolves credentials to identities (SPEC §8).
+// Authenticator resolves credentials to identities, and tells a login that
+// names an account from one that names nothing (SPEC §8).
 type Authenticator interface {
 	// ByToken checks a login + personal-access-token pair (HTTP basic auth).
 	ByToken(ctx context.Context, login, token string) (Identity, bool, error)
 	// ByFingerprint resolves an SSH public-key fingerprint (SHA256: form).
 	ByFingerprint(ctx context.Context, fingerprint string) (Identity, bool, error)
+	// HasAccount reports whether login exists, in any state. It is what the
+	// transport asks before provisioning somebody else's repo (SPEC §7); no
+	// credential of that account is involved.
+	HasAccount(ctx context.Context, login string) (bool, error)
 }
 
 // Authorize is the pure repo-access policy (SPEC §7): students read/write
-// their own repo and read the course repo; teachers do everything.
-// owner "" means the course repo.
+// their own repo and read the course repo; the administer right does
+// everything. owner "" means the course repo.
 //
-// A TA is deliberately not a teacher here, so this stays a comparison against
-// the one role rather than a call into the rights table. The transport grants
-// read and write together, and a TA's reviewing rights are read-only: the code
-// they need is on the submission page, which serves the graded commit and
-// nothing they could push over.
+// A TA is deliberately not a teacher here, which is why the question asked is
+// the administer right and not the reviewing one. The transport grants read
+// and write together, and a TA's reviewing rights are read-only: the code they
+// need is on the submission page, which serves the graded commit and nothing
+// they could push over.
 func Authorize(id Identity, owner string, write bool) bool {
-	if id.Role == "teacher" {
+	if id.Admin {
 		return true
 	}
 	if owner == "" {
@@ -110,7 +120,7 @@ func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	dir, err := h.repoDir(r.Context(), id, owner)
+	dir, err := repoDir(r.Context(), h.Repos, h.Auth, id, owner)
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -143,6 +153,14 @@ func (h *HTTPHandler) advertise(w http.ResponseWriter, r *http.Request, svc, dir
 	cmd.Stderr = io.Discard
 	_ = cmd.Run() // headers are already out; a failure just truncates the body
 }
+
+// oversizeDrainTimeout bounds the drain that follows a rejected push. The
+// listener has no ReadTimeout on purpose (SPEC §14) - it would cut a slow but
+// legitimate push mid-transfer - so the only place a read deadline is safe is
+// here, past the point where this push is already refused: long enough for the
+// client to finish sending the pack it has lost anyway and read the answer,
+// short enough that one holding its body open is let go of in seconds.
+const oversizeDrainTimeout = 5 * time.Second
 
 // serviceRPC pipes one stateless-rpc exchange through the git subcommand.
 func (h *HTTPHandler) serviceRPC(w http.ResponseWriter, r *http.Request, svc, dir string, env []string) {
@@ -187,7 +205,27 @@ func (h *HTTPHandler) serviceRPC(w http.ResponseWriter, r *http.Request, svc, di
 		// uploading. Cutting the connection under it makes git retry the whole
 		// push instead of reading the answer, so the remainder is read and
 		// thrown away first - none of it is ever unpacked or stored.
-		_, _ = io.Copy(io.Discard, r.Body)
+		//
+		// On a clock, though: without one, a request that is already refused
+		// holds a goroutine and a connection for as long as the client keeps
+		// its body open, and one that dribbles the body out holds them for
+		// longer still.
+		//
+		// The deadline is cleared only when the client did finish, because
+		// then the connection is clean and may be reused - and a later request
+		// on it must not trip over a deadline this one set. When it expires
+		// instead, leaving it armed is what ends the connection: net/http's
+		// own look for the end of an unread body fails on it at once.
+		//
+		// The deadline is set on a best-effort basis: this handler is mounted
+		// on a bare mux, so the writer is the real one and the call succeeds.
+		// Wrapping the response writer in middleware that does not forward
+		// Unwrap would lose the bound here without a word.
+		rc := http.NewResponseController(w)
+		_ = rc.SetReadDeadline(time.Now().Add(oversizeDrainTimeout))
+		if _, err := io.Copy(io.Discard, r.Body); err == nil {
+			_ = rc.SetReadDeadline(time.Time{})
+		}
 		writeOversizeReport(w, limit)
 		return
 	}
@@ -234,21 +272,39 @@ func (h *HTTPHandler) authenticate(w http.ResponseWriter, r *http.Request) (Iden
 	return Identity{}, false
 }
 
-// repoDir resolves (and for the owner themselves lazily provisions) the bare
-// repo directory. Others get a plain existence check: repos are created on
-// the owner's first access, not by teacher browsing (SPEC §7).
-func (h *HTTPHandler) repoDir(ctx context.Context, id Identity, owner string) (string, error) {
+// repoDir resolves the bare repo directory, lazily provisioning it on a first
+// access (SPEC §7). Shared by both transports, because the answer must not
+// depend on how the account connected.
+//
+// The owner's own access provisions it, and so does the access of an account
+// carrying the administer right: the §8 row grants a teacher another account's
+// repo, and that right cannot wait for the student to push first. The account
+// itself still has to exist - otherwise a mistyped login would become a repo -
+// so an unknown one stays the 404 it always was. Everyone else gets a plain
+// existence check.
+func repoDir(ctx context.Context, repos *RepoManager, auth Authenticator, id Identity, owner string) (string, error) {
 	if owner == "" {
-		return h.Repos.CourseDir(), nil
+		return repos.CourseDir(), nil
 	}
 	if owner == id.Login {
-		return h.Repos.EnsureStudent(ctx, owner)
+		return repos.EnsureStudent(ctx, owner)
 	}
-	dir := h.Repos.StudentDir(owner)
-	if _, err := os.Stat(dir); err != nil {
+	dir := repos.StudentDir(owner)
+	_, err := os.Stat(dir)
+	switch {
+	case err == nil:
+		return dir, nil
+	case !id.Admin || !os.IsNotExist(err):
 		return "", err
 	}
-	return dir, nil
+	ok, err := auth.HasAccount(ctx, owner)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", os.ErrNotExist
+	}
+	return repos.EnsureStudent(ctx, owner)
 }
 
 // splitRepoPath parses "/git/course.git/<rest>" (owner "") and
