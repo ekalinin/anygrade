@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/ekalinin/anygrade/internal/ident"
@@ -188,6 +189,18 @@ func (h *Handler) oidcAccount(r *http.Request, id oidc.Identity) (store.User, bo
 	} else if ok {
 		return u, true
 	}
+	// With `email` as the login claim the value is an address, and no account is
+	// named one, so what is matched is its local part. The domain is not
+	// compared, which is what bounds the option to an issuer serving a single
+	// domain the course owns (SPEC §8): there the address is one the issuer
+	// verified and hands out itself, so the local part is as trustworthy as
+	// `preferred_username` from the same issuer. The claim as it arrived is
+	// kept for the operator log - the server log is the one place the whole
+	// address is safe, while everything stored carries the derived login.
+	claim := id.Login
+	if h.OIDC.LoginClaim() == "email" {
+		id.Login = emailLocalPart(id.Login)
+	}
 	// The claim is whatever the provider chose to put in it, and no account can
 	// be named anything else (internal/ident), so a value that fails the rule
 	// could not match one. Refusing before the lookup also keeps it out of the
@@ -200,7 +213,7 @@ func (h *Handler) oidcAccount(r *http.Request, id oidc.Identity) (store.User, bo
 	target, err := h.DB.GetUserByLogin(r.Context(), id.Login)
 	if err != nil {
 		slog.Warn("oidc: verified identity has no account",
-			"claim", id.Login, "issuer", id.Issuer, "subject", id.Subject)
+			"claim", claim, "login", id.Login, "issuer", id.Issuer, "subject", id.Subject)
 		h.logOIDCRefusal(r, id, "no account with this login")
 		return store.User{}, false
 	}
@@ -232,6 +245,19 @@ func (h *Handler) oidcAccount(r *http.Request, id oidc.Identity) (store.User, bo
 		Detail: "linked to " + id.Issuer + " subject " + id.Subject,
 	})
 	return target, true
+}
+
+// emailLocalPart is the part of an address before the domain. The last "@" is
+// what separates the two, so an address carrying another one is left with it
+// and refused by ValidLogin rather than silently cut short. The claim arrives
+// trimmed and lower-cased from internal/oidc, so "Alice@Uni.example" is already
+// "alice@uni.example" here, and a value with no domain at all is left as it is:
+// whatever the issuer put in the claim still has to be a valid login.
+func emailLocalPart(claim string) string {
+	if i := strings.LastIndex(claim, "@"); i >= 0 {
+		return claim[:i]
+	}
+	return claim
 }
 
 // logOIDCRefusal records a verified identity that was refused an account. The
