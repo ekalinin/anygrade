@@ -70,7 +70,7 @@ func newConnGate(max, perIP int) *connGate {
 func (g *connGate) acquire(addr string) (release func(), ok bool) {
 	// No forwarded header applies: SSH is spoken straight to the listener, so
 	// the peer address is the only address there is.
-	host := ratelimit.ClientAddr(addr, "", false)
+	host := ratelimit.ClientAddr(addr, nil, false)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.total >= g.max || g.byIP[host] >= g.perIP {

@@ -72,7 +72,7 @@ type HTTPHandler struct {
 // out; the header is forgeable by anyone who reaches the port, so it is read
 // only when the operator has said a proxy is there.
 func (h *HTTPHandler) clientAddr(r *http.Request) string {
-	return ratelimit.ClientAddr(r.RemoteAddr, r.Header.Get("X-Forwarded-For"), h.BehindProxy)
+	return ratelimit.ClientAddr(r.RemoteAddr, r.Header.Values("X-Forwarded-For"), h.BehindProxy)
 }
 
 func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
