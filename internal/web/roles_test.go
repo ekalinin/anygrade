@@ -206,10 +206,17 @@ func TestNavByRole(t *testing.T) {
 }
 
 // TestStudentPageHidesAdminControlsFromTA: the page a TA and a teacher share
-// must not offer the TA a button that 404s. The reviewing controls stay.
+// must not offer the TA a button that 404s. The reviewing controls stay. Nor
+// may the TA read the account's audit rows off the same page - the actions
+// they name are exactly the ones the TA is refused (SPEC §8, §14).
 func TestStudentPageHidesAdminControlsFromTA(t *testing.T) {
 	h, taSession := newRoleSite(t, store.RoleTA)
-	_, teacherSession := newSession(t, h, "prof", store.RoleTeacher)
+	prof, teacherSession := newSession(t, h, "prof", store.RoleTeacher)
+	if err := h.DB.Log(t.Context(), store.Event{
+		ActorID: &prof.ID, Kind: "token.reset", Target: "alice", Detail: "by prof",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	admin := []string{
 		`action="/students/alice/token/reset"`,
@@ -218,6 +225,8 @@ func TestStudentPageHidesAdminControlsFromTA(t *testing.T) {
 		`/keys/1/delete`,
 	}
 	const review = `action="/students/alice/tasks/t1/recheck"`
+	const activityHeading = `Recent activity`
+	const eventKind = `token.reset`
 
 	ta := do(h, http.MethodGet, "/students/alice", taSession).Body.String()
 	for _, form := range admin {
@@ -228,12 +237,24 @@ func TestStudentPageHidesAdminControlsFromTA(t *testing.T) {
 	if !strings.Contains(ta, review) {
 		t.Errorf("the TA's student page lost the recheck button:\n%s", ta)
 	}
+	if strings.Contains(ta, activityHeading) {
+		t.Errorf("the TA's student page still has the %q heading:\n%s", activityHeading, ta)
+	}
+	if strings.Contains(ta, eventKind) {
+		t.Errorf("the TA's student page still names the %q event:\n%s", eventKind, ta)
+	}
 
 	teacher := do(h, http.MethodGet, "/students/alice", teacherSession).Body.String()
 	for _, form := range append(admin, review) {
 		if !strings.Contains(teacher, form) {
 			t.Errorf("the teacher's student page lost %s", form)
 		}
+	}
+	if !strings.Contains(teacher, activityHeading) {
+		t.Errorf("the teacher's student page lost the %q heading:\n%s", activityHeading, teacher)
+	}
+	if !strings.Contains(teacher, eventKind) {
+		t.Errorf("the teacher's student page lost the %q event:\n%s", eventKind, teacher)
 	}
 }
 

@@ -81,7 +81,13 @@ func (h *Handler) studentPage(w http.ResponseWriter, r *http.Request) {
 	}
 	course := h.Course.Get()
 	keys, _ := h.DB.ListSSHKeys(r.Context(), target.ID)
-	events, _ := h.DB.ListEventsByTarget(r.Context(), target.Login, 20)
+	// The audit rows are the account-management half of the page, same as the
+	// controls below them (SPEC §8, §10): a TA never triggers the query, so
+	// there is nothing to leak through a template mistake.
+	var events []store.EventRow
+	if u.CanAdminister() {
+		events, _ = h.DB.ListEventsByTarget(r.Context(), target.Login, 20)
+	}
 
 	h.renderPage(w, r, "student", studentData{
 		CourseName: course.Resolved.Course.Name,
