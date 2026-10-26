@@ -718,6 +718,27 @@ func TestGradePushRecheckMarkerBypassesSkip(t *testing.T) {
 	}
 }
 
+// TestGradePushCreationScansTipForRecheckMarker: a ref creation (OldSHA is the
+// zero SHA) has no honest range to walk for markers, but it does have a tip -
+// the same one the content diff already falls back to the empty tree for. A
+// marker in that tip commit must still queue its task instead of being
+// silently skipped because the range is not well-formed.
+func TestGradePushCreationScansTipForRecheckMarker(t *testing.T) {
+	s, work, _, user := newIntakeFixture(t)
+	rewindBaseline(t, s, recordBothTasks(t, s, work))
+
+	_, head := push(t, work, "please [recheck t1]")
+	out := joined(s.dispatch(t.Context(), postReceive(zeroSHA, head)))
+
+	subs, err := s.DB.ListByUserTask(t.Context(), user.ID, "t1")
+	if err != nil || len(subs) != 2 {
+		t.Fatalf("t1 has %d submissions, want 2 - a creation must still scan its tip for a marker: %v", len(subs), err)
+	}
+	if !strings.Contains(out, "1 task(s) already graded") {
+		t.Errorf("only t2 stayed skipped, the count must exclude t1: %s", out)
+	}
+}
+
 // TestGradePushWithoutBaselineUsesThePushRange: with no baseline ref the diff
 // used to run against the empty tree and re-detect every task that has files,
 // leaving the re-detection filter to drop them one by one. The push carries its

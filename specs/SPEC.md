@@ -272,7 +272,7 @@ A submission's log dir holds one file per check, named after the check: a name t
 
 Explicit recheck (in addition to diff detection):
 
-- commit message marker `[recheck <task-id>]` (works with an empty commit),
+- commit message marker `[recheck <task-id>]` (works with an empty commit; on a branch creation only the tip commit is scanned, since the zero SHA bounds no range),
 - a recheck button in the UI on the task page.
 
 Student-initiated rechecks count against `max_attempts` and `cooldown`; teacher-initiated rechecks do not.

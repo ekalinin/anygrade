@@ -258,6 +258,18 @@ func (s *Sink) drain() {
 // success writes a log line: the submission is already final in the database,
 // so this is the only place the loss can be noticed.
 func (s *Sink) deliver(ctx context.Context, d delivery) {
+	// CheckURL is also the gate `validate` and a course metadata push already
+	// run the target through (SPEC §6.2), so nothing reachable today fails
+	// this - but a target is only as good as the last course.yaml it was read
+	// from, and this is the one place that can refuse it once instead of
+	// handing a scheme or a credential CheckURL would reject straight to the
+	// transport, which would retry a `file://` target as an ordinary failure
+	// and turn URL userinfo into a leaked Authorization header.
+	if err := CheckURL(d.url); err != nil {
+		s.Log.Warn("webhook target refused",
+			"event", d.ev.Kind, "submission", d.ev.SubID, "err", err)
+		return
+	}
 	body, err := s.body(ctx, d.ev)
 	if err != nil {
 		// A shutdown reaches the login lookup first, so the failure has to be
