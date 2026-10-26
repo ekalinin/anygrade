@@ -85,11 +85,12 @@ func Build(users []store.User, tasks []TaskCol, subs []store.Submission,
 		row := Row{User: u, Cells: make(map[string]Cell, len(tasks))}
 		for _, t := range tasks {
 			history := byUserTask[u.ID][t.ID]
+			winner := Winner(history, policy)
 			cell := Cell{Computed: DisplayScore(history, policy)}
 			if o, ok := ovr[u.ID][t.ID]; ok {
 				cell.Override = &o
 			}
-			cell.Status = DeriveStatus(history, t.MaxScore, cell.Override != nil)
+			cell.Status = DeriveStatus(history, t.MaxScore, cell.Override != nil, winner)
 			// The empty status is what the matrix draws a dash for. Only a task
 			// contributing nothing may have it: an override is a score, and the
 			// row total counts it, so its cell has to show it too.
@@ -124,7 +125,13 @@ func Build(users []store.User, tasks []TaskCol, subs []store.Submission,
 // With a history the override changes only the number shown, not the status -
 // the submissions did happen, and their outcome is still what the status is
 // about.
-func DeriveStatus(history []store.Submission, taskScore int, overridden bool) string {
+//
+// The in-flight and rejected statuses are lifecycle facts about the latest
+// attempt and always come from it. The score-derived statuses (passed/
+// partial/failed) describe the winner instead - the submission the course
+// scoring policy picked - so the status never names a different attempt
+// than the score shown next to it (issue #133).
+func DeriveStatus(history []store.Submission, taskScore int, overridden bool, winner *store.Submission) string {
 	if len(history) == 0 {
 		if overridden {
 			return StatusOverridden
@@ -150,8 +157,8 @@ func DeriveStatus(history []store.Submission, taskScore int, overridden bool) st
 		return StatusRejected
 	}
 	final := 0.0
-	if last.FinalScore != nil {
-		final = *last.FinalScore
+	if winner != nil && winner.FinalScore != nil {
+		final = *winner.FinalScore
 	}
 	switch {
 	case final >= float64(taskScore):
